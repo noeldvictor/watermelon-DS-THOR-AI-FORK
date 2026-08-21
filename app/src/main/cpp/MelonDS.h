@@ -14,6 +14,7 @@
 #include "retroachievements/RAAchievement.h"
 #include "retroachievements/RALeaderboard.h"
 #include "retroachievements/RARuntimeBridgeConfig.h"
+#include "retroachievements/RetroAchievementsManager.h"
 #include "renderer/FrameQueue.h"
 #include "types.h"
 #include "../GPU.h"
@@ -123,6 +124,12 @@ namespace MelonDSAndroid {
     extern std::vector<RetroAchievements::RARuntimeAchievement> getRuntimeAchievements();
     extern std::vector<RetroAchievements::RARuntimeAchievementBucketEntry> getRuntimeAchievementBuckets();
     extern std::vector<long> getRuntimeSubsetIds();
+    extern RetroAchievements::RANativePendingRetryResult retryPendingRetroAchievementsSubmissions(
+        const std::vector<uint64_t>& expectedSubmissionIds);
+    extern uint64_t refreshPendingRetroAchievementsSubmissions();
+    extern int32_t discardPendingRetroAchievementsSubmissions(
+        const std::vector<uint64_t>& expectedSubmissionIds);
+    extern void setRetroAchievementsSubmissionTransportSuspended(bool suspended);
     extern Renderer getCurrentRenderer();
     extern void updateEmulatorConfiguration(std::unique_ptr<EmulatorConfiguration> emulatorConfiguration);
 
@@ -160,6 +167,11 @@ namespace MelonDSAndroid {
     extern bool areRendererDebugBgObjLogsEnabled();
     extern bool areRendererDebugLatchTraceLogsEnabled();
     extern bool areRendererDebugFilterTintEnabled();
+    extern bool isVulkanPerfLoggingEnabled();
+    extern bool isVulkanGpu2DPerfLoggingEnabled();
+    extern bool isVulkanLatchPerfLoggingEnabled();
+    extern bool isVulkanAsyncFrameTailEnabled();
+    extern bool isVulkanSetupPerfLoggingEnabled();
     extern Renderer2DDebugControlState getRenderer2DDebugControls();
     extern void setRenderer2DDebugControls(
         int mainForcedMode,
@@ -213,8 +225,9 @@ namespace MelonDSAndroid {
     extern int getCurrentFrameIndexForDebug();
     extern void requestPreparedRendererDebugSnapshot();
     extern void clearPreparedRendererDebugSnapshot();
-    extern void startDenseScreenBurstCaptureForDebug(int frameCount, int stepFrames, u32 captureKindsMask);
+    extern void startDenseScreenBurstCaptureForDebug(int frameCount, int stepFrames, int warmupFrames, u32 captureKindsMask);
     extern bool isDenseScreenBurstCaptureCompleteForDebug();
+    extern std::vector<u32> getDenseScreenBurstScheduleStatsForDebug();
     extern int getDenseScreenBurstCaptureFrameCountForDebug();
     extern int getDenseScreenBurstCaptureFrameIdForDebug(int index);
     extern std::vector<u32> getDenseScreenBurstCaptureFrameForDebug(int index);

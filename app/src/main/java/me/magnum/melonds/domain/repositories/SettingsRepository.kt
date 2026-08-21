@@ -8,6 +8,7 @@ import me.magnum.melonds.domain.model.camera.DSiCameraSourceType
 import me.magnum.melonds.domain.model.input.SoftInputBehaviour
 import me.magnum.melonds.domain.model.rom.Rom
 import me.magnum.melonds.domain.model.rom.config.RomConfig
+import me.magnum.melonds.domain.model.retroachievements.RetroAchievementsOfflineBackend
 import me.magnum.melonds.ui.Theme
 import java.util.UUID
 
@@ -69,6 +70,7 @@ interface SettingsRepository {
     fun getVideoInternalResolutionScaling(): Flow<Int>
     fun getVideoFiltering(): Flow<VideoFiltering>
     fun isThreadedRenderingEnabled(): Flow<Boolean>
+    fun isVulkanFastPathEnabled(): Flow<Boolean>
     fun isRendererDebugToolsEnabled(): Flow<Boolean>
     fun isRendererDebugBgObjEnabled(): Flow<Boolean>
     fun isRendererDebugLatchTraceEnabled(): Flow<Boolean>
@@ -130,6 +132,8 @@ interface SettingsRepository {
     fun observeRetroAchievementsEnabled(): Flow<Boolean>
     fun isRetroAchievementsHardcoreEnabled(): Boolean
     fun isRetroAchievementsOfflineSoftcoreEnabled(): Boolean
+    fun getRetroAchievementsOfflineBackend(): RetroAchievementsOfflineBackend
+    fun observeRetroAchievementsOfflineBackend(): Flow<RetroAchievementsOfflineBackend>
     fun areRetroAchievementsUnofficialAchievementsEnabled(): Boolean
     fun isRetroAchievementsEncoreModeEnabled(): Boolean
     fun areRetroAchievementsActiveChallengeIndicatorsEnabled(): Boolean

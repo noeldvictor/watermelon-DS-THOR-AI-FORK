@@ -115,7 +115,7 @@ void main()
     vec3 edgeColor = vec3(0.0);
     int polyid = int(attr.r * 63.0);
 
-    if (attr.g != 0.0)
+    if (attr.g > 0.75)
     {
         vec4 depthU = texelFetch(DepthBuffer, coord + ivec2(0, -scale), 0);
         vec4 attrU = texelFetch(AttrBuffer, coord + ivec2(0, -scale), 0);
@@ -136,7 +136,7 @@ void main()
         }
     }
 
-    float fogDensity = attr.b != 0.0 ? calculateFogDensity(depth.r) : 0.0;
+    float fogDensity = (attr.g > 0.25 && attr.g < 0.75) ? calculateFogDensity(depth.r) : 0.0;
     vec3 premultiplied =
         edgeColor * edgeAlpha * (1.0 - fogDensity)
         + unpackFogColor() * fogDensity;

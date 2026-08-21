@@ -40,6 +40,8 @@ import me.magnum.melonds.ui.emulator.ui.info.ChallengeResultUi
 import me.magnum.melonds.ui.emulator.ui.info.LeaderboardAttemptUi
 import me.magnum.melonds.ui.emulator.ui.info.LeaderboardAttemptResultUi
 import me.magnum.melonds.ui.emulator.ui.info.LeaderboardEntrySubmissionUi
+import me.magnum.melonds.ui.emulator.ui.info.LeaderboardSubmissionPendingUi
+import me.magnum.melonds.ui.emulator.component.LeaderboardAttemptKey
 import me.magnum.melonds.ui.emulator.ui.info.PrimedAchievementUi
 import me.magnum.melonds.ui.emulator.ui.info.ServerCommunicationFailedUi
 import me.magnum.melonds.ui.emulator.ui.popup.AchievementPopupUi
@@ -169,13 +171,14 @@ private fun AchievementUpdatesList(
             items = listState.visibleInfos,
             key = {
                 when (it) {
-                    is AchievementPrimed -> "primed-${it.achievement.id}"
-                    is AchievementProgress -> "progress-${it.achievement.id}"
-                    is AchievementInfo.LeaderboardAttempt -> "leaderboard-attempt-${it.leaderboard.id}"
-                    is AchievementInfo.LeaderboardAttemptResult -> "leaderboard-result-${it.leaderboard.id}-${it.result}"
-                    is AchievementInfo.LeaderboardEntrySubmitted -> "leaderboard-${it.leaderboardId}"
-                    is AchievementInfo.ChallengeResult -> "challenge-result-${it.achievement.id}-${it.result}"
-                    is AchievementInfo.ServerCommunicationFailed -> "server-error"
+                    is AchievementPrimed -> "primed-${it.uiInstanceId}"
+                    is AchievementProgress -> "progress-${it.uiInstanceId}"
+                    is AchievementInfo.LeaderboardAttempt -> "leaderboard-attempt-${it.uiInstanceId}"
+                    is AchievementInfo.LeaderboardAttemptResult -> "leaderboard-result-${it.uiInstanceId}"
+                    is AchievementInfo.LeaderboardSubmissionPending -> "leaderboard-pending-${it.uiInstanceId}"
+                    is AchievementInfo.LeaderboardEntrySubmitted -> "leaderboard-${it.uiInstanceId}"
+                    is AchievementInfo.ChallengeResult -> "challenge-result-${it.uiInstanceId}"
+                    is AchievementInfo.ServerCommunicationFailed -> "server-error-${it.uiInstanceId}"
                 }
             },
         ) { info ->
@@ -184,6 +187,7 @@ private fun AchievementUpdatesList(
                 is AchievementProgress -> AchievementProgressUi(info)
                 is AchievementInfo.LeaderboardAttempt -> LeaderboardAttemptUi(info)
                 is AchievementInfo.LeaderboardAttemptResult -> LeaderboardAttemptResultUi(info)
+                is AchievementInfo.LeaderboardSubmissionPending -> LeaderboardSubmissionPendingUi(info)
                 is AchievementInfo.LeaderboardEntrySubmitted -> LeaderboardEntrySubmissionUi(info)
                 is AchievementInfo.ChallengeResult -> ChallengeResultUi(info)
                 is AchievementInfo.ServerCommunicationFailed -> ServerCommunicationFailedUi(info)
@@ -192,10 +196,11 @@ private fun AchievementUpdatesList(
     }
 }
 
-private class AchievementUpdatesListState {
+internal class AchievementUpdatesListState {
 
     val visibleInfos = mutableStateListOf<AchievementInfo>()
     private val completedChallengeIds = mutableSetOf<Long>()
+    private var nextInfoInstanceId = 0L
 
     fun handleEvent(event: RAEventUi) {
         when (event) {
@@ -208,6 +213,7 @@ private class AchievementUpdatesListState {
             is RAEventUi.AchievementProgressHidden -> handleAchievementProgressHidden(event)
             is RAEventUi.LeaderboardAttemptStarted -> handleLeaderboardAttemptStarted(event)
             is RAEventUi.LeaderboardAttemptUpdated -> handleLeaderboardAttemptUpdated(event)
+            is RAEventUi.LeaderboardSubmissionPending -> handleLeaderboardSubmissionPending(event)
             is RAEventUi.LeaderboardEntrySubmitted -> handleLeaderboardEntrySubmitted(event)
             is RAEventUi.LeaderboardEntrySubmitError -> handleLeaderboardEntrySubmitError(event)
             is RAEventUi.LeaderboardAttemptCancelled -> handleLeaderboardAttemptCancelled(event)
@@ -220,7 +226,7 @@ private class AchievementUpdatesListState {
     private fun handleReset() {
         completedChallengeIds.clear()
         visibleInfos.forEach {
-            if (it !is AchievementInfo.ServerCommunicationFailed) {
+            if (it !is AchievementInfo.ServerCommunicationFailed || !it.willRetryInBackground) {
                 it.state.dismiss()
             }
         }
@@ -236,7 +242,7 @@ private class AchievementUpdatesListState {
             val state = AchievementInfoState {
                 visibleInfos.removeFirst { (it as? AchievementPrimed)?.achievement?.id == event.achievement.id }
             }
-            visibleInfos.add(0, AchievementPrimed(event.achievement, state))
+            visibleInfos.add(0, AchievementPrimed(event.achievement, state, nextUiInstanceId()))
         }
     }
 
@@ -270,10 +276,15 @@ private class AchievementUpdatesListState {
             val state = AchievementInfoState {
                 visibleInfos.removeFirst { it is AchievementInfo.ServerCommunicationFailed }
             }
-            val info = AchievementInfo.ServerCommunicationFailed(errorSource, state)
+            val info = AchievementInfo.ServerCommunicationFailed(
+                source = errorSource,
+                willRetryInBackground = true,
+                state = state,
+                uiInstanceId = nextUiInstanceId(),
+            )
             visibleInfos.add(0, info)
         } else {
-            handleExistingError(errorInfoIndex, errorSource)
+            handleExistingError(errorInfoIndex, errorSource, willRetryInBackground = true)
         }
     }
 
@@ -294,24 +305,39 @@ private class AchievementUpdatesListState {
         }
     }
 
-    private fun handleExistingError(errorInfoIndex: Int, newErrorSource: AchievementInfo.ServerCommunicationFailed.ErrorSource) {
+    private fun handleExistingError(
+        errorInfoIndex: Int,
+        newErrorSource: AchievementInfo.ServerCommunicationFailed.ErrorSource,
+        willRetryInBackground: Boolean,
+    ) {
         // Update error reason on existing error information to notify the user that there was another error
         val errorInfo = visibleInfos[errorInfoIndex] as AchievementInfo.ServerCommunicationFailed
-        visibleInfos[errorInfoIndex] = errorInfo.copy(source = newErrorSource).also {
+        visibleInfos[errorInfoIndex] = errorInfo.copy(
+            source = newErrorSource,
+            willRetryInBackground = willRetryInBackground,
+        ).also {
             it.state.show()
         }
     }
 
     private fun handleLeaderboardAttemptStarted(event: RAEventUi.LeaderboardAttemptStarted) {
-        val state = AchievementInfoState {
-            visibleInfos.removeFirst { (it as? AchievementInfo.LeaderboardAttempt)?.leaderboard?.id == event.leaderboard.id }
+        visibleInfos.removeAll {
+            val shouldRemove = (it as? AchievementInfo.LeaderboardAttempt)?.leaderboard?.id == event.leaderboard.id
+            if (shouldRemove) {
+                it.state.dismiss()
+            }
+            shouldRemove
         }
-        visibleInfos.add(0, AchievementInfo.LeaderboardAttempt(event.leaderboard, event.gameIcon, "", state))
+
+        val state = AchievementInfoState {
+            visibleInfos.removeFirst { (it as? AchievementInfo.LeaderboardAttempt)?.key == event.key }
+        }
+        visibleInfos.add(0, AchievementInfo.LeaderboardAttempt(event.key, event.leaderboard, event.gameIcon, "", state, nextUiInstanceId()))
     }
 
     private fun handleLeaderboardAttemptUpdated(event: RAEventUi.LeaderboardAttemptUpdated) {
         val attemptIndex = visibleInfos.indexOfFirst {
-            (it as? AchievementInfo.LeaderboardAttempt)?.leaderboard?.id == event.leaderboardId
+            (it as? AchievementInfo.LeaderboardAttempt)?.key == event.key
         }
 
         if (attemptIndex != -1) {
@@ -320,25 +346,77 @@ private class AchievementUpdatesListState {
         }
     }
 
-    private fun handleLeaderboardEntrySubmitted(event: RAEventUi.LeaderboardEntrySubmitted) {
-        // Dismiss any existing leaderboard attempt before showing completion UI
-        val existingAttempt = visibleInfos.firstOrNull {
-            (it as? AchievementInfo.LeaderboardAttempt)?.leaderboard?.id == event.leaderboardId
+    private fun handleLeaderboardSubmissionPending(event: RAEventUi.LeaderboardSubmissionPending) {
+        visibleInfos.filterIsInstance<AchievementInfo.LeaderboardAttempt>()
+            .firstOrNull { it.key == event.key }
+            ?.state
+            ?.dismiss()
+
+        visibleInfos.removeAll {
+            val pending = it as? AchievementInfo.LeaderboardSubmissionPending
+            val shouldRemove = pending?.key == event.key
+            if (shouldRemove) pending.state.dismiss()
+            shouldRemove
         }
-        existingAttempt?.state?.dismiss()
 
         val state = AchievementInfoState {
-            visibleInfos.removeFirst { (it as? AchievementInfo.LeaderboardEntrySubmitted)?.leaderboardId == event.leaderboardId }
+            visibleInfos.removeFirst { (it as? AchievementInfo.LeaderboardSubmissionPending)?.key == event.key }
         }
-        val info = AchievementInfo.LeaderboardEntrySubmitted(event.leaderboardId, event.title, event.gameIcon, event.formattedScore, event.rank, event.numberOfEntries, state)
+        visibleInfos.add(
+            0,
+            AchievementInfo.LeaderboardSubmissionPending(
+                key = event.key,
+                title = event.title,
+                gameIcon = event.gameIcon,
+                trackerDisplay = event.trackerDisplay,
+                state = state,
+                uiInstanceId = nextUiInstanceId(),
+            )
+        )
+    }
+
+    private fun handleLeaderboardEntrySubmitted(event: RAEventUi.LeaderboardEntrySubmitted) {
+        // Dismiss any existing leaderboard attempt before showing completion UI
+        visibleInfos.firstOrNull {
+            val attempt = it as? AchievementInfo.LeaderboardAttempt
+            attempt != null && event.matches(attempt.key)
+        }?.state?.dismiss()
+        visibleInfos.firstOrNull {
+            val pending = it as? AchievementInfo.LeaderboardSubmissionPending
+            pending != null && event.matches(pending.key)
+        }?.state?.dismiss()
+
+        val state = AchievementInfoState {
+            visibleInfos.removeFirst {
+                val submitted = it as? AchievementInfo.LeaderboardEntrySubmitted
+                submitted != null && event.matches(submitted.attemptKey, submitted.leaderboardId)
+            }
+        }
+        val info = AchievementInfo.LeaderboardEntrySubmitted(
+            event.leaderboardId,
+            event.attemptKey,
+            event.title,
+            event.gameIcon,
+            event.submittedScore,
+            event.bestScore,
+            event.rank,
+            event.numberOfEntries,
+            state,
+            nextUiInstanceId(),
+        )
         visibleInfos.add(0, info)
     }
 
     private fun handleLeaderboardEntrySubmitError(event: RAEventUi.LeaderboardEntrySubmitError) {
         val attempt = visibleInfos.firstOrNull {
-            (it as? AchievementInfo.LeaderboardAttempt)?.leaderboard?.id == event.leaderboardId
+            val leaderboardAttempt = it as? AchievementInfo.LeaderboardAttempt
+            leaderboardAttempt != null && event.matches(leaderboardAttempt.key)
         } as? AchievementInfo.LeaderboardAttempt
         attempt?.state?.dismiss()
+        visibleInfos.firstOrNull {
+            val pending = it as? AchievementInfo.LeaderboardSubmissionPending
+            pending != null && event.matches(pending.key)
+        }?.state?.dismiss()
         if (attempt != null) {
             addLeaderboardAttemptResult(attempt, AchievementInfo.IndicatorResult.FAILURE)
         }
@@ -350,18 +428,38 @@ private class AchievementUpdatesListState {
             val state = AchievementInfoState {
                 visibleInfos.removeFirst { it is AchievementInfo.ServerCommunicationFailed }
             }
-            val info = AchievementInfo.ServerCommunicationFailed(errorSource, state)
+            val info = AchievementInfo.ServerCommunicationFailed(
+                source = errorSource,
+                willRetryInBackground = event.willRetryInBackground,
+                state = state,
+                uiInstanceId = nextUiInstanceId(),
+            )
             visibleInfos.add(0, info)
         } else {
-            handleExistingError(errorInfoIndex, errorSource)
+            handleExistingError(
+                errorInfoIndex,
+                errorSource,
+                event.willRetryInBackground,
+            )
         }
     }
 
     private fun handleLeaderboardAttemptCancelled(event: RAEventUi.LeaderboardAttemptCancelled) {
         val attempt = visibleInfos.firstOrNull {
-            (it as? AchievementInfo.LeaderboardAttempt)?.leaderboard?.id == event.leaderboardId
+            val leaderboardAttempt = it as? AchievementInfo.LeaderboardAttempt
+            leaderboardAttempt != null && (
+                event.attemptKey?.let { key -> leaderboardAttempt.key == key }
+                    ?: (leaderboardAttempt.leaderboard.id == event.leaderboardId)
+                )
         } as? AchievementInfo.LeaderboardAttempt
         attempt?.state?.dismiss()
+        visibleInfos.firstOrNull {
+            val pending = it as? AchievementInfo.LeaderboardSubmissionPending
+            pending != null && (
+                event.attemptKey?.let { key -> pending.key == key }
+                    ?: (pending.key.leaderboardId == event.leaderboardId)
+                )
+        }?.state?.dismiss()
         if (attempt != null) {
             addLeaderboardAttemptResult(attempt, AchievementInfo.IndicatorResult.FAILURE)
         }
@@ -369,7 +467,7 @@ private class AchievementUpdatesListState {
 
     private fun handleLeaderboardTrackerHidden(event: RAEventUi.LeaderboardTrackerHidden) {
         val attempt = visibleInfos.firstOrNull {
-            (it as? AchievementInfo.LeaderboardAttempt)?.leaderboard?.id == event.leaderboardId
+            (it as? AchievementInfo.LeaderboardAttempt)?.key == event.key
         }
         attempt?.state?.dismiss()
     }
@@ -427,6 +525,7 @@ private class AchievementUpdatesListState {
             target = event.target,
             progress = event.progress,
             state = state,
+            uiInstanceId = nextUiInstanceId(),
         )
         visibleInfos.add(0, progressInfo)
     }
@@ -435,88 +534,150 @@ private class AchievementUpdatesListState {
         achievement: RAAchievement,
         result: AchievementInfo.IndicatorResult,
     ) {
+        visibleInfos.removeAll {
+            val resultInfo = it as? AchievementInfo.ChallengeResult
+            val shouldRemove = resultInfo?.achievement?.id == achievement.id && resultInfo.result == result
+            if (shouldRemove) {
+                resultInfo.state.dismiss()
+            }
+            shouldRemove
+        }
+
         val state = AchievementInfoState {
             visibleInfos.removeFirst {
                 val resultInfo = it as? AchievementInfo.ChallengeResult
                 resultInfo?.achievement?.id == achievement.id && resultInfo.result == result
             }
         }
-        visibleInfos.add(0, AchievementInfo.ChallengeResult(achievement, result, state))
+        visibleInfos.add(0, AchievementInfo.ChallengeResult(achievement, result, state, nextUiInstanceId()))
     }
 
     private fun addLeaderboardAttemptResult(
         attempt: AchievementInfo.LeaderboardAttempt,
         result: AchievementInfo.IndicatorResult,
     ) {
+        visibleInfos.removeAll {
+            val resultInfo = it as? AchievementInfo.LeaderboardAttemptResult
+            val shouldRemove = resultInfo?.key == attempt.key && resultInfo.result == result
+            if (shouldRemove) {
+                resultInfo.state.dismiss()
+            }
+            shouldRemove
+        }
+
         val state = AchievementInfoState {
             visibleInfos.removeFirst {
                 val resultInfo = it as? AchievementInfo.LeaderboardAttemptResult
-                resultInfo?.leaderboard?.id == attempt.leaderboard.id && resultInfo.result == result
+                resultInfo?.key == attempt.key && resultInfo.result == result
             }
         }
         visibleInfos.add(
             0,
             AchievementInfo.LeaderboardAttemptResult(
+                key = attempt.key,
                 leaderboard = attempt.leaderboard,
                 gameIcon = attempt.gameIcon,
                 currentValue = attempt.currentValue,
                 result = result,
                 state = state,
+                uiInstanceId = nextUiInstanceId(),
             )
         )
     }
+
+    private fun nextUiInstanceId(): Long = nextInfoInstanceId++
+}
+
+private fun RAEventUi.LeaderboardEntrySubmitted.matches(key: LeaderboardAttemptKey): Boolean {
+    return attemptKey?.let { it == key } ?: (leaderboardId == key.leaderboardId)
+}
+
+private fun RAEventUi.LeaderboardEntrySubmitted.matches(
+    candidateAttemptKey: LeaderboardAttemptKey?,
+    candidateLeaderboardId: Long,
+): Boolean {
+    return attemptKey?.let { it == candidateAttemptKey } ?: (leaderboardId == candidateLeaderboardId)
+}
+
+private fun RAEventUi.LeaderboardEntrySubmitError.matches(key: LeaderboardAttemptKey): Boolean {
+    return attemptKey?.let { it == key } ?: (leaderboardId == key.leaderboardId)
 }
 
 internal sealed class AchievementInfo {
 
     abstract val state: AchievementInfoState
+    abstract val uiInstanceId: Long
     
-    data class AchievementPrimed(val achievement: RAAchievement, override val state: AchievementInfoState) : AchievementInfo()
+    data class AchievementPrimed(
+        val achievement: RAAchievement,
+        override val state: AchievementInfoState,
+        override val uiInstanceId: Long,
+    ) : AchievementInfo()
 
     data class AchievementProgress(
         val achievement: RAAchievement,
         val current: Int,
         val target: Int,
         val progress: String,
-        override val state: AchievementInfoState
+        override val state: AchievementInfoState,
+        override val uiInstanceId: Long,
     ) : AchievementInfo() {
         fun relativeProgress() = current.toFloat() / target
     }
 
     data class LeaderboardAttempt(
+        val key: LeaderboardAttemptKey,
         val leaderboard: RALeaderboard,
         val gameIcon: URL,
         val currentValue: String,
         override val state: AchievementInfoState,
+        override val uiInstanceId: Long,
     ) : AchievementInfo()
 
     data class LeaderboardAttemptResult(
+        val key: LeaderboardAttemptKey,
         val leaderboard: RALeaderboard,
         val gameIcon: URL,
         val currentValue: String,
         val result: IndicatorResult,
         override val state: AchievementInfoState,
+        override val uiInstanceId: Long,
+    ) : AchievementInfo()
+
+    data class LeaderboardSubmissionPending(
+        val key: LeaderboardAttemptKey,
+        val title: String,
+        val gameIcon: URL?,
+        val trackerDisplay: String,
+        override val state: AchievementInfoState,
+        override val uiInstanceId: Long,
     ) : AchievementInfo()
 
     data class LeaderboardEntrySubmitted(
         val leaderboardId: Long,
+        val attemptKey: LeaderboardAttemptKey?,
         val title: String,
-        val gameIcon: URL,
-        val formattedScore: String,
-        val rank: Int,
-        val numberOfEntries: Int,
+        val gameIcon: URL?,
+        val submittedScore: String,
+        val bestScore: String?,
+        val rank: Long,
+        val numberOfEntries: Long,
         override val state: AchievementInfoState,
+        override val uiInstanceId: Long,
     ) : AchievementInfo()
 
     data class ChallengeResult(
         val achievement: RAAchievement,
         val result: IndicatorResult,
         override val state: AchievementInfoState,
+        override val uiInstanceId: Long,
     ) : AchievementInfo()
 
     data class ServerCommunicationFailed(
         val source: ErrorSource,
+        val willRetryInBackground: Boolean,
         override val state: AchievementInfoState,
+        override val uiInstanceId: Long,
     ) : AchievementInfo() {
 
         sealed class ErrorSource {

@@ -34,6 +34,7 @@ import me.magnum.rcheevosapi.model.RALeaderboardRanking
 import me.magnum.rcheevosapi.model.RALeaderboardRankingEntry
 import me.magnum.rcheevosapi.model.RASubmitLeaderboardEntryResponse
 import me.magnum.rcheevosapi.model.RAUserAuth
+import me.magnum.rcheevosapi.model.RAUserProfile
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
@@ -54,12 +55,12 @@ class RAApi(
     private val okHttpClient: OkHttpClient,
     private val json: Json,
     private val userAuthStore: RAUserAuthStore,
+    private val userProfileStore: RAUserProfileStore,
     private val signatureProvider: RASignatureProvider,
+    private val hostUrlProvider: RAHostUrlProvider,
 ) {
 
     companion object {
-        private const val BASE_URL = "https://retroachievements.org/dorequest.php"
-
         private const val PARAMETER_USER = "u"
         private const val PARAMETER_PASSWORD = "p"
         private const val PARAMETER_TOKEN = "t"
@@ -96,6 +97,7 @@ class RAApi(
 
     suspend fun login(username: String, password: String): Result<Unit> {
         userAuthStore.clearUserAuth()
+        userProfileStore.clearUserProfile()
         return get<UserLoginDto>(
             mapOf(
                 PARAMETER_REQUEST to REQUEST_LOGIN,
@@ -105,7 +107,26 @@ class RAApi(
             clearTokenOnUnauthorized = false,
         ).onSuccess {
             userAuthStore.storeUserAuth(RAUserAuth.Authenticated(it.user, it.token))
+            userProfileStore.storeUserProfile(RAUserProfile(it.user, it.score, it.softcoreScore))
         }.map { }
+    }
+
+    suspend fun refreshUserProfile(): Result<RAUserProfile> {
+        val userAuth = userAuthStore.getUserAuth() as? RAUserAuth.Authenticated
+            ?: return Result.failure(UserNotAuthenticatedException())
+
+        return get<UserLoginDto>(
+            mapOf(
+                PARAMETER_REQUEST to REQUEST_LOGIN,
+                PARAMETER_USER to userAuth.username,
+                PARAMETER_TOKEN to userAuth.token,
+            ),
+            clearTokenOnUnauthorized = false,
+        ).map {
+            RAUserProfile(it.user, it.score, it.softcoreScore)
+        }.onSuccess {
+            userProfileStore.storeUserProfile(it)
+        }
     }
 
     suspend fun getGameHashList(): Result<Map<String, RAGameId>> {
@@ -176,7 +197,22 @@ class RAApi(
     ): Result<RAAwardAchievementResponse> {
         val userAuth = userAuthStore.getUserAuth() as? RAUserAuth.Authenticated
             ?: return Result.failure(UserNotAuthenticatedException())
+        return awardAchievementForAuthentication(
+            achievementId = achievementId,
+            forHardcoreMode = forHardcoreMode,
+            userAuth = userAuth,
+            gameHash = gameHash,
+            offsetSeconds = offsetSeconds,
+        )
+    }
 
+    suspend fun awardAchievementForAuthentication(
+        achievementId: Long,
+        forHardcoreMode: Boolean,
+        userAuth: RAUserAuth.Authenticated,
+        gameHash: String? = null,
+        offsetSeconds: Long? = null,
+    ): Result<RAAwardAchievementResponse> {
         val normalizedOffsetSeconds = offsetSeconds
             ?.coerceIn(0L, MAX_AWARD_OFFSET_SECONDS)
             ?.takeIf { it > 0L }
@@ -215,7 +251,11 @@ class RAApi(
             RAAwardAchievementResponse(
                 achievementAwarded = it.success,
                 remainingAchievements = it.achievementsRemaining,
+                score = it.score.toLong(),
+                softcoreScore = it.softcoreScore.toLong(),
             )
+        }.onSuccess {
+            userProfileStore.updateUserScores(userAuth.username, it.score, it.softcoreScore)
         }
     }
 
@@ -226,7 +266,20 @@ class RAApi(
     ): Result<RASubmitLeaderboardEntryResponse> {
         val userAuth = userAuthStore.getUserAuth() as? RAUserAuth.Authenticated
             ?: return Result.failure(UserNotAuthenticatedException())
+        return submitLeaderboardEntryForAuthentication(
+            leaderboardId = leaderboardId,
+            value = value,
+            userAuth = userAuth,
+            gameHash = gameHash,
+        )
+    }
 
+    suspend fun submitLeaderboardEntryForAuthentication(
+        leaderboardId: Long,
+        value: Int,
+        userAuth: RAUserAuth.Authenticated,
+        gameHash: String? = null,
+    ): Result<RASubmitLeaderboardEntryResponse> {
         val signature = signatureProvider.provideLeaderboardSignature(leaderboardId, value, userAuth)
 
         val parameters = mutableMapOf(
@@ -321,8 +374,9 @@ class RAApi(
         clearTokenOnUnauthorized: Boolean = true,
     ): Result<T> = withContext(Dispatchers.IO) {
         val request = buildGetRequest(parameters)
+        val requestAuthentication = getRequestAuthentication(parameters)
         suspendRunCatching {
-            executeRequest(request, clearTokenOnUnauthorized)
+            executeRequest(request, requestAuthentication, clearTokenOnUnauthorized)
         }.suspendMapCatching { response ->
             response.use {
                 parseResponse(responseClass, response, errorHandler)
@@ -344,8 +398,9 @@ class RAApi(
         errorHandler: (String?) -> Unit = { throw UnsuccessfulRequestException(it ?: "Unknown reason") },
     ): Result<T> = withContext(Dispatchers.IO) {
         val request = buildPostRequest(parameters)
+        val requestAuthentication = getRequestAuthentication(parameters)
         suspendRunCatching {
-            executeRequest(request)
+            executeRequest(request, requestAuthentication)
         }.suspendMapCatching { response ->
             response.use {
                 parseResponse(responseClass, response, errorHandler)
@@ -377,13 +432,7 @@ class RAApi(
     }
 
     private fun buildHttpErrorMessage(response: Response, body: String): String {
-        val statusMessage = response.message.ifBlank { "no status message" }
-        val bodySummary = body
-            .replace("\r", "\\r")
-            .replace("\n", "\\n")
-            .take(200)
-            .ifBlank { "empty body" }
-        return "HTTP ${response.code}: $statusMessage; body=$bodySummary"
+        return "HTTP ${response.code}; body_bytes=${body.toByteArray().size}"
     }
 
     private fun buildGetRequest(parameters: Map<String, String>): Request {
@@ -391,7 +440,7 @@ class RAApi(
             "${URLEncoder.encode(it.key, "utf-8")}=${URLEncoder.encode(it.value, "utf-8")}"
         }.joinToString(separator = "&")
 
-        val url = "$BASE_URL?$query"
+        val url = "${hostUrlProvider.getApiUrl()}?$query"
 
         return Request.Builder()
             .get()
@@ -406,11 +455,21 @@ class RAApi(
 
         return Request.Builder()
             .post(data.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
-            .url(BASE_URL)
+            .url(hostUrlProvider.getApiUrl())
             .build()
     }
 
-    private suspend fun executeRequest(request: Request, clearTokenOnUnauthorized: Boolean = true): Response = suspendCancellableCoroutine { continuation ->
+    private fun getRequestAuthentication(parameters: Map<String, String>): RAUserAuth.Authenticated? {
+        val username = parameters[PARAMETER_USER] ?: return null
+        val token = parameters[PARAMETER_TOKEN] ?: return null
+        return RAUserAuth.Authenticated(username, token)
+    }
+
+    private suspend fun executeRequest(
+        request: Request,
+        requestAuthentication: RAUserAuth.Authenticated?,
+        clearTokenOnUnauthorized: Boolean = true,
+    ): Response = suspendCancellableCoroutine { continuation ->
         val call = okHttpClient.newCall(request)
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
@@ -419,8 +478,11 @@ class RAApi(
 
             override fun onResponse(call: Call, response: Response) {
                 if (response.code == 401 && clearTokenOnUnauthorized) {
+                    response.close()
                     runBlocking {
-                        userAuthStore.clearUserToken()
+                        requestAuthentication?.let {
+                            userAuthStore.clearUserTokenIfMatches(it.username, it.token)
+                        }
                     }
                     continuation.resumeWithException(UserTokenExpiredException())
                 } else {
@@ -442,9 +504,13 @@ class RAApi(
         return try {
             Json.parseToJsonElement(body).jsonObject
         } catch (exception: SerializationException) {
-            throw UnsuccessfulRequestException("RA response is not valid JSON: ${body.take(200)}")
+            throw UnsuccessfulRequestException(
+                "RA response is not valid JSON; body_bytes=${body.toByteArray().size}",
+            )
         } catch (exception: IllegalArgumentException) {
-            throw UnsuccessfulRequestException("RA response is not a JSON object: ${body.take(200)}")
+            throw UnsuccessfulRequestException(
+                "RA response is not a JSON object; body_bytes=${body.toByteArray().size}",
+            )
         }
     }
 

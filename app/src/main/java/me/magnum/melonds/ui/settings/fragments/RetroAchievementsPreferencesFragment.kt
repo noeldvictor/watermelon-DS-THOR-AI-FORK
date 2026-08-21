@@ -1,5 +1,7 @@
 package me.magnum.melonds.ui.settings.fragments
 
+import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
 import android.view.ContextThemeWrapper
 import android.view.LayoutInflater
@@ -10,6 +12,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.preference.Preference
+import androidx.preference.ListPreference
 import androidx.preference.SwitchPreference
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.combine
@@ -20,14 +23,22 @@ import me.magnum.melonds.databinding.DialogRetroachievementsLoginBinding
 import me.magnum.melonds.extensions.addOnPreferenceChangeListener
 import me.magnum.melonds.ui.common.LoadingDialog
 import me.magnum.melonds.ui.settings.PreferenceFragmentTitleProvider
+import me.magnum.melonds.ui.settings.SettingsActivity
 import me.magnum.melonds.ui.settings.flow.observeAsFlow
 import me.magnum.melonds.ui.settings.model.RetroAchievementsAccountState
+import me.magnum.melonds.ui.settings.preferences.RetroAchievementsProfilePreference
 import me.magnum.melonds.ui.settings.viewmodel.RetroAchievementsSettingsViewModel
+import me.magnum.melonds.common.retroachievements.RetroAchievementsEndpointProvider
+import me.magnum.melonds.common.retroachievements.RetroAchievementsEndpointSnapshot
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class RetroAchievementsPreferencesFragment : BasePreferenceFragment(), PreferenceFragmentTitleProvider {
 
     private val viewModel by viewModels<RetroAchievementsSettingsViewModel>()
+
+    @Inject
+    lateinit var endpointProvider: RetroAchievementsEndpointProvider
 
     private var loginProgressDialog: LoadingDialog? = null
 
@@ -35,14 +46,18 @@ class RetroAchievementsPreferencesFragment : BasePreferenceFragment(), Preferenc
         setPreferencesFromResource(R.xml.pref_retroachievements, rootKey)
 
         val accountPreference = findPreference<Preference>("ra_login")!!
+        val profilePreference = findPreference<RetroAchievementsProfilePreference>("ra_profile")!!
         val retroAchievementsEnabledPreference = findPreference<SwitchPreference>("ra_enabled")!!
         val hardcoreModePreference = findPreference<SwitchPreference>("ra_hardcore_enabled")!!
         val richPresencePreference = findPreference<SwitchPreference>("ra_rich_presence")!!
+        val offlineBackendPreference = findPreference<ListPreference>("ra_offline_backend")!!
+        val builtInOfflinePreference = findPreference<SwitchPreference>("ra_offline_softcore_enabled")!!
         val integrationPreferences = listOf(
             hardcoreModePreference,
             findPreference<SwitchPreference>("ra_unofficial_enabled")!!,
             findPreference<SwitchPreference>("ra_encore_enabled")!!,
-            findPreference<SwitchPreference>("ra_offline_softcore_enabled")!!,
+            offlineBackendPreference,
+            builtInOfflinePreference,
             findPreference<SwitchPreference>("ra_active_challenge_indicators")!!,
             findPreference<SwitchPreference>("ra_progress_indicators")!!,
             findPreference<SwitchPreference>("ra_leaderboard_indicators")!!,
@@ -50,21 +65,60 @@ class RetroAchievementsPreferencesFragment : BasePreferenceFragment(), Preferenc
 
         hardcoreModePreference.addOnPreferenceChangeListener { _, newValue ->
             val isEnabled = newValue as Boolean
+            if (!endpointProvider.allowHardcoreUserChoice(isEnabled)) {
+                Toast.makeText(
+                    requireContext(),
+                    R.string.ra_offline_proxy_hardcore_not_supported,
+                    Toast.LENGTH_LONG,
+                ).show()
+                return@addOnPreferenceChangeListener false
+            }
 
-            // Rich preference must be on when hardcore mode is enabled. As such, when hardcore is enabled, disable the preference and force it to be checked
-            richPresencePreference.isEnabled = !isEnabled
+            richPresencePreference.isVisible = !isEnabled
             if (isEnabled) {
                 richPresencePreference.isChecked = true
             }
             true
         }
 
+        offlineBackendPreference.addOnPreferenceChangeListener { _, newValue ->
+            val backend = me.magnum.melonds.domain.model.retroachievements.RetroAchievementsOfflineBackend
+                .fromPreference(newValue as? String)
+            endpointProvider.setSelectedBackend(backend)
+            if (backend == me.magnum.melonds.domain.model.retroachievements.RetroAchievementsOfflineBackend.RA_OFFLINE_PROXY &&
+                endpointProvider.currentSnapshot().apiUrl == null
+            ) {
+                Toast.makeText(
+                    requireContext(),
+                    R.string.ra_offline_proxy_not_active,
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+            true
+        }
+
         accountPreference.setOnPreferenceClickListener {
             val accountState = viewModel.accountState.value
+            val runtimeIdentityLocked = requireActivity().intent.getBooleanExtra(
+                SettingsActivity.KEY_RA_RUNTIME_IDENTITY_LOCKED,
+                false,
+            )
             when (accountState) {
                 is RetroAchievementsAccountState.LoggedIn -> showLogoutConfirmationDialog()
-                is RetroAchievementsAccountState.LoginExpired -> showLoginDialog(accountState.existingUsername)
-                RetroAchievementsAccountState.LoggedOut -> showLoginDialog(null)
+                is RetroAchievementsAccountState.LoginExpired -> {
+                    if (runtimeIdentityLocked) {
+                        showInGameAccountChangeBlockedDialog()
+                    } else {
+                        showLoginDialog(accountState.existingUsername)
+                    }
+                }
+                RetroAchievementsAccountState.LoggedOut -> {
+                    if (runtimeIdentityLocked) {
+                        showInGameAccountChangeBlockedDialog()
+                    } else {
+                        showLoginDialog(null)
+                    }
+                }
                 RetroAchievementsAccountState.Unknown -> {
                     // Do nothing until a proper state is known
                 }
@@ -103,19 +157,53 @@ class RetroAchievementsPreferencesFragment : BasePreferenceFragment(), Preferenc
 
         lifecycleScope.launch {
             lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.accountState.combine(viewModel.userProfile) { accountState, profile ->
+                    profile?.takeIf {
+                        accountState is RetroAchievementsAccountState.LoggedIn &&
+                            accountState.accountName == it.username
+                    }
+                }.collect(profilePreference::setProfile)
+            }
+        }
+
+        lifecycleScope.launch {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 val isLoggedInFlow = viewModel.accountState.map { it is RetroAchievementsAccountState.LoggedIn }
                 combine(
                     isLoggedInFlow,
                     retroAchievementsEnabledPreference.observeAsFlow(),
                     hardcoreModePreference.observeAsFlow(),
-                ) { isLoggedIn, isRetroAchievementsEnabled, isHardcoreEnabled ->
-                    Triple(isLoggedIn, isRetroAchievementsEnabled, isHardcoreEnabled)
-                }.collect { (isLoggedIn, isRetroAchievementsEnabled, isHardcoreEnabled) ->
+                    endpointProvider.snapshot,
+                ) { isLoggedIn, isRetroAchievementsEnabled, isHardcoreEnabled, endpoint ->
+                    EndpointPreferenceState(
+                        isLoggedIn,
+                        isRetroAchievementsEnabled,
+                        isHardcoreEnabled,
+                        endpoint,
+                    )
+                }.collect { state ->
+                    val isLoggedIn = state.isLoggedIn
+                    val isRetroAchievementsEnabled = state.isRetroAchievementsEnabled
+                    val isHardcoreEnabled = state.isHardcoreEnabled
                     val integrationOptionsEnabled = isLoggedIn && isRetroAchievementsEnabled
                     integrationPreferences.forEach { preference ->
-                        preference.isEnabled = integrationOptionsEnabled
+                        preference.isVisible = integrationOptionsEnabled
                     }
-                    richPresencePreference.isEnabled = integrationOptionsEnabled && !isHardcoreEnabled
+                    val builtInEffective =
+                        state.endpoint.backendEffective ==
+                            me.magnum.melonds.domain.model.retroachievements.RetroAchievementsOfflineBackend.BUILT_IN
+                    hardcoreModePreference.isVisible = integrationOptionsEnabled && builtInEffective
+                    builtInOfflinePreference.isVisible = integrationOptionsEnabled && builtInEffective
+                    richPresencePreference.isVisible =
+                        integrationOptionsEnabled && !isHardcoreEnabled && builtInEffective
+                    offlineBackendPreference.summary = when (state.endpoint.hostSource) {
+                        RetroAchievementsEndpointSnapshot.HostSource.OFFICIAL ->
+                            getString(R.string.ra_offline_backend_summary)
+                        RetroAchievementsEndpointSnapshot.HostSource.RA_OFFLINE_PROXY ->
+                            getString(R.string.ra_offline_proxy_active_summary)
+                        RetroAchievementsEndpointSnapshot.HostSource.RA_OFFLINE_PROXY_UNAVAILABLE ->
+                            getString(R.string.ra_offline_proxy_not_active)
+                    }
                 }
             }
         }
@@ -168,11 +256,41 @@ class RetroAchievementsPreferencesFragment : BasePreferenceFragment(), Preferenc
     }
 
     private fun showLogoutConfirmationDialog() {
+        val inGameRuntimeIdentityLocked =
+            requireActivity().intent.getBooleanExtra(SettingsActivity.KEY_IN_GAME, false) &&
+                requireActivity().intent.getBooleanExtra(
+                    SettingsActivity.KEY_RA_RUNTIME_IDENTITY_LOCKED,
+                    false,
+                )
+        val inGameLogoutSupported =
+            inGameRuntimeIdentityLocked &&
+                requireActivity().intent.getBooleanExtra(
+                    SettingsActivity.KEY_RA_IN_GAME_LOGOUT_SUPPORTED,
+                    false,
+                )
+        if (inGameRuntimeIdentityLocked && !inGameLogoutSupported) {
+            showInGameAccountChangeBlockedDialog()
+            return
+        }
         AlertDialog.Builder(requireContext())
             .setTitle(R.string.retroachievements_logout)
-            .setMessage(R.string.retroachievements_logout_confirmation)
+            .setMessage(
+                if (inGameLogoutSupported) {
+                    R.string.retroachievements_logout_confirmation_in_game
+                } else {
+                    R.string.retroachievements_logout_confirmation
+                },
+            )
             .setPositiveButton(R.string.retroachievements_logout) { dialog, _ ->
-                viewModel.logoutFromRetroAchievements()
+                if (inGameLogoutSupported) {
+                    requireActivity().setResult(
+                        Activity.RESULT_OK,
+                        Intent().putExtra(SettingsActivity.KEY_RA_LOGOUT_REQUESTED, true),
+                    )
+                    requireActivity().finish()
+                } else {
+                    viewModel.logoutFromRetroAchievements()
+                }
                 dialog.dismiss()
             }
             .setNegativeButton(R.string.cancel) { dialog, _ ->
@@ -181,5 +299,20 @@ class RetroAchievementsPreferencesFragment : BasePreferenceFragment(), Preferenc
             .show()
     }
 
+    private fun showInGameAccountChangeBlockedDialog() {
+        AlertDialog.Builder(requireContext())
+            .setTitle(R.string.retroachievements)
+            .setMessage(R.string.retroachievements_account_change_blocked_in_game)
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
     override fun getTitle() = getString(R.string.retroachievements)
+
+    private data class EndpointPreferenceState(
+        val isLoggedIn: Boolean,
+        val isRetroAchievementsEnabled: Boolean,
+        val isHardcoreEnabled: Boolean,
+        val endpoint: RetroAchievementsEndpointSnapshot,
+    )
 }

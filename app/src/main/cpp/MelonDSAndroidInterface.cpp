@@ -8,6 +8,7 @@
 #include "UriFileHandler.h"
 #include "MelonDS.h"
 #include "GPU3D_Vulkan.h"
+#include "renderer/VulkanSurfacePresenter.h"
 #include "OpenGLContext.h"
 #include "Platform.h"
 #include "renderer/FrameQueue.h"
@@ -74,6 +75,9 @@ void configureVulkanDriver(
     vulkanDriverConfiguration.CustomDriverDir = jStringToString(env, customVulkanDriverDir);
     vulkanDriverConfiguration.CustomDriverName = jStringToString(env, customVulkanDriverName);
     vulkanDriverConfiguration.DisplayName = jStringToString(env, customVulkanDriverDisplayName);
+
+    MelonDSAndroid::VulkanSurfacePresenter::clearPrewarmedRetroArchFilters();
+
     melonDS::VulkanDispatch::ConfigureDriver(vulkanDriverConfiguration);
     // a different driver may change the verdict, so probe again next time
     gVulkanRendererValidated.store(false, std::memory_order_release);
@@ -414,7 +418,8 @@ bool isVulkanRendererSupported()
     return result;
 }
 
-bool canInitializeVulkanRenderer()
+bool canInitializeVulkanRenderer(
+    melonDS::VulkanPipelineProfile pipelineProfile)
 {
     // the probe spins up a full VulkanOutput on the shared device, which
     // waits the device idle and compiles pipelines; re-running it while an
@@ -433,7 +438,8 @@ bool canInitializeVulkanRenderer()
         return false;
     }
 
-    MelonDSAndroid::VulkanOutput vulkanOutput;
+    MelonDSAndroid::VulkanOutput vulkanOutput(
+        pipelineProfile);
     if (!vulkanOutput.init())
     {
         melonDS::Platform::Log(melonDS::Platform::LogLevel::Error, "canInitializeVulkanRenderer: VulkanOutput::init failed");
@@ -550,9 +556,18 @@ Java_me_magnum_melonds_MelonDSAndroidInterface_getRendererCapabilities(JNIEnv* e
 }
 
 JNIEXPORT jboolean JNICALL
-Java_me_magnum_melonds_MelonDSAndroidInterface_canInitializeVulkanRendererNative(JNIEnv* env, jobject thiz)
+Java_me_magnum_melonds_MelonDSAndroidInterface_canInitializeVulkanRendererForProfileNative(
+    JNIEnv* env,
+    jobject thiz,
+    jboolean fastPathEnabled)
 {
-    return canInitializeVulkanRenderer() ? JNI_TRUE : JNI_FALSE;
+    const melonDS::VulkanPipelineProfile pipelineProfile =
+        fastPathEnabled == JNI_TRUE
+        ? melonDS::VulkanPipelineProfile::FastPath
+        : melonDS::VulkanPipelineProfile::Compatibility;
+    return canInitializeVulkanRenderer(pipelineProfile)
+        ? JNI_TRUE
+        : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL

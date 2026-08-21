@@ -33,6 +33,9 @@ import androidx.activity.viewModels
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.widget.SwitchCompat
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -60,9 +63,13 @@ import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
 import com.squareup.picasso.Picasso
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import me.magnum.melonds.MelonEmulator
 import me.magnum.melonds.R
 import me.magnum.melonds.common.PermissionHandler
@@ -73,9 +80,11 @@ import me.magnum.melonds.domain.model.DualScreenPreset
 import me.magnum.melonds.domain.model.ExternalDisplayMode
 import me.magnum.melonds.domain.model.FpsCounterPosition
 import me.magnum.melonds.domain.model.Rect
+import me.magnum.melonds.domain.model.RetroArchShaderSourceResolution
 import me.magnum.melonds.domain.model.SaveStateSlot
 import me.magnum.melonds.domain.model.VideoFiltering
 import me.magnum.melonds.domain.model.VideoRenderer
+import me.magnum.melonds.domain.model.retroachievements.RaPendingCounts
 import me.magnum.melonds.domain.model.layout.Insets
 import me.magnum.melonds.domain.model.layout.LayoutComponent
 import me.magnum.melonds.domain.model.layout.ScreenFold
@@ -85,6 +94,8 @@ import me.magnum.melonds.domain.model.ui.Orientation
 import me.magnum.melonds.domain.repositories.SettingsRepository
 import me.magnum.melonds.extensions.insetsControllerCompat
 import me.magnum.melonds.extensions.setLayoutOrientation
+import me.magnum.melonds.impl.ShaderCompatibilityLog
+import me.magnum.melonds.impl.ShaderCompileTimeStore
 import me.magnum.melonds.impl.emulator.LifecycleOwnerProvider
 import me.magnum.melonds.impl.emulator.debug.RendererDebugBridge
 import me.magnum.melonds.impl.layout.DeviceLayoutDisplayMapper
@@ -95,6 +106,9 @@ import me.magnum.melonds.parcelables.RomParcelable
 import me.magnum.melonds.ui.cheats.CheatsActivity
 import me.magnum.melonds.ui.common.rom.EmulatorLaunchValidatorDelegate
 import me.magnum.melonds.ui.emulator.component.EmulatorOverlayTracker
+import me.magnum.melonds.ui.emulator.component.RaPendingExitContext
+import me.magnum.melonds.ui.emulator.component.RaPendingModalState
+import me.magnum.melonds.ui.emulator.component.RaPendingSyncResult
 import me.magnum.melonds.ui.emulator.input.ConnectedControllerManager
 import me.magnum.melonds.ui.emulator.input.EmulatorRumbleManager
 import me.magnum.melonds.ui.emulator.input.FrontendInputHandler
@@ -105,6 +119,7 @@ import me.magnum.melonds.ui.emulator.model.EmulatorOverlay
 import me.magnum.melonds.ui.emulator.model.EmulatorState
 import me.magnum.melonds.ui.emulator.model.EmulatorUiEvent
 import me.magnum.melonds.ui.emulator.model.HardcorePendingExitChoice
+import me.magnum.melonds.ui.emulator.model.RaPendingSyncResultAction
 import me.magnum.melonds.ui.emulator.model.LaunchArgs
 import me.magnum.melonds.ui.emulator.model.OfflineAchievementsSyncChoice
 import me.magnum.melonds.ui.emulator.model.InGameRomSettingsMenuState
@@ -151,6 +166,14 @@ class EmulatorActivity : AppCompatActivity() {
         const val KEY_BOOT_FIRMWARE_ONLY = "boot_firmware_only"
         private const val STARTUP_PRESENTATION_REFRESH_ATTEMPTS = 24
         private const val STARTUP_PRESENTATION_REFRESH_INTERVAL_MS = 100L
+        private const val OVERLAY_FOCUS_ATTEMPTS = 12
+        private const val OVERLAY_FOCUS_RETRY_MS = 32L
+        private const val SHADER_DIAGNOSTICS_POLL_MS = 1500L
+        private const val DS_SCREEN_WIDTH = 256
+        private const val DS_FRAME_ATLAS_HEIGHT = 386
+        private const val SHADER_PREWARM_LAYOUT_TIMEOUT_MS = 2000L
+        private const val SHADER_PREWARM_LAYOUT_POLL_MS = 50L
+        private const val SHADER_PREWARM_MESSAGE_SETTLE_MS = 150L
         private const val LEDGER_EXPIRATION_DAY_MS = 24L * 60L * 60L * 1000L
 
         fun getRomEmulatorActivityIntent(context: Context, rom: Rom): Intent {
@@ -202,6 +225,9 @@ class EmulatorActivity : AppCompatActivity() {
     @Inject
     lateinit var settingsRepository: SettingsRepository
 
+    @Inject
+    lateinit var boxArtRepository: me.magnum.melonds.ui.romlist.boxart.BoxArtRepository
+
     private var presentation: ExternalPresentation? = null
 
     private lateinit var handler: Handler
@@ -233,6 +259,11 @@ class EmulatorActivity : AppCompatActivity() {
     private lateinit var melonTouchHandler: MelonTouchHandler
     private lateinit var nativeInputListener: INativeInputListener
     private var currentRuntimeRendererConfiguration: RuntimeRendererConfiguration? = null
+    private var lastOpenGlRetroArchFilterKey: String? = null
+    private var prewarmedOpenGlRetroArchFilterKey: String? = null
+    private var shaderDiagnosticsRunnable: Runnable? = null
+    @Inject lateinit var shaderCompatibilityLog: ShaderCompatibilityLog
+    @Inject lateinit var shaderCompileTimeStore: ShaderCompileTimeStore
     private var currentMainScreenBackground = me.magnum.melonds.domain.model.RuntimeBackground.None
     private var currentPresentationBackend = PresentationBackend.OPEN_GL
     private var startupPresentationRefreshRunnable: Runnable? = null
@@ -323,17 +354,27 @@ class EmulatorActivity : AppCompatActivity() {
             MelonEmulator.setFastForwardEnabled(fastForwardEnabled || fastForwardHoldPressed)
         }
     }
-    private val settingsLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        viewModel.onSettingsChanged()
+    private val settingsLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val logoutRequested =
+            result.resultCode == RESULT_OK &&
+                result.data?.getBooleanExtra(SettingsActivity.KEY_RA_LOGOUT_REQUESTED, false) == true
+        if (logoutRequested) {
+            viewModel.onRetroAchievementsLogoutRequested()
+        } else {
+            val pauseMenuStillOpen = pauseMenuState.value != null || activeOverlays.hasActiveOverlays()
+            viewModel.onSettingsChanged(resumeWhenFinished = !pauseMenuStillOpen)
+            if (pauseMenuStillOpen) {
+                requestOverlayHostFocus()
+            }
+        }
         setupSustainedPerformanceMode()
         setupFpsCounter()
         externalDisplayMode = settingsRepository.getExternalDisplayMode()
         updateDisplays()
-        viewModel.resumeEmulator()
     }
     private val romInputSettingsLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         viewModel.onRomCustomInputConfigEdited()
-        viewModel.resumeEmulator()
+        onReturnedFromRomSettingsActivity()
     }
     private val romLayoutSettingsLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == RESULT_OK) {
@@ -342,7 +383,7 @@ class EmulatorActivity : AppCompatActivity() {
                 ?.let { UUID.fromString(it) }
             viewModel.onRunningRomLayoutSelected(layoutId)
         }
-        viewModel.resumeEmulator()
+        onReturnedFromRomSettingsActivity()
     }
     private val cheatsLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         viewModel.onCheatsChanged()
@@ -364,6 +405,8 @@ class EmulatorActivity : AppCompatActivity() {
     private var offlineSyncChoiceDialog: AlertDialog? = null
     private var offlineSyncProgressDialog: AlertDialog? = null
     private var hardcorePendingExitDialog: AlertDialog? = null
+    private var raPendingSyncProgressDialog: AlertDialog? = null
+    private var raPendingSyncResultDialog: AlertDialog? = null
 
     private enum class PresentationBackend {
         OPEN_GL,
@@ -390,6 +433,64 @@ class EmulatorActivity : AppCompatActivity() {
     private val showAchievementList = mutableStateOf(false)
     private val showPendingSubmissionsDialog = mutableStateOf(false)
     private val showDualScreenPresets = mutableStateOf(false)
+    private val pauseMenuState = mutableStateOf<me.magnum.melonds.ui.emulator.model.PauseMenu?>(null)
+
+    private val showBootAnimation = mutableStateOf(true)
+    private val bootRomReady = mutableStateOf(false)
+    private val bootRomTitle = mutableStateOf<String?>(null)
+    private val bootRom = mutableStateOf<Rom?>(null)
+    private val bootBoxArtUrl = mutableStateOf<String?>(null)
+
+    private val rewindOverlayState = mutableStateOf<me.magnum.melonds.ui.emulator.rewind.model.RewindWindow?>(null)
+    private val bootStatus = mutableStateOf<String?>(null)
+
+    private data class SaveStatesOverlayData(
+        val slots: List<SaveStateSlot>,
+        val isSaving: Boolean,
+        val onSlotPicked: (SaveStateSlot) -> Unit,
+    )
+    private val saveStatesOverlayState = mutableStateOf<SaveStatesOverlayData?>(null)
+
+    private sealed interface ConsoleOverlayNode {
+        val title: String
+        data class Submenu(override val title: String, val entries: List<Pair<String, () -> Unit>>) : ConsoleOverlayNode
+        data class Choice(
+            override val title: String,
+            val labels: List<String>,
+            val selectedIndex: Int,
+            val onSelect: (Int) -> Unit,
+        ) : ConsoleOverlayNode
+    }
+    private val consoleOverlayStack = androidx.compose.runtime.mutableStateListOf<ConsoleOverlayNode>()
+    private var overlayFocusManager: androidx.compose.ui.focus.FocusManager? = null
+    private var lastOverlayHatX = 0f
+    private var lastOverlayHatY = 0f
+    private var lastPauseMenu: me.magnum.melonds.ui.emulator.model.PauseMenu? = null
+    private var rewindOpenedFromPauseMenu = false
+
+    private fun pushConsoleOverlay(node: ConsoleOverlayNode) {
+        activeOverlays.addActiveOverlay(EmulatorOverlay.PAUSE_MENU)
+        consoleOverlayStack.add(node)
+        requestOverlayHostFocus()
+    }
+
+    private fun popConsoleOverlay() {
+        if (consoleOverlayStack.isNotEmpty()) {
+            consoleOverlayStack.removeAt(consoleOverlayStack.lastIndex)
+        }
+        if (consoleOverlayStack.isEmpty() && pauseMenuState.value == null) {
+            reopenPauseMenu()
+        }
+    }
+
+    private fun reopenPauseMenu() {
+        val menu = lastPauseMenu
+        if (menu != null) {
+            pauseMenuState.value = menu
+        } else {
+            viewModel.resumeEmulator()
+        }
+    }
 
     private val activeOverlays = EmulatorOverlayTracker(
         onOverlaysCleared = {
@@ -503,9 +604,15 @@ class EmulatorActivity : AppCompatActivity() {
                         viewModel = achievementsViewModel,
                         onDismiss = {
                             activeOverlays.removeActiveOverlay(EmulatorOverlay.ACHIEVEMENTS_DIALOG)
-                            viewModel.resumeEmulator()
                             showAchievementList.value = false
-                        }
+                            presentation?.setInfoOverlayContent(null)
+                            reopenPauseMenu()
+                        },
+                        onAchievementFocused = { model ->
+                            presentation?.setInfoOverlayContent {
+                                me.magnum.melonds.ui.common.ExternalAchievementInfo(model)
+                            }
+                        },
                     )
                 }
 
@@ -525,68 +632,170 @@ class EmulatorActivity : AppCompatActivity() {
                     )
                 }
 
-                if (showDualScreenPresets.value) {
-                    val preset by viewModel.dualScreenPreset.collectAsState()
-                    val keepAspectRatio by viewModel.externalDisplayKeepAspectRatioEnabled.collectAsState()
-                    val integerScaleEnabled by viewModel.dualScreenIntegerScaleEnabled.collectAsState()
-                    val internalFillHeight by viewModel.dualScreenInternalFillHeightEnabled.collectAsState()
-                    val internalFillWidth by viewModel.dualScreenInternalFillWidthEnabled.collectAsState()
-                    val externalFillHeight by viewModel.dualScreenExternalFillHeightEnabled.collectAsState()
-                    val externalFillWidth by viewModel.dualScreenExternalFillWidthEnabled.collectAsState()
-                    val internalAlignmentOverride by viewModel.dualScreenInternalVerticalAlignmentOverride.collectAsState()
-                    val externalAlignmentOverride by viewModel.dualScreenExternalVerticalAlignmentOverride.collectAsState()
+            }
+        }
 
-                    DualScreenPresetsDialog(
-                        dualScreenPreset = preset,
-                        onDualScreenPresetSelected = { selectedPreset ->
-                            viewModel.setDualScreenPreset(selectedPreset)
-                            handler.post {
-                                applyDualScreenPresetSwapState(selectedPreset)
-                                updateRendererScreenAreas()
-                                presentation?.updateRendererScreenAreas()
-                            }
-                        },
-                        keepAspectRatio = keepAspectRatio,
-                        onKeepAspectRatioChanged = { enabled ->
-                            viewModel.setExternalDisplayKeepAspectRatioEnabled(enabled)
-                        },
-                        isDualScreenIntegerScaleEnabled = integerScaleEnabled,
-                        onDualScreenIntegerScaleChanged = { enabled ->
-                            viewModel.setDualScreenIntegerScaleEnabled(enabled)
-                        },
-                        internalFillHeight = internalFillHeight,
-                        onInternalFillHeightChanged = { enabled ->
-                            viewModel.setDualScreenInternalFillHeightEnabled(enabled)
-                        },
-                        internalFillWidth = internalFillWidth,
-                        onInternalFillWidthChanged = { enabled ->
-                            viewModel.setDualScreenInternalFillWidthEnabled(enabled)
-                        },
-                        externalFillHeight = externalFillHeight,
-                        onExternalFillHeightChanged = { enabled ->
-                            viewModel.setDualScreenExternalFillHeightEnabled(enabled)
-                        },
-                        externalFillWidth = externalFillWidth,
-                        onExternalFillWidthChanged = { enabled ->
-                            viewModel.setDualScreenExternalFillWidthEnabled(enabled)
-                        },
-                        internalVerticalAlignmentOverride = internalAlignmentOverride,
-                        onInternalVerticalAlignmentOverrideChanged = { alignment ->
-                            viewModel.setDualScreenInternalVerticalAlignmentOverride(alignment)
-                        },
-                        externalVerticalAlignmentOverride = externalAlignmentOverride,
-                        onExternalVerticalAlignmentOverrideChanged = { alignment ->
-                            viewModel.setDualScreenExternalVerticalAlignmentOverride(alignment)
-                        },
-                        onDismiss = {
-                            activeOverlays.removeActiveOverlay(EmulatorOverlay.PRESETS_DIALOG)
-                            viewModel.resumeEmulator()
-                            showDualScreenPresets.value = false
-                        },
-                    )
+        binding.layoutPauseMenu.setContent {
+            MelonTheme {
+                val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+                androidx.compose.runtime.SideEffect {
+                    overlayFocusManager = focusManager
+                }
+
+                val saveStatesData = saveStatesOverlayState.value
+                val topConsoleNode = consoleOverlayStack.lastOrNull()
+                val pauseMenu = pauseMenuState.value
+                val rewindWindow = rewindOverlayState.value
+
+                Box(Modifier.fillMaxSize()) {
+                when {
+                    rewindWindow != null -> {
+                        me.magnum.melonds.ui.emulator.ui.RewindOverlay(
+                            window = rewindWindow,
+                            onStateSelected = { state -> onRewindStateSelected(state) },
+                            onDismiss = { closeRewindWindow() },
+                        )
+                    }
+                    showDualScreenPresets.value -> {
+                        val preset by viewModel.dualScreenPreset.collectAsState()
+                        val keepAspectRatio by viewModel.externalDisplayKeepAspectRatioEnabled.collectAsState()
+                        val integerScaleEnabled by viewModel.dualScreenIntegerScaleEnabled.collectAsState()
+                        val internalFillHeight by viewModel.dualScreenInternalFillHeightEnabled.collectAsState()
+                        val internalFillWidth by viewModel.dualScreenInternalFillWidthEnabled.collectAsState()
+                        val externalFillHeight by viewModel.dualScreenExternalFillHeightEnabled.collectAsState()
+                        val externalFillWidth by viewModel.dualScreenExternalFillWidthEnabled.collectAsState()
+                        val internalAlignmentOverride by viewModel.dualScreenInternalVerticalAlignmentOverride.collectAsState()
+                        val externalAlignmentOverride by viewModel.dualScreenExternalVerticalAlignmentOverride.collectAsState()
+                        me.magnum.melonds.ui.emulator.ui.ConsolePresetsOverlay(
+                            dualScreenPreset = preset,
+                            onDualScreenPresetSelected = { selectedPreset ->
+                                viewModel.setDualScreenPreset(selectedPreset)
+                                handler.post {
+                                    applyDualScreenPresetSwapState(selectedPreset)
+                                    updateRendererScreenAreas()
+                                    presentation?.updateRendererScreenAreas()
+                                }
+                            },
+                            keepAspectRatio = keepAspectRatio,
+                            onKeepAspectRatioChanged = { enabled -> viewModel.setExternalDisplayKeepAspectRatioEnabled(enabled) },
+                            integerScaleEnabled = integerScaleEnabled,
+                            onIntegerScaleChanged = { enabled -> viewModel.setDualScreenIntegerScaleEnabled(enabled) },
+                            internalFillHeight = internalFillHeight,
+                            onInternalFillHeightChanged = { enabled -> viewModel.setDualScreenInternalFillHeightEnabled(enabled) },
+                            internalFillWidth = internalFillWidth,
+                            onInternalFillWidthChanged = { enabled -> viewModel.setDualScreenInternalFillWidthEnabled(enabled) },
+                            externalFillHeight = externalFillHeight,
+                            onExternalFillHeightChanged = { enabled -> viewModel.setDualScreenExternalFillHeightEnabled(enabled) },
+                            externalFillWidth = externalFillWidth,
+                            onExternalFillWidthChanged = { enabled -> viewModel.setDualScreenExternalFillWidthEnabled(enabled) },
+                            internalAlignment = internalAlignmentOverride,
+                            onInternalAlignmentChanged = { alignment -> viewModel.setDualScreenInternalVerticalAlignmentOverride(alignment) },
+                            externalAlignment = externalAlignmentOverride,
+                            onExternalAlignmentChanged = { alignment -> viewModel.setDualScreenExternalVerticalAlignmentOverride(alignment) },
+                            onBack = {
+                                activeOverlays.removeActiveOverlay(EmulatorOverlay.PRESETS_DIALOG)
+                                showDualScreenPresets.value = false
+                                reopenPauseMenu()
+                            },
+                        )
+                    }
+                    topConsoleNode != null -> {
+                        when (val node = topConsoleNode!!) {
+                            is ConsoleOverlayNode.Submenu -> me.magnum.melonds.ui.emulator.ui.ConsoleSubmenuOverlay(
+                                title = node.title,
+                                entries = node.entries.map { it.first },
+                                onEntrySelected = { index -> node.entries[index].second.invoke() },
+                                onDismiss = { popConsoleOverlay() },
+                            )
+                            is ConsoleOverlayNode.Choice -> me.magnum.melonds.ui.emulator.ui.ConsoleChoiceOverlay(
+                                title = node.title,
+                                options = node.labels,
+                                selectedIndex = node.selectedIndex,
+                                onOptionSelected = { index ->
+                                    node.onSelect(index)
+                                    popConsoleOverlay()
+                                },
+                                onBack = { popConsoleOverlay() },
+                            )
+                        }
+                    }
+                    saveStatesData != null -> {
+                        val emulatorState by viewModel.emulatorState.collectAsState()
+                        val currentRom = (emulatorState as? EmulatorState.RunningRom)?.rom
+                        me.magnum.melonds.ui.emulator.ui.SaveStatesOverlay(
+                            slots = saveStatesData.slots,
+                            isSaving = saveStatesData.isSaving,
+                            gameTitle = currentRom?.let { it.config.customName ?: it.name },
+                            onSlotPicked = { slot ->
+                                dismissSaveStatesOverlay()
+                                saveStatesData.onSlotPicked(slot)
+                            },
+                            onSlotDeleted = { slot ->
+                                viewModel.deleteSaveStateSlot(slot) { newSlots ->
+                                    saveStatesOverlayState.value = saveStatesData.copy(slots = newSlots)
+                                }
+                            },
+                            onDismiss = {
+                                dismissSaveStatesOverlay()
+                                reopenPauseMenu()
+                            },
+                        )
+                    }
+                    pauseMenu != null -> {
+                        val emulatorState by viewModel.emulatorState.collectAsState()
+                        val currentRom = (emulatorState as? EmulatorState.RunningRom)?.rom
+                        me.magnum.melonds.ui.emulator.ui.PauseMenuOverlay(
+                            pauseMenu = pauseMenu,
+                            rom = currentRom,
+                            achievementsSummary = null,
+                            onOptionSelected = { option ->
+                                val isTerminal = option == me.magnum.melonds.ui.emulator.rom.RomPauseMenuOption.RESET ||
+                                    option == me.magnum.melonds.ui.emulator.rom.RomPauseMenuOption.EXIT ||
+                                    option == me.magnum.melonds.ui.emulator.firmware.FirmwarePauseMenuOption.RESET ||
+                                    option == me.magnum.melonds.ui.emulator.firmware.FirmwarePauseMenuOption.EXIT
+                                val isViewOverlay = option == me.magnum.melonds.ui.emulator.rom.RomPauseMenuOption.REWIND
+                                if (isTerminal) {
+                                    dismissPauseMenu()
+                                } else if (isViewOverlay) {
+                                    pauseMenuState.value = null
+                                    rewindOpenedFromPauseMenu = true
+                                }
+                                viewModel.onPauseMenuOptionSelected(option)
+                            },
+                            onResume = {
+                                dismissPauseMenu()
+                                viewModel.resumeEmulator()
+                            },
+                        )
+                    }
+                    else -> Unit
+                }
+
+                if (showBootAnimation.value) {
+                    val rom = bootRom.value
+                    if (rom != null) {
+                        me.magnum.melonds.ui.emulator.ui.BootInfoOverlay(
+                            rom = rom,
+                            boxArtUrl = bootBoxArtUrl.value,
+                            statusText = bootStatus.value,
+                            romReady = bootRomReady.value,
+                            onFinished = { showBootAnimation.value = false },
+                        )
+                    } else {
+                        me.magnum.melonds.ui.emulator.ui.DsBootOverlay(
+                            half = me.magnum.melonds.ui.emulator.ui.DsBootScreenHalf.BOTH,
+                            romReady = bootRomReady.value,
+                            romTitle = bootRomTitle.value,
+                            statusText = bootStatus.value,
+                            onFinished = { showBootAnimation.value = false },
+                        )
+                    }
+                }
                 }
             }
         }
+        binding.layoutPauseMenu.isFocusable = true
+        binding.layoutPauseMenu.isFocusableInTouchMode = true
 
         lifecycleScope.launch {
             lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -640,6 +849,7 @@ class EmulatorActivity : AppCompatActivity() {
                 viewModel.runtimeRendererConfiguration.collectLatest {
                     currentRuntimeRendererConfiguration = it
                     ensurePresentationBackend(it?.renderer ?: viewModel.getConfiguredVideoRenderer())
+                    updateOpenGlRetroArchFilterConfiguration(it)
                     mainScreenRenderer.updateRendererConfiguration(it)
                     presentation?.updateRendererConfiguration(it)
                     updateRendererScreenAreas()
@@ -697,6 +907,16 @@ class EmulatorActivity : AppCompatActivity() {
                         ToastEvent.InternalError -> getString(R.string.emulator_stop_internal_error) to Toast.LENGTH_LONG
                         ToastEvent.OfflineAchievementsLedgerTampered -> getString(R.string.offline_ra_ledger_tampered_toast) to Toast.LENGTH_LONG
                         ToastEvent.OfflineAchievementsSyncFailed -> getString(R.string.offline_ra_sync_failed_toast) to Toast.LENGTH_LONG
+                        ToastEvent.PendingRaStateVerificationFailed ->
+                            getString(R.string.ra_pending_state_verification_failed) to Toast.LENGTH_LONG
+                        ToastEvent.RetroAchievementsAccountChangedInGame ->
+                            getString(R.string.retroachievements_account_changed_in_game) to Toast.LENGTH_LONG
+                        ToastEvent.RetroAchievementsLogoutFailed ->
+                            getString(R.string.retroachievements_logout_failed) to Toast.LENGTH_LONG
+                        ToastEvent.RAOfflineProxyNotActive ->
+                            getString(R.string.ra_offline_proxy_not_active) to Toast.LENGTH_LONG
+                        ToastEvent.RetroAchievementsProviderChangedRestartRequired ->
+                            getString(R.string.ra_offline_proxy_restart_required) to Toast.LENGTH_LONG
                         is ToastEvent.HardcoreOfflineUnsyncedWarning -> {
                             getString(R.string.offline_ra_hardcore_unsynced_warning_toast, it.pendingHardcoreCount) to Toast.LENGTH_LONG
                         }
@@ -803,14 +1023,23 @@ class EmulatorActivity : AppCompatActivity() {
                                 putExtra(SettingsActivity.KEY_LOCK_INPUT_MAPPING, it.romSettingsOverrides.controllerMapping)
                                 putExtra(SettingsActivity.KEY_LOCK_INPUT_LAYOUT, it.romSettingsOverrides.controllerLayout)
                                 putExtra(SettingsActivity.KEY_LOCK_VIDEO_FILTERING, it.romSettingsOverrides.videoFiltering)
+                                putExtra(
+                                    SettingsActivity.KEY_RA_RUNTIME_IDENTITY_LOCKED,
+                                    it.retroAchievementsRuntimeIdentityLocked,
+                                )
+                                putExtra(
+                                    SettingsActivity.KEY_RA_IN_GAME_LOGOUT_SUPPORTED,
+                                    it.retroAchievementsInGameLogoutSupported,
+                                )
                             }
                             settingsLauncher.launch(settingsIntent)
                         }
                         is EmulatorUiEvent.ShowPauseMenu -> showPauseMenu(it.pauseMenu)
                         is EmulatorUiEvent.ShowRewindWindow -> showRewindWindow(it.rewindWindow)
                         is EmulatorUiEvent.ShowRomSaveStates -> {
-                            showSaveStateSlotsDialog(it.saveStates) { slot ->
-                                if (it.reason == EmulatorUiEvent.ShowRomSaveStates.Reason.SAVING) {
+                            val isSaving = it.reason == EmulatorUiEvent.ShowRomSaveStates.Reason.SAVING
+                            showSaveStateSlotsDialog(it.saveStates, isSaving) { slot ->
+                                if (isSaving) {
                                     viewModel.saveStateToSlot(slot)
                                 } else {
                                     viewModel.loadStateFromSlot(slot)
@@ -828,6 +1057,7 @@ class EmulatorActivity : AppCompatActivity() {
                         EmulatorUiEvent.ShowDualScreenPresets -> {
                             activeOverlays.addActiveOverlay(EmulatorOverlay.PRESETS_DIALOG)
                             showDualScreenPresets.value = true
+                            requestOverlayHostFocus()
                         }
                         EmulatorUiEvent.ShowRendererDebugMenu -> showRendererDebugMenu()
                         is EmulatorUiEvent.ShowRomSettings -> showRomSettingsMenu(
@@ -846,9 +1076,6 @@ class EmulatorActivity : AppCompatActivity() {
                                 ledgerExpiresInMs = it.ledgerExpiresInMs,
                             )
                         }
-                        is EmulatorUiEvent.ShowHardcorePendingExitWarning -> {
-                            showHardcorePendingExitWarningDialog(it.pendingHardcoreCount)
-                        }
                         is EmulatorUiEvent.ShowOfflineAchievementsSyncProgress -> {
                             showOfflineAchievementsSyncProgressDialog(it.totalUnlockCount)
                         }
@@ -861,6 +1088,11 @@ class EmulatorActivity : AppCompatActivity() {
             }
         }
         lifecycleScope.launch {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.CREATED) {
+                viewModel.pendingRaModalState.collectLatest(::renderRaPendingModalState)
+            }
+        }
+        lifecycleScope.launch {
             lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.rumbleEvent.collect {
                     when (it) {
@@ -868,6 +1100,11 @@ class EmulatorActivity : AppCompatActivity() {
                         RumbleEvent.RumbleStop -> emulatorRumbleManager.stopRumbling()
                     }
                 }
+            }
+        }
+        lifecycleScope.launch {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.CREATED) {
+                viewModel.heavyShaderCompileRequest.collect(::showHeavyShaderCompileDialog)
             }
         }
         lifecycleScope.launch {
@@ -886,6 +1123,8 @@ class EmulatorActivity : AppCompatActivity() {
                             emulatorLaunchValidatorDelegate.validateFirmware(it.consoleType)
                         }
                         is EmulatorState.ValidatingRom -> {
+                            bootRomTitle.value = it.rom.config.customName ?: it.rom.name
+                            prepareBootExternalInfo(it.rom)
                             showLoadingState()
                             emulatorLaunchValidatorDelegate.validateRom(it.rom)
                         }
@@ -901,6 +1140,12 @@ class EmulatorActivity : AppCompatActivity() {
                         }
                         is EmulatorState.RunningRom,
                         is EmulatorState.RunningFirmware -> {
+                            prewarmOpenGlShadersIfNeeded()
+                            (it as? EmulatorState.RunningRom)?.let { running ->
+                                bootRomTitle.value = running.rom.config.customName ?: running.rom.name
+                            }
+                            bootRomReady.value = true
+                            presentation?.setInfoOverlayContent(null)
                             setupSustainedPerformanceMode()
                             setupFpsCounter()
                             binding.textLoading.isGone = true
@@ -909,7 +1154,10 @@ class EmulatorActivity : AppCompatActivity() {
                             binding.viewLayoutControls.isVisible = true
                             backPressedCallback.isEnabled = true
                             scheduleStartupPresentationRefreshes()
-                            if (!activeOverlays.hasActiveOverlays()) {
+                            if (
+                                !activeOverlays.hasActiveOverlays() &&
+                                viewModel.canResumeEmulatorFromLifecycle()
+                            ) {
                                 viewModel.resumeEmulator()
                             }
                         }
@@ -919,6 +1167,8 @@ class EmulatorActivity : AppCompatActivity() {
                             binding.textLoading.isGone = true
                             binding.progressLoading.isGone = true
                             binding.textLoadingDetail.isGone = true
+                            showBootAnimation.value = false
+                            presentation?.setInfoOverlayContent(null)
                             showRomLoadErrorDialog()
                         }
                         is EmulatorState.FirmwareLoadError -> {
@@ -927,6 +1177,8 @@ class EmulatorActivity : AppCompatActivity() {
                             binding.textLoading.isGone = true
                             binding.progressLoading.isGone = true
                             binding.textLoadingDetail.isGone = true
+                            showBootAnimation.value = false
+                            presentation?.setInfoOverlayContent(null)
                             showFirmwareLoadErrorDialog(it)
                         }
                         is EmulatorState.RomNotFoundError -> {
@@ -935,6 +1187,8 @@ class EmulatorActivity : AppCompatActivity() {
                             binding.textLoading.isGone = true
                             binding.progressLoading.isGone = true
                             binding.textLoadingDetail.isGone = true
+                            showBootAnimation.value = false
+                            presentation?.setInfoOverlayContent(null)
                             showRomNotFoundDialog(it.romPath)
                         }
                     }
@@ -974,6 +1228,9 @@ class EmulatorActivity : AppCompatActivity() {
         binding.viewLayoutControls.isInvisible = true
         binding.textFps.isGone = true
         binding.textLoading.isVisible = true
+        if (bootStatus.value == null) {
+            bootStatus.value = getString(R.string.info_loading)
+        }
     }
 
     private fun renderLoadingState(progress: VulkanCompileProgress?, raLoadStage: RetroAchievementsLoadStage? = null) {
@@ -983,6 +1240,7 @@ class EmulatorActivity : AppCompatActivity() {
             binding.progressLoading.isIndeterminate = true
             binding.textLoadingDetail.isVisible = true
             binding.textLoadingDetail.setText(R.string.info_refreshing_retroachievements_detail)
+            bootStatus.value = getString(R.string.info_refreshing_retroachievements_title)
             return
         }
 
@@ -991,6 +1249,7 @@ class EmulatorActivity : AppCompatActivity() {
             binding.progressLoading.isVisible = true
             binding.progressLoading.isIndeterminate = true
             binding.textLoadingDetail.isGone = true
+            bootStatus.value = getString(R.string.info_loading)
             return
         }
 
@@ -1005,6 +1264,9 @@ class EmulatorActivity : AppCompatActivity() {
         binding.progressLoading.isIndeterminate = true
         binding.textLoadingDetail.isVisible = true
         binding.textLoadingDetail.text = getVulkanCompileStageLabel(progress.stageId)
+        bootStatus.value = getString(
+            if (progress.stageId == 5) R.string.info_retroarch_compiling_title else R.string.info_vulkan_compiling_title,
+        )
     }
 
     private fun getVulkanCompileStageLabel(stageId: Int): String {
@@ -1053,19 +1315,161 @@ class EmulatorActivity : AppCompatActivity() {
         return resources.getQuantityString(R.plurals.offline_ra_ledger_expires_days, days, days)
     }
 
-    private fun showHardcorePendingExitWarningDialog(pendingHardcoreCount: Int) {
+    private fun showHardcorePendingExitWarningDialog(
+        requestId: Long,
+        pending: RaPendingCounts,
+        allowContinuePlaying: Boolean,
+    ) {
         hardcorePendingExitDialog?.dismiss()
-        hardcorePendingExitDialog = AlertDialog.Builder(this)
-            .setTitle(getString(R.string.offline_ra_hardcore_pending_exit_title))
-            .setMessage(getString(R.string.offline_ra_hardcore_pending_exit_message, pendingHardcoreCount))
+        activeOverlays.addActiveOverlay(EmulatorOverlay.RA_PENDING_EXIT)
+        val builder = AlertDialog.Builder(this)
+            .setTitle(getString(R.string.ra_pending_exit_title))
+            .setMessage(
+                getString(
+                    R.string.ra_pending_exit_message,
+                    pending.total,
+                    pending.achievementUnlocks,
+                    pending.leaderboardEntries,
+                ),
+            )
             .setCancelable(false)
-            .setPositiveButton(R.string.offline_ra_hardcore_try_sync_button) { _, _ ->
-                viewModel.submitHardcorePendingExitChoice(HardcorePendingExitChoice.TRY_SYNC_NOW)
+            .setPositiveButton(R.string.ra_pending_sync_and_exit) { _, _ ->
+                viewModel.submitHardcorePendingExitChoice(
+                    requestId,
+                    HardcorePendingExitChoice.SYNC_AND_EXIT,
+                )
             }
-            .setNegativeButton(R.string.offline_ra_hardcore_discard_exit_button) { _, _ ->
-                viewModel.submitHardcorePendingExitChoice(HardcorePendingExitChoice.DISCARD_AND_EXIT)
+            .setNegativeButton(R.string.ra_pending_discard_and_exit) { _, _ ->
+                viewModel.submitHardcorePendingExitChoice(
+                    requestId,
+                    HardcorePendingExitChoice.DISCARD_AND_EXIT,
+                )
             }
-            .show()
+        if (allowContinuePlaying) {
+            builder.setNeutralButton(R.string.offline_ra_continue_playing_button) { _, _ ->
+                viewModel.submitHardcorePendingExitChoice(
+                    requestId,
+                    HardcorePendingExitChoice.CONTINUE_PLAYING,
+                )
+            }
+        }
+        val dialog = builder.create()
+        dialog.setOnDismissListener {
+            if (hardcorePendingExitDialog === dialog) {
+                activeOverlays.removeActiveOverlay(EmulatorOverlay.RA_PENDING_EXIT)
+                hardcorePendingExitDialog = null
+            }
+        }
+        hardcorePendingExitDialog = dialog
+        dialog.show()
+    }
+
+    private fun showRaPendingSyncProgressDialog(pending: RaPendingCounts) {
+        raPendingSyncResultDialog?.dismiss()
+        raPendingSyncProgressDialog?.dismiss()
+        activeOverlays.addActiveOverlay(EmulatorOverlay.RA_PENDING_SYNC)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.ra_pending_syncing_title)
+            .setMessage(
+                getString(
+                    R.string.ra_pending_syncing_message,
+                    pending.total,
+                    pending.achievementUnlocks,
+                    pending.leaderboardEntries,
+                ),
+            )
+            .setCancelable(false)
+            .create()
+        dialog.setOnDismissListener {
+            if (raPendingSyncProgressDialog === dialog) {
+                activeOverlays.removeActiveOverlay(EmulatorOverlay.RA_PENDING_SYNC)
+                raPendingSyncProgressDialog = null
+            }
+        }
+        raPendingSyncProgressDialog = dialog
+        dialog.show()
+    }
+
+    private fun showRaPendingSyncResultDialog(
+        requestId: Long,
+        result: RaPendingSyncResult,
+        action: RaPendingSyncResultAction,
+    ) {
+        raPendingSyncProgressDialog?.dismiss()
+        raPendingSyncProgressDialog = null
+        raPendingSyncResultDialog?.dismiss()
+        activeOverlays.addActiveOverlay(EmulatorOverlay.RA_PENDING_SYNC)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.ra_pending_sync_result_title)
+            .setMessage(
+                getString(
+                    R.string.ra_pending_sync_result_message,
+                    result.submittedAchievements,
+                    result.submittedLeaderboardEntries,
+                    result.alreadyAccepted,
+                    result.failedAchievements,
+                    result.failedLeaderboardEntries,
+                    result.remaining.total,
+                    result.remaining.permanentFailures,
+                ),
+            )
+            .setCancelable(false)
+            .setPositiveButton(
+                when (action) {
+                    RaPendingSyncResultAction.REOPEN_PAUSE_MENU -> R.string.pause
+                    RaPendingSyncResultAction.RESUME_SESSION ->
+                        R.string.offline_ra_continue_playing_button
+                    RaPendingSyncResultAction.REOPEN_TERMINAL_EXIT ->
+                        R.string.ra_pending_review_submissions
+                },
+            ) { _, _ ->
+                viewModel.submitRaPendingSyncResultAction(requestId, action)
+            }
+            .create()
+        dialog.setOnDismissListener {
+            if (raPendingSyncResultDialog === dialog) {
+                activeOverlays.removeActiveOverlay(EmulatorOverlay.RA_PENDING_SYNC)
+                raPendingSyncResultDialog = null
+            }
+        }
+        raPendingSyncResultDialog = dialog
+        dialog.show()
+    }
+
+    private fun renderRaPendingModalState(state: RaPendingModalState) {
+        hardcorePendingExitDialog?.setOnDismissListener(null)
+        hardcorePendingExitDialog?.dismiss()
+        hardcorePendingExitDialog = null
+        raPendingSyncProgressDialog?.setOnDismissListener(null)
+        raPendingSyncProgressDialog?.dismiss()
+        raPendingSyncProgressDialog = null
+        raPendingSyncResultDialog?.setOnDismissListener(null)
+        raPendingSyncResultDialog?.dismiss()
+        raPendingSyncResultDialog = null
+        activeOverlays.removeActiveOverlay(EmulatorOverlay.RA_PENDING_EXIT)
+        activeOverlays.removeActiveOverlay(EmulatorOverlay.RA_PENDING_SYNC)
+
+        when (state) {
+            RaPendingModalState.None -> Unit
+            is RaPendingModalState.ExitPrompt -> {
+                showHardcorePendingExitWarningDialog(
+                    requestId = state.requestId,
+                    pending = state.pending,
+                    allowContinuePlaying =
+                        state.exitContext == RaPendingExitContext.RESUMABLE_SESSION,
+                )
+            }
+            is RaPendingModalState.Syncing -> {
+                showRaPendingSyncProgressDialog(state.pending)
+            }
+            is RaPendingModalState.Result -> {
+                showRaPendingSyncResultDialog(
+                    requestId = state.requestId,
+                    result = state.result,
+                    action = state.action,
+                )
+            }
+        }
     }
 
     private fun showOfflineAchievementsSyncProgressDialog(totalUnlockCount: Int) {
@@ -1147,7 +1551,33 @@ class EmulatorActivity : AppCompatActivity() {
 
                 show()
             }
+            if (showBootAnimation.value) {
+                showBootAnimationOnExternalDisplay()
+            }
             scheduleStartupPresentationRefreshes()
+        }
+    }
+
+    private fun showBootAnimationOnExternalDisplay() {
+        presentation?.setInfoOverlayContent {
+            me.magnum.melonds.ui.emulator.ui.DsBootOverlay(
+                half = me.magnum.melonds.ui.emulator.ui.DsBootScreenHalf.BOTH,
+                romReady = bootRomReady.value,
+                romTitle = bootRomTitle.value,
+                statusText = bootStatus.value,
+                onFinished = { presentation?.setInfoOverlayContent(null) },
+            )
+        }
+    }
+
+    private fun prepareBootExternalInfo(rom: Rom) {
+        bootRom.value = rom
+        bootBoxArtUrl.value = null
+        lifecycleScope.launch {
+            val url = runCatching { boxArtRepository.getBoxArtUrl(rom) }.getOrNull()
+            if (bootRom.value?.uri == rom.uri) {
+                bootBoxArtUrl.value = url
+            }
         }
     }
 
@@ -1186,8 +1616,12 @@ class EmulatorActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         choreographerFrameRenderer.startRendering()
+        startShaderDiagnosticsPolling()
 
-        if (!activeOverlays.hasActiveOverlays()) {
+        if (
+            !activeOverlays.hasActiveOverlays() &&
+            viewModel.canResumeEmulatorFromLifecycle()
+        ) {
             disableScreenTimeOut()
             viewModel.resumeEmulator()
         }
@@ -1324,6 +1758,7 @@ class EmulatorActivity : AppCompatActivity() {
             return
         }
         val areas = resolveMainScreenPresentationAreas()
+        updateOpenGlRetroArchFilterConfiguration(currentRuntimeRendererConfiguration)
         mainScreenRenderer.updateScreenAreas(
             areas.topScreenRect,
             areas.bottomScreenRect,
@@ -1414,6 +1849,7 @@ class EmulatorActivity : AppCompatActivity() {
 
         currentPresentationBackend = targetBackend
         frameRenderCoordinator = createFrameRenderCoordinator(targetBackend)
+        prewarmedOpenGlRetroArchFilterKey = null
         isFrameRenderCoordinatorStopped = false
         choreographerFrameRenderer = ChoreographerFrameRendererFactory.createFrameRenderer(frameRenderCoordinator)
 
@@ -1466,6 +1902,164 @@ class EmulatorActivity : AppCompatActivity() {
         startupPresentationRefreshRunnable?.let { handler.removeCallbacks(it) }
         startupPresentationRefreshRunnable = null
         startupPresentationRefreshAttempts = 0
+    }
+
+    private fun updateOpenGlRetroArchFilterConfiguration(configuration: RuntimeRendererConfiguration?) {
+        val enabled = configuration?.videoFiltering == VideoFiltering.RETROARCH &&
+            configuration.renderer != VideoRenderer.VULKAN
+        val presetPath = configuration?.retroArchShader?.presetPath.takeIf { enabled }
+        val parameterOverrides = if (enabled) {
+            configuration?.retroArchShader?.parameterOverrides
+                ?.entries
+                ?.joinToString(",") { "${it.key}=${it.value}" }
+        } else {
+            null
+        }
+        val clearHistory = enabled && configuration?.retroArchShader?.clearHistory == true
+        val sourceResolution = configuration?.retroArchShader?.sourceResolution?.name?.lowercase() ?: "vulkan_ir"
+        val layoutSize = if (enabled) resolveMaxShaderLayoutSize() else 0 to 0
+        val passCount = if (enabled) configuration?.retroArchShader?.passCount ?: 0 else 0
+
+        val key = "$enabled|$presetPath|$parameterOverrides|$sourceResolution|${layoutSize.first}x${layoutSize.second}|$passCount"
+        if (key == lastOpenGlRetroArchFilterKey && !clearHistory) {
+            return
+        }
+        lastOpenGlRetroArchFilterKey = key
+
+        runCatching {
+            MelonEmulator.configureOpenGlRetroArchFilter(
+                enabled,
+                presetPath,
+                parameterOverrides,
+                clearHistory,
+                sourceResolution,
+                layoutSize.first,
+                layoutSize.second,
+                passCount,
+            )
+        }
+    }
+
+    private fun showHeavyShaderCompileDialog(request: EmulatorViewModel.HeavyShaderCompileRequest) {
+        val duration = formatShaderCompileDuration(request.estimatedMillis)
+        val message = getString(
+            if (request.isMeasured) R.string.shader_heavy_compile_measured else R.string.shader_heavy_compile_estimated,
+            request.presetName,
+            duration,
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.shader_heavy_compile_title)
+            .setMessage(message)
+            .setCancelable(false)
+            .setPositiveButton(R.string.shader_heavy_compile_continue) { _, _ -> request.response.complete(true) }
+            .setNegativeButton(R.string.shader_heavy_compile_skip) { _, _ -> request.response.complete(false) }
+            .show()
+    }
+
+    private fun formatShaderCompileDuration(millis: Long): String {
+        val totalSeconds = (millis / 1000).coerceAtLeast(1)
+        return if (totalSeconds >= 60) {
+            getString(R.string.shader_duration_minutes, totalSeconds / 60, totalSeconds % 60)
+        } else {
+            getString(R.string.shader_duration_seconds, totalSeconds)
+        }
+    }
+
+    private suspend fun prewarmOpenGlShadersIfNeeded() {
+        val configuration = currentRuntimeRendererConfiguration ?: return
+        if (configuration.videoFiltering != VideoFiltering.RETROARCH || configuration.renderer == VideoRenderer.VULKAN) {
+            return
+        }
+        if (configuration.retroArchShader.presetPath.isNullOrEmpty()) {
+            return
+        }
+        if (configuration.retroArchShader.sourceResolution == RetroArchShaderSourceResolution.NATIVE) {
+            withTimeoutOrNull(SHADER_PREWARM_LAYOUT_TIMEOUT_MS) {
+                while (resolveMaxShaderLayoutSize().first == 0) {
+                    delay(SHADER_PREWARM_LAYOUT_POLL_MS)
+                }
+            }
+        }
+        updateOpenGlRetroArchFilterConfiguration(configuration)
+        val key = lastOpenGlRetroArchFilterKey ?: return
+        if (key == prewarmedOpenGlRetroArchFilterKey) {
+            return
+        }
+        prewarmedOpenGlRetroArchFilterKey = key
+
+        val scale = if (configuration.renderer == VideoRenderer.SOFTWARE) 1 else configuration.resolutionScaling.coerceAtLeast(1)
+        val atlasWidth = DS_SCREEN_WIDTH * scale
+        val atlasHeight = DS_FRAME_ATLAS_HEIGHT * scale
+
+        binding.textLoading.setText(R.string.info_retroarch_compiling_title)
+        binding.progressLoading.isVisible = true
+        binding.progressLoading.isIndeterminate = true
+        binding.textLoadingDetail.isVisible = true
+        binding.textLoadingDetail.setText(R.string.info_vulkan_compiling_stage_retroarch)
+        bootStatus.value = getString(R.string.info_retroarch_compiling_wait)
+        delay(SHADER_PREWARM_MESSAGE_SETTLE_MS)
+
+        val elapsedMillis = withContext(Dispatchers.Default) {
+            runCatching { frameRenderCoordinator.prewarmShaders(atlasWidth, atlasHeight) }.getOrDefault(0L)
+        }
+        bootStatus.value = getString(R.string.info_loading)
+        configuration.retroArchShader.presetPath?.let {
+            shaderCompileTimeStore.record(it, ShaderCompileTimeStore.Backend.OPEN_GL, elapsedMillis)
+        }
+        drainShaderDiagnostics()
+    }
+
+    private fun startShaderDiagnosticsPolling() {
+        stopShaderDiagnosticsPolling()
+        val runnable = object : Runnable {
+            override fun run() {
+                drainShaderDiagnostics()
+                handler.postDelayed(this, SHADER_DIAGNOSTICS_POLL_MS)
+            }
+        }
+        shaderDiagnosticsRunnable = runnable
+        handler.postDelayed(runnable, SHADER_DIAGNOSTICS_POLL_MS)
+    }
+
+    private fun stopShaderDiagnosticsPolling() {
+        shaderDiagnosticsRunnable?.let { handler.removeCallbacks(it) }
+        shaderDiagnosticsRunnable = null
+    }
+
+    private fun drainShaderDiagnostics() {
+        val records = runCatching { MelonEmulator.consumeShaderDiagnostics() }.getOrNull() ?: return
+        if (records.isEmpty()) {
+            return
+        }
+
+        val entries = shaderCompatibilityLog.append(records)
+        val failure = entries.firstOrNull { !it.succeeded } ?: return
+        val reason = failure.reason.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty()
+        Toast.makeText(
+            this,
+            getString(R.string.shader_compatibility_preset_failed, failure.presetName, reason),
+            Toast.LENGTH_LONG,
+        ).show()
+    }
+
+    private fun resolveMaxShaderLayoutSize(): Pair<Int, Int> {
+        var maxWidth = 0
+        var maxHeight = 0
+
+        fun include(rect: me.magnum.melonds.domain.model.Rect?, alpha: Float) {
+            if (rect == null || alpha <= 0f) return
+            maxWidth = maxOf(maxWidth, rect.width)
+            maxHeight = maxOf(maxHeight, rect.height)
+        }
+
+        runCatching {
+            val areas = resolveMainScreenPresentationAreas()
+            include(areas.topScreenRect, areas.topAlpha)
+            include(areas.bottomScreenRect, areas.bottomAlpha)
+            include(areas.hybridTopScreenRect, areas.hybridAlpha)
+            include(areas.hybridBottomScreenRect, areas.hybridAlpha)
+        }
+        return maxWidth to maxHeight
     }
 
     private fun buildVulkanPresentationConfig(
@@ -1557,6 +2151,10 @@ class EmulatorActivity : AppCompatActivity() {
         offlineSyncProgressDialog = null
         hardcorePendingExitDialog?.dismiss()
         hardcorePendingExitDialog = null
+        raPendingSyncProgressDialog?.dismiss()
+        raPendingSyncProgressDialog = null
+        raPendingSyncResultDialog?.dismiss()
+        raPendingSyncResultDialog = null
         showAchievementList.value = false
         showPendingSubmissionsDialog.value = false
         showDualScreenPresets.value = false
@@ -1609,24 +2207,17 @@ class EmulatorActivity : AppCompatActivity() {
     }
 
     private fun showPauseMenu(pauseMenu: PauseMenu) {
-        val options = Array(pauseMenu.options.size) {
-            getString(pauseMenu.options[it].textResource)
-        }
-
+        lastPauseMenu = pauseMenu
+        requestOverlayHostFocus()
         activeOverlays.addActiveOverlay(EmulatorOverlay.PAUSE_MENU)
-        AlertDialog.Builder(this)
-                .setTitle(R.string.pause)
-                .setItems(options) { _, which ->
-                    val selectedOption = pauseMenu.options[which]
-                    viewModel.onPauseMenuOptionSelected(selectedOption)
-                }
-                .setOnDismissListener {
-                    activeOverlays.removeActiveOverlay(EmulatorOverlay.PAUSE_MENU)
-                }
-                .setOnCancelListener {
-                    viewModel.resumeEmulator()
-                }
-                .show()
+        pauseMenuState.value = pauseMenu
+    }
+
+    private fun dismissPauseMenu() {
+        if (pauseMenuState.value != null) {
+            pauseMenuState.value = null
+            activeOverlays.removeActiveOverlay(EmulatorOverlay.PAUSE_MENU)
+        }
     }
 
     private fun showRomSettingsMenu(
@@ -1671,25 +2262,35 @@ class EmulatorActivity : AppCompatActivity() {
         }
 
         if (entries.isEmpty()) {
-            viewModel.resumeEmulator()
+            reopenPauseMenu()
             return
         }
 
-        var handledSelection = false
-        activeOverlays.addActiveOverlay(EmulatorOverlay.PAUSE_MENU)
-        AlertDialog.Builder(this)
-            .setTitle(R.string.rom_settings)
-            .setItems(entries.map { it.first }.toTypedArray()) { _, which ->
-                handledSelection = true
-                entries[which].second.invoke()
-            }
-            .setOnDismissListener {
-                activeOverlays.removeActiveOverlay(EmulatorOverlay.PAUSE_MENU)
-                if (!handledSelection) {
-                    viewModel.resumeEmulator()
-                }
-            }
-            .show()
+        val newNode = ConsoleOverlayNode.Submenu(getString(R.string.rom_settings), entries)
+        val topNode = consoleOverlayStack.lastOrNull()
+        if (topNode is ConsoleOverlayNode.Submenu && topNode.title == newNode.title) {
+            consoleOverlayStack[consoleOverlayStack.lastIndex] = newNode
+        } else {
+            pushConsoleOverlay(newNode)
+        }
+    }
+
+    private fun refreshRomSettingsMenuIfOpen(): Boolean {
+        val topNode = consoleOverlayStack.lastOrNull()
+        return if (topNode is ConsoleOverlayNode.Submenu && topNode.title == getString(R.string.rom_settings)) {
+            viewModel.onPauseMenuOptionSelected(me.magnum.melonds.ui.emulator.rom.RomPauseMenuOption.ROM_SETTINGS)
+            true
+        } else {
+            false
+        }
+    }
+
+    private fun onReturnedFromRomSettingsActivity() {
+        if (!refreshRomSettingsMenuIfOpen()) {
+            viewModel.resumeEmulator()
+        } else {
+            requestOverlayHostFocus()
+        }
     }
 
     private fun romSettingsMenuLabel(title: String, value: String): String {
@@ -1714,18 +2315,17 @@ class EmulatorActivity : AppCompatActivity() {
         }.toTypedArray()
         val checkedItem = items.indexOf(selectedFiltering).coerceAtLeast(0)
 
-        activeOverlays.addActiveOverlay(EmulatorOverlay.PAUSE_MENU)
-        AlertDialog.Builder(this)
-            .setTitle(R.string.filter)
-            .setSingleChoiceItems(labels, checkedItem) { dialog, which ->
-                viewModel.onRunningRomVideoFilteringSelected(items[which])
-                dialog.dismiss()
-            }
-            .setOnDismissListener {
-                activeOverlays.removeActiveOverlay(EmulatorOverlay.PAUSE_MENU)
-                viewModel.resumeEmulator()
-            }
-            .show()
+        pushConsoleOverlay(
+            ConsoleOverlayNode.Choice(
+                title = getString(R.string.filter),
+                labels = labels.toList(),
+                selectedIndex = checkedItem,
+                onSelect = { which ->
+                    viewModel.onRunningRomVideoFilteringSelected(items[which])
+                    handler.post { refreshRomSettingsMenuIfOpen() }
+                },
+            ),
+        )
     }
 
     private fun showRomRetroArchPresetPathDialog(
@@ -1760,7 +2360,6 @@ class EmulatorActivity : AppCompatActivity() {
     ) {
         if (!hasValidRetroArchShaderRoot) {
             Toast.makeText(this, R.string.retroarch_shader_root_not_valid, Toast.LENGTH_LONG).show()
-            viewModel.resumeEmulator()
             return
         }
 
@@ -1771,7 +2370,6 @@ class EmulatorActivity : AppCompatActivity() {
             setSelection(text.length)
         }
 
-        activeOverlays.addActiveOverlay(EmulatorOverlay.PAUSE_MENU)
         AlertDialog.Builder(this)
             .setTitle(titleRes)
             .setView(input)
@@ -1779,10 +2377,6 @@ class EmulatorActivity : AppCompatActivity() {
                 onConfirm(input.text.toString().ifBlank { null })
             }
             .setNegativeButton(R.string.cancel, null)
-            .setOnDismissListener {
-                activeOverlays.removeActiveOverlay(EmulatorOverlay.PAUSE_MENU)
-                viewModel.resumeEmulator()
-            }
             .show()
     }
 
@@ -1794,18 +2388,17 @@ class EmulatorActivity : AppCompatActivity() {
         }.toTypedArray()
         val checkedItem = items.indexOf(selectedMicSource).coerceAtLeast(0)
 
-        activeOverlays.addActiveOverlay(EmulatorOverlay.PAUSE_MENU)
-        AlertDialog.Builder(this)
-            .setTitle(R.string.microphone_source)
-            .setSingleChoiceItems(labels, checkedItem) { dialog, which ->
-                viewModel.onRunningRomMicSourceSelected(items[which])
-                dialog.dismiss()
-            }
-            .setOnDismissListener {
-                activeOverlays.removeActiveOverlay(EmulatorOverlay.PAUSE_MENU)
-                viewModel.resumeEmulator()
-            }
-            .show()
+        pushConsoleOverlay(
+            ConsoleOverlayNode.Choice(
+                title = getString(R.string.microphone_source),
+                labels = labels.toList(),
+                selectedIndex = checkedItem,
+                onSelect = { which ->
+                    viewModel.onRunningRomMicSourceSelected(items[which])
+                    handler.post { refreshRomSettingsMenuIfOpen() }
+                },
+            ),
+        )
     }
 
     private fun showRendererDebugMenu() {
@@ -3174,11 +3767,57 @@ class EmulatorActivity : AppCompatActivity() {
         if (!activeOverlays.hasActiveOverlays() && nativeInputListener.onKeyEvent(event))
             return true
 
+        if (hasComposeOverlayOpen() && event.action == KeyEvent.ACTION_DOWN) {
+            val direction = when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP -> androidx.compose.ui.focus.FocusDirection.Up
+                KeyEvent.KEYCODE_DPAD_DOWN -> androidx.compose.ui.focus.FocusDirection.Down
+                KeyEvent.KEYCODE_DPAD_LEFT -> androidx.compose.ui.focus.FocusDirection.Left
+                KeyEvent.KEYCODE_DPAD_RIGHT -> androidx.compose.ui.focus.FocusDirection.Right
+                else -> null
+            }
+            if (direction != null) {
+                if (!moveOverlayFocus(direction)) {
+                    binding.layoutPauseMenu.dispatchKeyEvent(event)
+                }
+                return true
+            }
+        }
+
         return super.dispatchKeyEvent(event)
+    }
+
+    private fun moveOverlayFocus(direction: androidx.compose.ui.focus.FocusDirection): Boolean {
+        val focusManager = overlayFocusManager
+        if (!binding.layoutPauseMenu.hasFocus()) {
+            binding.layoutPauseMenu.requestFocus()
+        }
+
+        var moved = focusManager?.moveFocus(direction) ?: false
+        if (!moved) {
+            moved = focusManager?.moveFocus(androidx.compose.ui.focus.FocusDirection.Enter) ?: false
+        }
+        return moved
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
         if (activeOverlays.hasActiveOverlays()) {
+            if (hasComposeOverlayOpen() && event.action == MotionEvent.ACTION_MOVE) {
+                val hatX = event.getAxisValue(MotionEvent.AXIS_HAT_X)
+                val hatY = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
+                val direction = when {
+                    hatX > 0.5f && lastOverlayHatX <= 0.5f -> androidx.compose.ui.focus.FocusDirection.Right
+                    hatX < -0.5f && lastOverlayHatX >= -0.5f -> androidx.compose.ui.focus.FocusDirection.Left
+                    hatY > 0.5f && lastOverlayHatY <= 0.5f -> androidx.compose.ui.focus.FocusDirection.Down
+                    hatY < -0.5f && lastOverlayHatY >= -0.5f -> androidx.compose.ui.focus.FocusDirection.Up
+                    else -> null
+                }
+                lastOverlayHatX = hatX
+                lastOverlayHatY = hatY
+                if (direction != null) {
+                    moveOverlayFocus(direction)
+                    return true
+                }
+            }
             nativeInputListener.onMotionEventSlot2(event)
             return super.dispatchGenericMotionEvent(event)
         }
@@ -3189,55 +3828,53 @@ class EmulatorActivity : AppCompatActivity() {
         return super.dispatchGenericMotionEvent(event)
     }
 
-    private fun isRewindWindowOpen(): Boolean {
-        return binding.root.currentState == R.id.rewind_visible
+    private fun hasComposeOverlayOpen(): Boolean {
+        return pauseMenuState.value != null || saveStatesOverlayState.value != null ||
+            consoleOverlayStack.isNotEmpty() || showDualScreenPresets.value ||
+            rewindOverlayState.value != null
     }
 
-    private fun showSaveStateSlotsDialog(slots: List<SaveStateSlot>, onSlotPicked: (SaveStateSlot) -> Unit) {
-        val dateFormatter = SimpleDateFormat("EEE, dd MMM yyyy", ConfigurationCompat.getLocales(resources.configuration)[0])
-        val timeFormatter = SimpleDateFormat("kk:mm:ss", ConfigurationCompat.getLocales(resources.configuration)[0])
-        var dialog: AlertDialog? = null
-        var adapter: SaveStateAdapter? = null
+    private fun requestOverlayHostFocus(attempt: Int = 0) {
+        val view = binding.layoutPauseMenu
+        view.isFocusable = false
+        view.isFocusableInTouchMode = false
+        view.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
 
-        adapter = SaveStateAdapter(
-            slots = slots,
-            picasso = picasso,
-            dateFormat = dateFormatter,
-            timeFormat = timeFormatter,
-            onSlotSelected = {
-                dialog?.dismiss()
-                onSlotPicked(it)
-            },
-            onDeletedSlot = {
-                viewModel.deleteSaveStateSlot(it)?.let { newSlots ->
-                    adapter?.updateSaveStateSlots(newSlots)
-                }
-            },
-        )
-
-        val recyclerView = RecyclerView(this).apply {
-            val layoutManager = LinearLayoutManager(this@EmulatorActivity)
-            this.layoutManager = layoutManager
-            addItemDecoration(DividerItemDecoration(context, layoutManager.orientation))
-            this.adapter = adapter
-            descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        val target = (view as? ViewGroup)?.takeIf { it.childCount > 0 }?.getChildAt(0) ?: view
+        target.isFocusableInTouchMode = true
+        if (!target.requestFocusFromTouch()) {
+            target.requestFocus()
         }
 
-        activeOverlays.addActiveOverlay(EmulatorOverlay.SAVE_STATES_DIALOG)
+        if (view.findFocus()?.takeIf { it !== view } == null && attempt < OVERLAY_FOCUS_ATTEMPTS) {
+            view.postDelayed({ requestOverlayHostFocus(attempt + 1) }, OVERLAY_FOCUS_RETRY_MS)
+        }
+    }
 
-        dialog = AlertDialog.Builder(this)
-            .setTitle(getString(R.string.save_slot))
-            .setView(recyclerView)
-            .setNegativeButton(R.string.cancel) { _dialog, _ ->
-                _dialog.cancel()
-            }
-            .setOnDismissListener {
-                activeOverlays.removeActiveOverlay(EmulatorOverlay.SAVE_STATES_DIALOG)
-            }
-            .setOnCancelListener {
-                viewModel.resumeEmulator()
-            }
-            .show()
+    private fun isRewindWindowOpen(): Boolean {
+        return rewindOverlayState.value != null
+    }
+
+    private fun showSaveStateSlotsDialog(slots: List<SaveStateSlot>, isSaving: Boolean, onSlotPicked: (SaveStateSlot) -> Unit) {
+        activeOverlays.addActiveOverlay(EmulatorOverlay.SAVE_STATES_DIALOG)
+        saveStatesOverlayState.value = SaveStatesOverlayData(slots, isSaving, onSlotPicked)
+        requestOverlayHostFocus()
+        val title = getString(if (isSaving) R.string.save_state else R.string.load_state)
+        presentation?.setInfoOverlayContent {
+            me.magnum.melonds.ui.common.ExternalSaveStatesInfo(
+                title = title,
+                slots = slots,
+                footer = getString(R.string.external_choose_on_device),
+            )
+        }
+    }
+
+    private fun dismissSaveStatesOverlay() {
+        if (saveStatesOverlayState.value != null) {
+            saveStatesOverlayState.value = null
+            activeOverlays.removeActiveOverlay(EmulatorOverlay.SAVE_STATES_DIALOG)
+            presentation?.setInfoOverlayContent(null)
+        }
     }
 
     private fun showRomLoadErrorDialog() {
@@ -3282,14 +3919,27 @@ class EmulatorActivity : AppCompatActivity() {
 
     private fun showRewindWindow(rewindWindow: RewindWindow) {
         activeOverlays.addActiveOverlay(EmulatorOverlay.REWIND_WINDOW)
-        binding.root.transitionToState(R.id.rewind_visible)
-        rewindSaveStateAdapter.setRewindWindow(rewindWindow)
+        rewindOverlayState.value = rewindWindow
+        requestOverlayHostFocus()
+    }
+
+    private fun onRewindStateSelected(state: me.magnum.melonds.ui.emulator.rewind.model.RewindSaveState) {
+        activeOverlays.removeActiveOverlay(EmulatorOverlay.REWIND_WINDOW)
+        rewindOverlayState.value = null
+        rewindOpenedFromPauseMenu = false
+        viewModel.rewindToState(state)
+        viewModel.resumeEmulator()
     }
 
     private fun closeRewindWindow() {
         activeOverlays.removeActiveOverlay(EmulatorOverlay.REWIND_WINDOW)
-        binding.root.transitionToState(R.id.rewind_hidden)
-        viewModel.resumeEmulator()
+        rewindOverlayState.value = null
+        if (rewindOpenedFromPauseMenu) {
+            rewindOpenedFromPauseMenu = false
+            reopenPauseMenu()
+        } else {
+            viewModel.resumeEmulator()
+        }
     }
 
     private fun updateOrientation(configuration: Configuration) {
@@ -3304,6 +3954,7 @@ class EmulatorActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         cancelStartupPresentationRefreshes()
+        stopShaderDiagnosticsPolling()
         frontendInputHandler.clearFastForwardHold()
         enableScreenTimeOut()
         choreographerFrameRenderer.stopRendering()

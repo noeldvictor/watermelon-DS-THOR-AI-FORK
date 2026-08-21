@@ -135,6 +135,7 @@ public:
     virtual void DrawSprites(u32 line, Unit* unit) = 0;
 
     virtual void VBlankEnd(Unit* unitA, Unit* unitB) = 0;
+    virtual bool StructuredVulkan2DSourceACaptureHasDominant2DReplay() const noexcept { return true; }
 
     void SetFramebuffer(u32* unitA, u32* unitB)
     {

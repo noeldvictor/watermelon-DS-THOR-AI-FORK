@@ -1,6 +1,7 @@
 package me.magnum.melonds.impl.emulator
 
 import android.content.Context
+import android.os.SystemClock
 import android.net.Uri
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
@@ -9,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -28,6 +30,7 @@ import me.magnum.melonds.domain.model.emulator.FirmwareLaunchResult
 import me.magnum.melonds.domain.model.emulator.RomLaunchResult
 import me.magnum.melonds.domain.model.retroachievements.GameAchievementData
 import me.magnum.melonds.domain.model.retroachievements.RAEvent
+import me.magnum.melonds.domain.model.retroachievements.RaNativePendingRetryResult
 import me.magnum.melonds.domain.model.retroachievements.RARuntimeBridgeConfig
 import me.magnum.melonds.domain.model.rom.Rom
 import me.magnum.melonds.domain.model.rom.config.RomGbaSlotConfig
@@ -36,6 +39,7 @@ import me.magnum.melonds.domain.model.rom.config.RuntimeEnum
 import me.magnum.melonds.domain.services.DSiNandManager
 import me.magnum.melonds.domain.repositories.SettingsRepository
 import me.magnum.melonds.domain.services.EmulatorManager
+import me.magnum.melonds.impl.ShaderCompileTimeStore
 import me.magnum.melonds.impl.camera.DSiCameraSourceMultiplexer
 import me.magnum.melonds.ui.emulator.rewind.model.RewindSaveState
 import me.magnum.melonds.ui.emulator.rewind.model.RewindWindow
@@ -52,10 +56,11 @@ class AndroidEmulatorManager(
     private val cameraManager: DSiCameraSourceMultiplexer,
     private val emulatorSession: EmulatorSession,
     private val dsiNandManager: DSiNandManager,
+    private val shaderCompileTimeStore: ShaderCompileTimeStore,
 ) : EmulatorManager {
     private companion object {
         private const val TAG = "AndroidEmulatorManager"
-        const val MAX_EVENT_STRING_LENGTH = 128
+        private const val RA_SUBMISSION_TAG = "RASubmission"
         private const val GBAModeNotSupported = 2
         private const val BadExceptionRegion = 3
         private const val PowerOff = 4
@@ -74,6 +79,8 @@ class AndroidEmulatorManager(
     private val achievementsSharedFlow = MutableSharedFlow<RAEvent>(replay = 0, extraBufferCapacity = Int.MAX_VALUE)
     private val dldiFolderSyncManager = DldiFolderSyncManager(context, settingsRepository)
     private var activeInstalledDsiWareShortcutSession: InstalledDsiWareShortcutSession? = null
+    @Volatile private var leaderboardDiagnosticsEnabled = false
+    private val leaderboardTrackerUpdateLogLimiter = LeaderboardTrackerUpdateLogLimiter()
 
     private val messageQueue = EmulatorMessageQueue { type, data ->
         when (type) {
@@ -96,7 +103,10 @@ class AndroidEmulatorManager(
                     achievementId = data.getLong(),
                     current = data.getInt(),
                     target = data.getInt(),
-                    progress = data.readBoundedString(),
+                    progress = RetroAchievementsEventDecoder.readFixedSlotString(
+                        data,
+                        RetroAchievementsEventDecoder.DISPLAY_SLOT_BYTES,
+                    ),
                 )
                 achievementsSharedFlow.tryEmit(event)
             }
@@ -106,32 +116,173 @@ class AndroidEmulatorManager(
                 val event = RAEvent.OnServerError(
                     relatedId = data.getLong(),
                     resultCode = data.getInt(),
-                    api = data.readBoundedString(),
-                    message = data.readBoundedString(),
+                    api = RetroAchievementsEventDecoder.readFixedSlotString(
+                        data,
+                        RetroAchievementsEventDecoder.DISPLAY_SLOT_BYTES,
+                    ),
+                    message = RetroAchievementsEventDecoder.readFixedSlotString(
+                        data,
+                        RetroAchievementsEventDecoder.SERVER_MESSAGE_SLOT_BYTES,
+                    ),
                 )
                 achievementsSharedFlow.tryEmit(event)
             }
             EmulatorEventType.EventRADisconnected -> achievementsSharedFlow.tryEmit(RAEvent.OnDisconnected)
             EmulatorEventType.EventRAReconnected -> achievementsSharedFlow.tryEmit(RAEvent.OnReconnected)
-            EmulatorEventType.EventRALeaderboardAttemptStarted -> achievementsSharedFlow.tryEmit(RAEvent.OnLeaderboardAttemptStarted(data.getLong()))
-            EmulatorEventType.EventRALeaderboardAttemptUpdated -> {
-                val event = RAEvent.OnLeaderboardAttemptUpdated(
-                    leaderboardId = data.getLong(),
-                    formattedValue = data.readBoundedString(),
+            EmulatorEventType.EventRALeaderboardAttemptStarted -> {
+                val event = RAEvent.OnLeaderboardAttemptStarted(
+                    leaderboardId = data.long,
+                    attemptId = data.long,
+                    eventSequence = data.long,
                 )
+                leaderboardTrackerUpdateLogLimiter.reset(event.leaderboardId, event.attemptId)
+                logLeaderboardJni("STARTED", event.leaderboardId, event.attemptId, event.eventSequence)
                 achievementsSharedFlow.tryEmit(event)
             }
-            EmulatorEventType.EventRALeaderboardAttemptCanceled -> achievementsSharedFlow.tryEmit(RAEvent.OnLeaderboardAttemptCancelled(data.getLong()))
+            EmulatorEventType.EventRALeaderboardAttemptUpdated -> {
+                val leaderboardId = data.long
+                val attemptId = data.long
+                val eventSequence = data.long
+                val trackerShown = data.int != 0
+                val event = RAEvent.OnLeaderboardAttemptUpdated(
+                    leaderboardId = leaderboardId,
+                    attemptId = attemptId,
+                    eventSequence = eventSequence,
+                    formattedValue = RetroAchievementsEventDecoder.readFixedSlotString(
+                        data,
+                        RetroAchievementsEventDecoder.DISPLAY_SLOT_BYTES,
+                    ),
+                    trackerShown = trackerShown,
+                )
+                if (event.trackerShown) {
+                    leaderboardTrackerUpdateLogLimiter.reset(event.leaderboardId, event.attemptId)
+                    logLeaderboardJni(
+                        "TRACKER_SHOW",
+                        event.leaderboardId,
+                        event.attemptId,
+                        event.eventSequence,
+                        "tracker_display=${event.formattedValue}",
+                    )
+                } else {
+                    val logDecision = leaderboardTrackerUpdateLogLimiter.observe(event.leaderboardId, event.attemptId)
+                    if (logDecision.shouldLog) {
+                        logLeaderboardJni(
+                            "TRACKER_UPDATE",
+                            event.leaderboardId,
+                            event.attemptId,
+                            event.eventSequence,
+                            "tracker_display=${event.formattedValue} " +
+                                "tracker_update_index=${logDecision.updateIndex} " +
+                                "suppressed_updates=${logDecision.suppressedUpdates}",
+                        )
+                    }
+                }
+                achievementsSharedFlow.tryEmit(event)
+            }
+            EmulatorEventType.EventRALeaderboardAttemptCanceled -> {
+                val event = RAEvent.OnLeaderboardAttemptCancelled(data.long, data.long, data.long)
+                leaderboardTrackerUpdateLogLimiter.reset(event.leaderboardId, event.attemptId)
+                logLeaderboardJni("CANCELED", event.leaderboardId, event.attemptId, event.eventSequence)
+                achievementsSharedFlow.tryEmit(event)
+            }
             EmulatorEventType.EventRALeaderboardAttemptCompleted -> {
                 val event = RAEvent.OnLeaderboardAttemptCompleted(
                     leaderboardId = data.getLong(),
                     value = data.getInt(),
-                    formattedValue = data.readBoundedString(),
+                    formattedValue = RetroAchievementsEventDecoder.readFixedSlotString(
+                        data,
+                        RetroAchievementsEventDecoder.DISPLAY_SLOT_BYTES,
+                    ),
                 )
                 achievementsSharedFlow.tryEmit(event)
             }
             EmulatorEventType.EventRAAchievementProgressIndicatorHidden -> achievementsSharedFlow.tryEmit(RAEvent.OnAchievementProgressHidden(data.getLong()))
-            EmulatorEventType.EventRALeaderboardTrackerHidden -> achievementsSharedFlow.tryEmit(RAEvent.OnLeaderboardTrackerHidden(data.getLong()))
+            EmulatorEventType.EventRALeaderboardTrackerHidden -> {
+                val event = RAEvent.OnLeaderboardTrackerHidden(data.long, data.long, data.long)
+                leaderboardTrackerUpdateLogLimiter.reset(event.leaderboardId, event.attemptId)
+                logLeaderboardJni("TRACKER_HIDE", event.leaderboardId, event.attemptId, event.eventSequence)
+                achievementsSharedFlow.tryEmit(event)
+            }
+            EmulatorEventType.EventRALeaderboardAttemptSubmitted -> {
+                val event = RAEvent.OnLeaderboardAttemptSubmitted(
+                    leaderboardId = data.long,
+                    attemptId = data.long,
+                    eventSequence = data.long,
+                    trackerDisplay = RetroAchievementsEventDecoder.readFixedSlotString(
+                        data,
+                        RetroAchievementsEventDecoder.DISPLAY_SLOT_BYTES,
+                    ),
+                )
+                logLeaderboardJni("SUBMITTED", event.leaderboardId, event.attemptId, event.eventSequence, "tracker_display=${event.trackerDisplay}")
+                achievementsSharedFlow.tryEmit(event)
+            }
+            EmulatorEventType.EventRALeaderboardScoreboard -> {
+                val event = RAEvent.OnLeaderboardScoreboard(
+                    leaderboardId = data.long,
+                    attemptId = data.long,
+                    eventSequence = data.long,
+                    newRank = Integer.toUnsignedLong(data.int),
+                    numEntries = Integer.toUnsignedLong(data.int),
+                    submittedScore = RetroAchievementsEventDecoder.readFixedSlotString(
+                        data,
+                        RetroAchievementsEventDecoder.DISPLAY_SLOT_BYTES,
+                    ),
+                    bestScore = RetroAchievementsEventDecoder.readFixedSlotString(
+                        data,
+                        RetroAchievementsEventDecoder.DISPLAY_SLOT_BYTES,
+                    ),
+                )
+                leaderboardTrackerUpdateLogLimiter.reset(event.leaderboardId, event.attemptId)
+                logLeaderboardJni(
+                    "SCOREBOARD",
+                    event.leaderboardId,
+                    event.attemptId,
+                    event.eventSequence,
+                    "submitted_score=${event.submittedScore} best_score=${event.bestScore} rank=${event.newRank} num_entries=${event.numEntries}",
+                )
+                achievementsSharedFlow.tryEmit(event)
+            }
+            EmulatorEventType.EventRALeaderboardSubmissionFailed -> {
+                val event = RAEvent.OnLeaderboardSubmissionFailed(
+                    leaderboardId = data.long,
+                    attemptId = data.long,
+                    eventSequence = data.long,
+                    resultCode = data.int,
+                    message = RetroAchievementsEventDecoder.readFixedSlotString(
+                        data,
+                        RetroAchievementsEventDecoder.LEADERBOARD_ERROR_MESSAGE_SLOT_BYTES,
+                    ),
+                )
+                leaderboardTrackerUpdateLogLimiter.reset(event.leaderboardId, event.attemptId)
+                logLeaderboardJni("SERVER_ERROR", event.leaderboardId, event.attemptId, event.eventSequence, "result=${event.resultCode}")
+                achievementsSharedFlow.tryEmit(event)
+            }
+            EmulatorEventType.EventRALeaderboardRuntimeReset -> {
+                val event = RAEvent.OnLeaderboardRuntimeReset(attemptFloor = data.long)
+                leaderboardTrackerUpdateLogLimiter.resetAll()
+                if (leaderboardDiagnosticsEnabled) {
+                    Log.i(
+                        RA_SUBMISSION_TAG,
+                        "event_type=jni_event_received jni_event=RUNTIME_RESET attempt_floor=${event.attemptFloor}",
+                    )
+                }
+                achievementsSharedFlow.tryEmit(event)
+            }
+            EmulatorEventType.EventRAPendingSubmissionAdded -> {
+                RetroAchievementsEventDecoder.readPendingSubmissionAdded(data)?.let {
+                    achievementsSharedFlow.tryEmit(it)
+                }
+            }
+            EmulatorEventType.EventRAPendingSubmissionResolved -> {
+                RetroAchievementsEventDecoder.readPendingSubmissionResolved(data)?.let {
+                    achievementsSharedFlow.tryEmit(it)
+                }
+            }
+            EmulatorEventType.EventRAPendingSubmissionBarrier -> {
+                RetroAchievementsEventDecoder.readPendingSubmissionBarrier(data)?.let {
+                    achievementsSharedFlow.tryEmit(it)
+                }
+            }
         }
     }
 
@@ -346,27 +497,45 @@ class AndroidEmulatorManager(
         MelonEmulator.updateEmulatorConfiguration(configuration)
     }
 
+    private fun logRetroArchShaderLaunchState(configuration: EmulatorConfiguration) {
+        val renderer = configuration.rendererConfiguration
+        val retroShader = renderer.retroArchShader
+        Log.i(
+            TAG,
+            "RetroArchShaderLaunch: renderer=${renderer.renderer} " +
+                "filter=${renderer.videoFiltering} " +
+                "preset=${retroShader.presetPath ?: "<none>"} " +
+                "source=${retroShader.sourceResolution} " +
+                "passes=${retroShader.passCount} " +
+                "sourceBytes=${retroShader.sourceBytes} " +
+                "clearHistory=${retroShader.clearHistory}",
+        )
+    }
+
     private fun precompileVulkanPipelines(configuration: EmulatorConfiguration): Boolean {
+        logRetroArchShaderLaunchState(configuration)
         if (configuration.rendererConfiguration.renderer != VideoRenderer.VULKAN) {
             return true
         }
 
         val retroShader = configuration.rendererConfiguration.retroArchShader
-        Log.i(
-            TAG,
-            "precompileVulkanPipelines: renderer=${configuration.rendererConfiguration.renderer} " +
-                "filter=${configuration.rendererConfiguration.videoFiltering} " +
-                "retroPreset=${retroShader.presetPath} " +
-                "retroSource=${retroShader.sourceResolution} " +
-                "retroPasses=${retroShader.passCount}",
-        )
-        return MelonEmulator.precompileVulkanPipelines(
+        val startedAt = SystemClock.elapsedRealtime()
+        val succeeded = MelonEmulator.precompileVulkanPipelines(
             videoFilteringOrdinal = configuration.rendererConfiguration.videoFiltering.ordinal,
             retroShaderPresetPath = retroShader.presetPath,
             retroShaderSourceResolution = retroShader.sourceResolution.name.lowercase(),
             retroShaderPassCount = retroShader.passCount,
             retroShaderParameterOverrides = retroShader.parameterOverrides,
         )
+        val presetPath = retroShader.presetPath
+        if (succeeded && presetPath != null) {
+            shaderCompileTimeStore.record(
+                presetPath = presetPath,
+                backend = ShaderCompileTimeStore.Backend.VULKAN,
+                millis = SystemClock.elapsedRealtime() - startedAt,
+            )
+        }
+        return succeeded
     }
 
     override suspend fun updateFirmwareEmulatorConfiguration(consoleType: ConsoleType) {
@@ -394,7 +563,7 @@ class AndroidEmulatorManager(
         MelonEmulator.debugStepFrame()
     }
 
-    override suspend fun resetEmulator() {
+    override suspend fun resetEmulator() = withContext(Dispatchers.Default) {
         MelonEmulator.resetEmulation()
     }
 
@@ -403,6 +572,8 @@ class AndroidEmulatorManager(
     }
 
     override suspend fun setupRetroAchievements(achievementData: GameAchievementData, runtimeConfig: RARuntimeBridgeConfig?) {
+        leaderboardTrackerUpdateLogLimiter.resetAll()
+        leaderboardDiagnosticsEnabled = settingsRepository.isRendererDebugToolsEnabled().firstOrNull() == true
         val richPresencePath = if (settingsRepository.isRetroAchievementsRichPresenceEnabled()) {
             achievementData.richPresencePatch
         } else {
@@ -422,7 +593,43 @@ class AndroidEmulatorManager(
         }
     }
 
+    override suspend fun retryPendingRetroAchievementsSubmissions(
+        expectedNativeSubmissionIds: List<Long>,
+    ): RaNativePendingRetryResult {
+        return withContext(Dispatchers.Default) {
+            RetroAchievementsEventDecoder.readPendingRetryResult(
+                MelonEmulator.retryPendingRetroAchievementsSubmissions(
+                    expectedNativeSubmissionIds.toLongArray(),
+                ),
+            )
+        }
+    }
+
+    override suspend fun refreshPendingRetroAchievementsSubmissions(): Long {
+        return withContext(Dispatchers.Default) {
+            MelonEmulator.refreshPendingRetroAchievementsSubmissions()
+        }
+    }
+
+    override suspend fun discardPendingRetroAchievementsSubmissions(
+        expectedNativeSubmissionIds: List<Long>,
+    ): Int {
+        return withContext(Dispatchers.Default) {
+            MelonEmulator.discardPendingRetroAchievementsSubmissions(
+                expectedNativeSubmissionIds.toLongArray(),
+            )
+        }
+    }
+
+    override suspend fun setRetroAchievementsSubmissionTransportSuspended(suspended: Boolean) {
+        withContext(Dispatchers.Default) {
+            MelonEmulator.setRetroAchievementsSubmissionTransportSuspended(suspended)
+        }
+    }
+
     override fun unloadRetroAchievementsData() {
+        leaderboardDiagnosticsEnabled = false
+        leaderboardTrackerUpdateLogLimiter.resetAll()
         MelonEmulator.unloadRetroAchievementsData()
     }
 
@@ -554,22 +761,20 @@ class AndroidEmulatorManager(
         return copy(dldiSdCardConfiguration = preparedConfiguration)
     }
 
-    private fun ByteBuffer.readBoundedString(): String {
-        val declaredLength = int
-        if (declaredLength <= 0) {
-            return ""
-        }
+    private fun logLeaderboardJni(
+        eventType: String,
+        leaderboardId: Long,
+        attemptId: Long,
+        eventSequence: Long,
+        details: String = "",
+    ) {
+        if (!leaderboardDiagnosticsEnabled) return
 
-        val safeLength = declaredLength
-            .coerceAtMost(remaining())
-            .coerceAtMost(MAX_EVENT_STRING_LENGTH)
-        if (safeLength <= 0) {
-            return ""
-        }
-
-        val payload = ByteArray(safeLength)
-        get(payload)
-        return String(payload)
+        Log.i(
+            RA_SUBMISSION_TAG,
+            "event_type=jni_event_received jni_event=$eventType leaderboard_id=$leaderboardId " +
+                "attempt_id=$attemptId event_sequence=$eventSequence ${details.trim()}",
+        )
     }
 
     private fun getStopReason(internalReason: Int): EmulatorEvent.Stop.Reason? {

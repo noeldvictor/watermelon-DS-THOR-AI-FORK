@@ -3,8 +3,8 @@
 A dual-screen Android fork of [melonDS](https://melonds.kuribo64.net/) tuned for the AYN Thor,
 with HD texture pack support and per-layer upscaling filters.
 
-Based on [SapphireRhodonite's Vulkan dual-screen fork](https://github.com/SapphireRhodonite/melonDS-android)
-of [rafaelvcaetano's melonDS Android port](https://github.com/rafaelvcaetano/melonDS-android).
+Based on [WatermelonDS](https://github.com/SapphireRhodonite/WatermelonDS) (formerly melonDualDS) by
+SapphireRhodonite, itself built on [rafaelvcaetano's melonDS Android port](https://github.com/rafaelvcaetano/melonDS-android).
 This repository is self-contained: the emulator core (`melonDS-android-lib/`, derived from the
 [melonDS](https://github.com/melonDS-emu/melonDS) core) is part of the tree — no submodules.
 
@@ -52,7 +52,8 @@ The APK lands in `app/build/outputs/apk/gitHubProd/debug/`. On Windows, set `JAV
 
 * [melonDS](https://github.com/melonDS-emu/melonDS) by Arisotura and the melonDS team
 * [melonDS Android port](https://github.com/rafaelvcaetano/melonDS-android) by rafaelvcaetano
-* [Vulkan dual-screen fork](https://github.com/SapphireRhodonite/melonDS-android) by SapphireRhodonite
+* [WatermelonDS](https://github.com/SapphireRhodonite/WatermelonDS) by SapphireRhodonite — Vulkan renderer,
+  dual-screen and external display support, RetroAchievements, RetroArch shader presets
 * HD pack format inspired by the texture replacement systems of Dolphin and DuckStation
 
 melonDS is free software licensed under the GPLv3; this fork retains that license.

@@ -38,6 +38,7 @@ extern PFN_vkCmdBindIndexBuffer vkCmdBindIndexBuffer;
 extern PFN_vkCmdBindPipeline vkCmdBindPipeline;
 extern PFN_vkCmdBindVertexBuffers vkCmdBindVertexBuffers;
 extern PFN_vkCmdBlitImage vkCmdBlitImage;
+extern PFN_vkCmdClearAttachments vkCmdClearAttachments;
 extern PFN_vkCmdClearColorImage vkCmdClearColorImage;
 extern PFN_vkCmdCopyBuffer vkCmdCopyBuffer;
 extern PFN_vkCmdCopyBufferToImage vkCmdCopyBufferToImage;
