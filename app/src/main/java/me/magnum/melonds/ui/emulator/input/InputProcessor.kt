@@ -55,8 +55,29 @@ class InputProcessor(private val controllerConfiguration: ControllerConfiguratio
         axisStates = axis.associateWith { AxisState(0f, false) }
     }
 
+    // Keycodes currently held, so combo bindings can be resolved, plus the
+    // input each press resolved to - a combo and a plain binding can share a
+    // key, and the release has to undo whichever one actually fired.
+    private val pressedKeyCodes = mutableSetOf<Int>()
+    private val activeKeyInputs = mutableMapOf<Int, Input>()
+
     override fun onKeyEvent(keyEvent: KeyEvent): Boolean {
-        val input = controllerConfiguration.keyToInput(keyEvent.keyCode) ?: return false
+        if (keyEvent.action == KeyEvent.ACTION_UP) {
+            pressedKeyCodes.remove(keyEvent.keyCode)
+        }
+
+        val input = if (keyEvent.action == KeyEvent.ACTION_UP) {
+            activeKeyInputs.remove(keyEvent.keyCode)
+                ?: controllerConfiguration.keyToInput(keyEvent.keyCode, pressedKeyCodes)
+        } else {
+            controllerConfiguration.keyToInput(keyEvent.keyCode, pressedKeyCodes)
+        } ?: run {
+            if (keyEvent.action == KeyEvent.ACTION_DOWN) {
+                // Still track it: an unmapped key can be a combo modifier.
+                pressedKeyCodes.add(keyEvent.keyCode)
+            }
+            return false
+        }
         val fromController = keyEvent.isFromSource(InputDevice.SOURCE_CLASS_JOYSTICK)
             || keyEvent.isFromSource(InputDevice.SOURCE_JOYSTICK)
             || keyEvent.isFromSource(InputDevice.SOURCE_GAMEPAD)
@@ -66,6 +87,8 @@ class InputProcessor(private val controllerConfiguration: ControllerConfiguratio
 
         when (keyEvent.action) {
             KeyEvent.ACTION_DOWN -> {
+                pressedKeyCodes.add(keyEvent.keyCode)
+                activeKeyInputs[keyEvent.keyCode] = input
                 dispatchInputPressed(input, fromController)
                 return true
             }

@@ -43,6 +43,7 @@ data class InputConfigDto(
         class Key(
             override val deviceId: Int?,
             @SerialName("keyCode") val keyCode: Int,
+            @SerialName("modifierKeyCode") val modifierKeyCode: Int? = null,
         ) : AssignmentDto()
 
         @Serializable
@@ -70,6 +71,9 @@ data class InputConfigDto(
                             put(TYPE_FIELD, JsonPrimitive(TYPE_KEY))
                             putNullableInt(DEVICE_ID_FIELD, value.deviceId)
                             put(KEY_CODE_FIELD, JsonPrimitive(value.keyCode))
+                            if (value.modifierKeyCode != null) {
+                                put(MODIFIER_KEY_CODE_FIELD, JsonPrimitive(value.modifierKeyCode))
+                            }
                         }
                         is AssignmentDto.Axis -> {
                             put(TYPE_FIELD, JsonPrimitive(TYPE_AXIS))
@@ -92,6 +96,7 @@ data class InputConfigDto(
                 TYPE_KEY -> AssignmentDto.Key(
                     deviceId = obj.optionalInt(DEVICE_ID_FIELD),
                     keyCode = obj.requiredInt(KEY_CODE_FIELD),
+                    modifierKeyCode = obj.optionalInt(MODIFIER_KEY_CODE_FIELD),
                 )
                 TYPE_AXIS -> AssignmentDto.Axis(
                     deviceId = obj.optionalInt(DEVICE_ID_FIELD),
@@ -157,6 +162,7 @@ data class InputConfigDto(
         private const val TYPE_AXIS = "axis"
         private const val DEVICE_ID_FIELD = "deviceId"
         private const val KEY_CODE_FIELD = "keyCode"
+        private const val MODIFIER_KEY_CODE_FIELD = "modifierKeyCode"
         private const val AXIS_CODE_FIELD = "axisCode"
         private const val DIRECTION_FIELD = "direction"
     }
@@ -167,12 +173,12 @@ data class InputConfigDto(
                 input = inputConfig.input,
                 assignment = when (inputConfig.assignment) {
                     is InputConfig.Assignment.None -> AssignmentDto.None
-                    is InputConfig.Assignment.Key -> AssignmentDto.Key(inputConfig.assignment.deviceId, inputConfig.assignment.keyCode)
+                    is InputConfig.Assignment.Key -> AssignmentDto.Key(inputConfig.assignment.deviceId, inputConfig.assignment.keyCode, inputConfig.assignment.modifierKeyCode)
                     is InputConfig.Assignment.Axis -> AssignmentDto.Axis(inputConfig.assignment.deviceId, inputConfig.assignment.axisCode, inputConfig.assignment.direction)
                 },
                 altAssignment = when (inputConfig.altAssignment) {
                     is InputConfig.Assignment.None -> AssignmentDto.None
-                    is InputConfig.Assignment.Key -> AssignmentDto.Key(inputConfig.altAssignment.deviceId, inputConfig.altAssignment.keyCode)
+                    is InputConfig.Assignment.Key -> AssignmentDto.Key(inputConfig.altAssignment.deviceId, inputConfig.altAssignment.keyCode, inputConfig.altAssignment.modifierKeyCode)
                     is InputConfig.Assignment.Axis -> AssignmentDto.Axis(inputConfig.altAssignment.deviceId, inputConfig.altAssignment.axisCode, inputConfig.altAssignment.direction)
                 }
             )
@@ -184,12 +190,12 @@ data class InputConfigDto(
             input = input,
             assignment = when (assignment) {
                 is AssignmentDto.None -> InputConfig.Assignment.None
-                is AssignmentDto.Key -> InputConfig.Assignment.Key(assignment.deviceId, assignment.keyCode)
+                is AssignmentDto.Key -> InputConfig.Assignment.Key(assignment.deviceId, assignment.keyCode, assignment.modifierKeyCode)
                 is AssignmentDto.Axis -> InputConfig.Assignment.Axis(assignment.deviceId, assignment.axisCode, assignment.direction)
             },
             altAssignment = when (altAssignment) {
                 is AssignmentDto.None -> InputConfig.Assignment.None
-                is AssignmentDto.Key -> InputConfig.Assignment.Key(altAssignment.deviceId, altAssignment.keyCode)
+                is AssignmentDto.Key -> InputConfig.Assignment.Key(altAssignment.deviceId, altAssignment.keyCode, altAssignment.modifierKeyCode)
                 is AssignmentDto.Axis -> InputConfig.Assignment.Axis(altAssignment.deviceId, altAssignment.axisCode, altAssignment.direction)
             }
         )

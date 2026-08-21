@@ -49,14 +49,35 @@ class ControllerConfiguration(
         }
     }
 
-    fun keyToInput(key: Int): Input? {
-        for (config in inputMapper) {
-            val assignments = listOf(config.assignment, config.altAssignment)
-            if (assignments.any { (it as? InputConfig.Assignment.Key)?.keyCode == key }) {
-                return config.input
+    fun keyToInput(key: Int): Input? = keyToInput(key, emptySet())
+
+    /**
+     * [pressedKeys] are the keycodes currently held, used to resolve combo
+     * bindings. Combos are matched first so a modified press wins over a plain
+     * binding on the same key, and the plain binding still works on its own.
+     */
+    fun keyToInput(key: Int, pressedKeys: Set<Int>): Input? {
+        fun match(requireModifier: Boolean): Input? {
+            for (config in inputMapper) {
+                val assignments = listOf(config.assignment, config.altAssignment)
+                val hit = assignments.any {
+                    val keyAssignment = it as? InputConfig.Assignment.Key ?: return@any false
+                    if (keyAssignment.keyCode != key) return@any false
+                    val modifier = keyAssignment.modifierKeyCode
+                    if (requireModifier) {
+                        modifier != null && modifier in pressedKeys
+                    } else {
+                        modifier == null
+                    }
+                }
+                if (hit) {
+                    return config.input
+                }
             }
+            return null
         }
-        return null
+
+        return match(requireModifier = true) ?: match(requireModifier = false)
     }
 
     fun axisToInput(axis: Int, direction: InputConfig.Assignment.Axis.Direction): Input? {
