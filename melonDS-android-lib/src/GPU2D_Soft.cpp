@@ -21,6 +21,7 @@
 #include "GPU3D.h"
 #include "NDS.h"
 #include "Platform.h"
+#include "VulkanPerfStats.h"
 
 #include <algorithm>
 #include <array>
@@ -38,6 +39,8 @@ bool areRenderer2DDebugObjectsEnabled(melonDS::u32 unit);
 bool isRenderer2DDebugObjectPriorityEnabled(melonDS::u32 unit, melonDS::u32 priority);
 bool isRenderer2DDebugObjectOrderEnabled(melonDS::u32 unit, melonDS::u32 orderBucket);
 bool isRenderer2DDebugObjectFeatureEnabled(melonDS::u32 featureFlag);
+bool areRenderer2DDebugControlsActive();
+bool isVulkanGpu2DPerfLoggingEnabled();
 }
 
 namespace
@@ -80,7 +83,59 @@ constexpr u32 kStructuredVulkan2DAbove3DFlag = 0x80u;
 constexpr u32 kStructuredVulkan2DOnlyFlag = 0x80u;
 constexpr u32 kStructuredVulkan2DProtectedBlackFlag = 0x20u;
 constexpr u32 kStructuredVulkan2DNo3DCoverageFlag = 0x10u;
+constexpr u32 kStructuredVulkan2DProtectedBlackTargetsBottomFlag = 0x000001u;
+constexpr u8 kStructuredVulkan2DCarriedProtectedBlack = 0x01u;
 constexpr u32 kStructuredVulkan2D3DPlaceholder = 0x20000000u;
+enum class StructuredVulkan2DOverlayLineage : u8
+{
+    Unknown = 0u,
+    Fresh = 1u,
+    CarriedOnce = 2u,
+    Carried2Plus = 3u,
+};
+constexpr u8 kStructuredVulkan2DOverlayLineageUnknown =
+    static_cast<u8>(StructuredVulkan2DOverlayLineage::Unknown);
+constexpr u8 kStructuredVulkan2DOverlayLineageFresh =
+    static_cast<u8>(StructuredVulkan2DOverlayLineage::Fresh);
+constexpr u8 kStructuredVulkan2DOverlayLineageCarried2Plus =
+    static_cast<u8>(StructuredVulkan2DOverlayLineage::Carried2Plus);
+PerfSampleWindow<4096> gStructuredBGObjSetupWindow;
+PerfSampleWindow<4096> gStructuredBGObjBgWindow;
+PerfSampleWindow<4096> gStructuredBGObjClassifyWindow;
+PerfSampleWindow<4096> gStructuredBGObjCompositeWindow;
+
+void RecordStructuredBGObjPerf(u64 setupNs, u64 bgNs, u64 classifyNs, u64 compositeNs)
+{
+    gStructuredBGObjSetupWindow.Add(setupNs);
+    gStructuredBGObjBgWindow.Add(bgNs);
+    gStructuredBGObjClassifyWindow.Add(classifyNs);
+    gStructuredBGObjCompositeWindow.Add(compositeNs);
+
+    if (!gStructuredBGObjSetupWindow.Ready()
+        || !gStructuredBGObjBgWindow.Ready()
+        || !gStructuredBGObjClassifyWindow.Ready()
+        || !gStructuredBGObjCompositeWindow.Ready())
+    {
+        return;
+    }
+
+    const auto setupSummary = gStructuredBGObjSetupWindow.SummarizeAndReset();
+    const auto bgSummary = gStructuredBGObjBgWindow.SummarizeAndReset();
+    const auto classifySummary = gStructuredBGObjClassifyWindow.SummarizeAndReset();
+    const auto compositeSummary = gStructuredBGObjCompositeWindow.SummarizeAndReset();
+    Platform::Log(
+        Platform::LogLevel::Warn,
+        "VulkanPerf[GPU2D_BGOBJ]: line setup avg=%.3fus p95=%.3fus bg avg=%.3fus p95=%.3fus classify avg=%.3fus p95=%.3fus composite avg=%.3fus p95=%.3fus",
+        PerfNsToMs(setupSummary.MeanNs) * 1000.0,
+        PerfNsToMs(setupSummary.P95Ns) * 1000.0,
+        PerfNsToMs(bgSummary.MeanNs) * 1000.0,
+        PerfNsToMs(bgSummary.P95Ns) * 1000.0,
+        PerfNsToMs(classifySummary.MeanNs) * 1000.0,
+        PerfNsToMs(classifySummary.P95Ns) * 1000.0,
+        PerfNsToMs(compositeSummary.MeanNs) * 1000.0,
+        PerfNsToMs(compositeSummary.P95Ns) * 1000.0
+    );
+}
 
 u32 StructuredVulkan2DSourceClass(u32 value)
 {
@@ -110,11 +165,125 @@ bool StructuredVulkan2DSourceIsReal2D(u32 sourceClass)
     return sourceClass != 0u;
 }
 
+bool StructuredVulkan2DCanPreserveCaptureOverlay(u32 value)
+{
+    if (value == 0u
+        || value == kStructuredVulkan2D3DPlaceholder
+        || StructuredVulkan2DHas3DSlot(value))
+    {
+        return false;
+    }
+
+    const u32 sourceClass = StructuredVulkan2DSourceClass(value);
+    return StructuredVulkan2DSourceIsReal2D(sourceClass)
+        || (sourceClass == 0u && (value & 0x00FFFFFFu) != 0u);
+}
+
+u8 AdvanceStructuredVulkan2DOverlayLineage(u8 lineage) noexcept
+{
+    switch (static_cast<StructuredVulkan2DOverlayLineage>(lineage))
+    {
+    case StructuredVulkan2DOverlayLineage::Fresh:
+        return static_cast<u8>(StructuredVulkan2DOverlayLineage::CarriedOnce);
+    case StructuredVulkan2DOverlayLineage::CarriedOnce:
+    case StructuredVulkan2DOverlayLineage::Carried2Plus:
+        return kStructuredVulkan2DOverlayLineageCarried2Plus;
+    case StructuredVulkan2DOverlayLineage::Unknown:
+    default:
+        return kStructuredVulkan2DOverlayLineageUnknown;
+    }
+}
+
+bool StructuredVulkan2DHasPreservableCaptureOverlay(
+    u32 plane0,
+    u32 plane1,
+    u32 control) noexcept
+{
+    const u32 controlAlpha = control >> 24u;
+    const bool structuredSlot =
+        (controlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u;
+    if (structuredSlot)
+    {
+        return (controlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
+            && StructuredVulkan2DCanPreserveCaptureOverlay(plane1);
+    }
+
+    return (controlAlpha & kStructuredVulkan2DOnlyFlag) != 0u
+        && StructuredVulkan2DCanPreserveCaptureOverlay(plane0);
+}
+
+bool StructuredVulkan2DCanUseCaptureMatched3DOverlay(u32 value)
+{
+    return value != 0u
+        && value != kStructuredVulkan2D3DPlaceholder
+        && StructuredVulkan2DHas3DSlot(value)
+        && (value & 0x00FFFFFFu) != 0u;
+}
+
+u32 StructuredVulkan2DControlRgbWithProtectedBlackTarget(u32 controlRgb, bool protectedBlack, bool targetTop)
+{
+    if (!protectedBlack)
+        return controlRgb;
+
+    return targetTop
+        ? (controlRgb & ~kStructuredVulkan2DProtectedBlackTargetsBottomFlag)
+        : (controlRgb | kStructuredVulkan2DProtectedBlackTargetsBottomFlag);
+}
+
 bool StructuredVulkan2DIsOpaqueBlack(u32 value)
 {
     return value != 0u
         && (value >> 24u) != 0x40u
         && (value & 0x00FFFFFFu) == 0u;
+}
+
+bool StructuredVulkan2DIsUnblendedProtectedBlackTargetBottom(u32 pixel, u32 control)
+{
+    return ((control >> 24u) & kStructuredVulkan2DProtectedBlackFlag) != 0u
+        && StructuredVulkan2DIsOpaqueBlack(pixel)
+        && (control & 0x00FFFFFEu) == 0u
+        && (control & kStructuredVulkan2DProtectedBlackTargetsBottomFlag) != 0u;
+}
+
+inline __attribute__((always_inline)) bool StructuredVulkan2DMergePixelResolvesToStructured(
+    u32 packedPlane0,
+    u32 packedPlane1,
+    u32 packedControl,
+    u32 structuredPlane0,
+    u32 structuredPlane1,
+    u32 structuredControl) noexcept
+{
+    const auto useful = [](u32 value) {
+        return value != 0u && value != kStructuredVulkan2D3DPlaceholder;
+    };
+    const auto planeHas3DSlot = [](u32 value) {
+        return ((value >> 24u) & 0xC0u) == kStructuredVulkan2DSlot3DFlag;
+    };
+    const auto controlHas3DSlot = [](u32 value) {
+        return ((value >> 24u) & kStructuredVulkan2DSlot3DFlag) != 0u;
+    };
+
+    const bool packedNeeds3DSlot =
+        planeHas3DSlot(packedPlane0)
+        || planeHas3DSlot(packedPlane1)
+        || controlHas3DSlot(packedControl);
+    const bool packedCurrent2DOnly =
+        (useful(packedPlane0) || useful(packedPlane1))
+        && !packedNeeds3DSlot;
+    const bool structuredRenderable =
+        useful(structuredPlane0) || useful(structuredPlane1);
+    const bool structuredHas3DSlot =
+        planeHas3DSlot(structuredPlane0)
+        || planeHas3DSlot(structuredPlane1)
+        || controlHas3DSlot(structuredControl);
+    const u32 structuredControlAlpha = structuredControl >> 24u;
+    const bool structuredHasAbove =
+        (structuredControlAlpha & (kStructuredVulkan2DSlot3DFlag | kStructuredVulkan2DAbove3DFlag))
+            == (kStructuredVulkan2DSlot3DFlag | kStructuredVulkan2DAbove3DFlag)
+        && structuredPlane1 != 0u;
+
+    return (structuredRenderable || (packedNeeds3DSlot && structuredHas3DSlot))
+        && !(structuredHas3DSlot && !structuredHasAbove && packedCurrent2DOnly);
 }
 
 constexpr u32 kRenderer2DDebugFeatureStaticBackground = 1u << 0u;
@@ -253,10 +422,115 @@ bool Renderer2DDebugShouldDrawObject(u32 unit, u32 sprnum, const u16* attrib)
 }
 }
 
+class SoftRenderer::IVulkan2DPipelineStrategy
+{
+public:
+    explicit IVulkan2DPipelineStrategy(SoftRenderer& renderer) noexcept
+        : Renderer(renderer)
+    {
+    }
+
+    virtual ~IVulkan2DPipelineStrategy() = default;
+
+    virtual void DrawScanline(u32 line, Unit* unit) = 0;
+    virtual void DrawSprites(u32 line, Unit* unit) = 0;
+    virtual void VBlankEnd(Unit* unitA, Unit* unitB) = 0;
+    [[nodiscard]] virtual bool UsesHistoricalVramDisplayCopy() const noexcept = 0;
+
+protected:
+    SoftRenderer& Renderer;
+};
+
+class SoftRenderer::FastPathVulkan2DPipelineStrategy final
+    : public SoftRenderer::IVulkan2DPipelineStrategy
+{
+public:
+    using IVulkan2DPipelineStrategy::IVulkan2DPipelineStrategy;
+
+    void DrawScanline(u32 line, Unit* unit) override
+    {
+        Renderer.DrawScanlineActivePipeline(line, unit);
+    }
+
+    void DrawSprites(u32 line, Unit* unit) override
+    {
+        Renderer.DrawSpritesActivePipeline(line, unit);
+    }
+
+    void VBlankEnd(Unit* unitA, Unit* unitB) override
+    {
+        Renderer.VBlankEndActivePipeline(unitA, unitB);
+    }
+
+    [[nodiscard]] bool UsesHistoricalVramDisplayCopy() const noexcept override
+    {
+        return false;
+    }
+};
+
+class SoftRenderer::CompatibilityVulkan2DPipelineStrategy final
+    : public SoftRenderer::IVulkan2DPipelineStrategy
+{
+public:
+    using IVulkan2DPipelineStrategy::IVulkan2DPipelineStrategy;
+
+    void DrawScanline(u32 line, Unit* unit) override
+    {
+        Renderer.DrawScanlineActivePipeline(line, unit);
+    }
+
+    void DrawSprites(u32 line, Unit* unit) override
+    {
+        Renderer.DrawSpritesActivePipeline(line, unit);
+    }
+
+    void VBlankEnd(Unit* unitA, Unit* unitB) override
+    {
+        Renderer.VBlankEndActivePipeline(unitA, unitB);
+    }
+
+    [[nodiscard]] bool UsesHistoricalVramDisplayCopy() const noexcept override
+    {
+        return true;
+    }
+};
+
 SoftRenderer::SoftRenderer(melonDS::GPU& gpu)
-    : Renderer2D(), GPU(gpu)
+    : Renderer2D()
+    , GPU(gpu)
+    , CompatibilityVulkan2DPipelineStrategyInstance(
+        std::make_unique<CompatibilityVulkan2DPipelineStrategy>(*this))
+    , FastPathVulkan2DPipelineStrategyInstance(
+        std::make_unique<FastPathVulkan2DPipelineStrategy>(*this))
 {
     // mosaic table is initialized at compile-time
+}
+
+SoftRenderer::~SoftRenderer() = default;
+
+SoftRenderer::IVulkan2DPipelineStrategy&
+SoftRenderer::activeVulkan2DPipelineStrategy() noexcept
+{
+    const VulkanPipelineProfile profile =
+        GPU.GPU3D.GetCurrentRenderer().GetVulkanPipelineProfile();
+    return UsesVulkanFastPath(profile)
+        ? *FastPathVulkan2DPipelineStrategyInstance
+        : *CompatibilityVulkan2DPipelineStrategyInstance;
+}
+
+void SoftRenderer::DrawScanline(u32 line, Unit* unit)
+{
+    activeVulkan2DPipelineStrategy().DrawScanline(line, unit);
+}
+
+void SoftRenderer::DrawSprites(u32 line, Unit* unit)
+{
+    activeVulkan2DPipelineStrategy().DrawSprites(line, unit);
+}
+
+void SoftRenderer::VBlankEnd(Unit* unitA, Unit* unitB)
+{
+    activeVulkan2DPipelineStrategy().VBlankEnd(unitA, unitB);
 }
 
 u32 SoftRenderer::ColorComposite(int i, u32 val1, u32 val2) const
@@ -339,7 +613,236 @@ const u32* SoftRenderer::GetStructuredVulkan2DPlane(bool topScreen, u32 plane) c
     const size_t screenIndex = topScreen ? 0u : 1u;
     const size_t offset =
         ((screenIndex * kStructuredPlaneCount) + static_cast<size_t>(plane)) * kStructuredPixelCount;
-    return StructuredVulkan2DPlanes.data() + offset;
+    return StructuredVulkan2DPlanesStorage.data()
+        + (static_cast<size_t>(StructuredVulkan2DReadBufferIndex) * kStructuredPlaneBufferWords)
+        + offset;
+}
+
+const u8* SoftRenderer::GetStructuredVulkan2DLinePayloadMask(bool topScreen) const noexcept
+{
+    if (!UseStructuredVulkan2D())
+        return nullptr;
+
+    const size_t screenIndex = topScreen ? 0u : 1u;
+    return StructuredVulkan2DLineHasPayloadStorage.data()
+        + (static_cast<size_t>(StructuredVulkan2DReadBufferIndex) * kStructuredLineMaskBytes)
+        + (screenIndex * kStructuredScreenHeight);
+}
+
+const u8* SoftRenderer::GetStructuredVulkan2DLine3DSlotMask(bool topScreen) const noexcept
+{
+    if (!UseStructuredVulkan2D())
+        return nullptr;
+
+    const size_t screenIndex = topScreen ? 0u : 1u;
+    return StructuredVulkan2DLineHas3DSlotStorage.data()
+        + (static_cast<size_t>(StructuredVulkan2DReadBufferIndex) * kStructuredLineMaskBytes)
+        + (screenIndex * kStructuredScreenHeight);
+}
+
+const u8* SoftRenderer::GetStructuredVulkan2DLinePure3DMask(bool topScreen) const noexcept
+{
+    if (!UseStructuredVulkan2D())
+        return nullptr;
+
+    const size_t screenIndex = topScreen ? 0u : 1u;
+    return StructuredVulkan2DLinePure3DStorage.data()
+        + (static_cast<size_t>(StructuredVulkan2DReadBufferIndex) * kStructuredLineMaskBytes)
+        + (screenIndex * kStructuredScreenHeight);
+}
+
+const u8* SoftRenderer::GetStructuredVulkan2DLineKnownExactMask(bool topScreen) const noexcept
+{
+    if (!UseStructuredVulkan2D())
+        return nullptr;
+
+    const size_t screenIndex = topScreen ? 0u : 1u;
+    return StructuredVulkan2DLineKnownExactStorage.data()
+        + (static_cast<size_t>(StructuredVulkan2DReadBufferIndex) * kStructuredLineMaskBytes)
+        + (screenIndex * kStructuredScreenHeight);
+}
+
+const SoftRenderer::StructuredVulkan2DObjCaptureLineIdentity*
+SoftRenderer::GetStructuredVulkan2DObjCaptureIdentityLines(bool topScreen) const noexcept
+{
+    if (!UseStructuredVulkan2D())
+        return nullptr;
+
+    const size_t screenIndex = topScreen ? 0u : 1u;
+    return StructuredVulkan2DObjCaptureIdentityStorage.data()
+        + (static_cast<size_t>(StructuredVulkan2DReadBufferIndex) * kStructuredLineMaskBytes)
+        + (screenIndex * kStructuredScreenHeight);
+}
+
+const SoftRenderer::StructuredVulkan2DDisplayedCaptureLineIdentity*
+SoftRenderer::GetStructuredVulkan2DDisplayedCaptureIdentityLines(bool topScreen) const noexcept
+{
+    if (!UseStructuredVulkan2D())
+        return nullptr;
+
+    const size_t screenIndex = topScreen ? 0u : 1u;
+    return StructuredVulkan2DDisplayedCaptureIdentityStorage.data()
+        + (static_cast<size_t>(StructuredVulkan2DReadBufferIndex) * kStructuredLineMaskBytes)
+        + (screenIndex * kStructuredScreenHeight);
+}
+
+SoftRenderer::StructuredVulkan2DCaptureBankIdentity
+SoftRenderer::GetStructuredVulkan2DCaptureBankIdentity(u32 vramBank) const noexcept
+{
+    StructuredVulkan2DCaptureBankIdentity result{};
+    if (!UseStructuredVulkan2D() || vramBank >= 4u)
+        return result;
+
+    result.VramBank = static_cast<u8>(vramBank);
+    bool hasFirstIdentity = false;
+    bool conflictingIdentity = false;
+    const size_t bankLineBase =
+        static_cast<size_t>(vramBank) * kStructuredScreenHeight;
+    for (size_t line = 0; line < kStructuredScreenHeight; line++)
+    {
+        const size_t lineIndex = bankLineBase + line;
+        if (StructuredVulkan2DCaptureLineValid[lineIndex] != 0u)
+            result.ValidLines++;
+
+        switch (StructuredVulkan2DCaptureWriterRoute[lineIndex])
+        {
+        case StructuredCaptureWriterRoute::Fast:
+            result.FastLines++;
+            break;
+        case StructuredCaptureWriterRoute::General:
+            result.GeneralLines++;
+            break;
+        default:
+            result.UnknownLines++;
+            break;
+        }
+
+        const StructuredCaptureLineIdentity& lineIdentity =
+            StructuredVulkan2DCaptureLineIdentity[lineIndex];
+        if (lineIdentity.State == StructuredCaptureIdentityState::Conflict)
+        {
+            result.ConflictLines++;
+            conflictingIdentity = true;
+            continue;
+        }
+        if (lineIdentity.State != StructuredCaptureIdentityState::Uniform
+            || !lineIdentity.Source.Valid)
+        {
+            continue;
+        }
+
+        result.UniformLines++;
+        if (!hasFirstIdentity)
+        {
+            result.Source = lineIdentity.Source;
+            hasFirstIdentity = true;
+            continue;
+        }
+        if (result.Source.Sequence != lineIdentity.Source.Sequence
+            || result.Source.PolygonCount != lineIdentity.Source.PolygonCount
+            || result.Source.CaptureCnt != lineIdentity.Source.CaptureCnt
+            || result.Source.ScreenSwap != lineIdentity.Source.ScreenSwap)
+        {
+            conflictingIdentity = true;
+            result.ConflictLines++;
+        }
+    }
+
+    const u16* const vramPixels =
+        reinterpret_cast<const u16*>(GPU.VRAM[vramBank]);
+    const size_t packedShadowBase =
+        static_cast<size_t>(vramBank) * kStructuredPixelCount;
+    if (vramPixels != nullptr)
+    {
+        for (size_t index = 0; index < kStructuredPixelCount; index++)
+        {
+            if (StructuredVulkan2DCapturePackedShadow[packedShadowBase + index]
+                == vramPixels[index])
+            {
+                result.ShadowMatchedPixels++;
+            }
+        }
+    }
+    result.ShadowExact = result.ShadowMatchedPixels == kStructuredPixelCount;
+
+    result.Valid =
+        hasFirstIdentity
+        && !conflictingIdentity
+        && result.ValidLines == kStructuredScreenHeight
+        && result.UniformLines == kStructuredScreenHeight
+        && result.ShadowExact;
+    if (!result.Valid)
+        result.Source = {};
+    return result;
+}
+
+bool SoftRenderer::GetSameBankMode2DisplayedCaptureIdentity(
+    u32& outVramBank,
+    CaptureSourceIdentity& outIdentity) const noexcept
+{
+    outVramBank = SameBankMode2DisplayedVramBank;
+    outIdentity = SameBankMode2DisplayedIdentity;
+    return SameBankMode2DisplayedIdentityValid
+        && outVramBank < SameBankMode2WriterIdentity.size()
+        && outIdentity.Valid;
+}
+
+bool SoftRenderer::GetSameBankMode2CompletedWriterIdentity(
+    u32& outVramBank,
+    CaptureSourceIdentity& outIdentity) const noexcept
+{
+    outVramBank = SameBankMode2CompletedWriterVramBank;
+    outIdentity = SameBankMode2CompletedWriterIdentity;
+    return SameBankMode2CompletedWriterIdentityValid
+        && outVramBank < SameBankMode2WriterIdentity.size()
+        && outIdentity.Valid;
+}
+
+void SoftRenderer::BeginStructuredVulkan2DFrame() noexcept
+{
+    SameBankMode2DisplayedIdentity = {};
+    SameBankMode2DisplayedVramBank = 4u;
+    SameBankMode2DisplayedIdentityValid = false;
+    SameBankMode2CompletedWriterIdentity = {};
+    SameBankMode2CompletedWriterVramBank = 4u;
+    SameBankMode2CompletedWriterIdentityValid = false;
+    std::fill_n(StructuredVulkan2DLineKnownExact, kStructuredLineMaskBytes, 0u);
+    std::fill_n(
+        StructuredVulkan2DObjCaptureIdentity,
+        kStructuredLineMaskBytes,
+        StructuredVulkan2DObjCaptureLineIdentity{});
+    std::fill_n(
+        StructuredVulkan2DDisplayedCaptureIdentity,
+        kStructuredLineMaskBytes,
+        StructuredVulkan2DDisplayedCaptureLineIdentity{});
+}
+
+void SoftRenderer::SwapStructuredVulkan2DBuffers() noexcept
+{
+    StructuredVulkan2DReadBufferIndex = StructuredVulkan2DWriteBufferIndex;
+    StructuredVulkan2DWriteBufferIndex ^= 1u;
+    const size_t writePlaneBase =
+        static_cast<size_t>(StructuredVulkan2DWriteBufferIndex) * kStructuredPlaneBufferWords;
+    const size_t writeMaskBase =
+        static_cast<size_t>(StructuredVulkan2DWriteBufferIndex) * kStructuredLineMaskBytes;
+    StructuredVulkan2DPlanes = StructuredVulkan2DPlanesStorage.data() + writePlaneBase;
+    StructuredVulkan2DLineHasPayload = StructuredVulkan2DLineHasPayloadStorage.data() + writeMaskBase;
+    StructuredVulkan2DLineHas3DSlot = StructuredVulkan2DLineHas3DSlotStorage.data() + writeMaskBase;
+    StructuredVulkan2DLinePure3D = StructuredVulkan2DLinePure3DStorage.data() + writeMaskBase;
+    StructuredVulkan2DLineKnownExact = StructuredVulkan2DLineKnownExactStorage.data() + writeMaskBase;
+    StructuredVulkan2DObjCaptureIdentity =
+        StructuredVulkan2DObjCaptureIdentityStorage.data() + writeMaskBase;
+    StructuredVulkan2DDisplayedCaptureIdentity =
+        StructuredVulkan2DDisplayedCaptureIdentityStorage.data() + writeMaskBase;
+    std::fill_n(StructuredVulkan2DLineKnownExact, kStructuredLineMaskBytes, 0u);
+    std::fill_n(
+        StructuredVulkan2DObjCaptureIdentity,
+        kStructuredLineMaskBytes,
+        StructuredVulkan2DObjCaptureLineIdentity{});
+    std::fill_n(
+        StructuredVulkan2DDisplayedCaptureIdentity,
+        kStructuredLineMaskBytes,
+        StructuredVulkan2DDisplayedCaptureLineIdentity{});
 }
 
 void SoftRenderer::ClearStructuredVulkan2DState() noexcept
@@ -348,17 +851,333 @@ void SoftRenderer::ClearStructuredVulkan2DState() noexcept
     HasLastDebugCapture3dSource = false;
     std::fill_n(LastDebugCapture3dSource, kStructuredPixelCount, 0u);
     CaptureLineUses3d.fill(0);
+    SameBankMode2WriterIdentity.fill({});
+    SameBankMode2WriterIdentityValid.fill(false);
+    SameBankMode2DisplayedIdentity = {};
+    SameBankMode2DisplayedVramBank = 4u;
+    SameBankMode2DisplayedIdentityValid = false;
+    SameBankMode2CompletedWriterIdentity = {};
+    SameBankMode2CompletedWriterVramBank = 4u;
+    SameBankMode2CompletedWriterIdentityValid = false;
+    SameBankMode2PendingWriterIdentity = {};
+    SameBankMode2PendingWriterLines = 0u;
+    SameBankMode2PendingWriterConflict = false;
     StructuredVulkan2DCaptureSourceLine.fill(0);
     StructuredVulkan2DCaptureSourceLineValid = false;
     StructuredVulkan2DCaptureSourceLineY = 0;
-    StructuredVulkan2DPlanes.fill(0);
+    StructuredVulkan2DPlanesStorage.fill(0);
+    StructuredVulkan2DLineHasPayloadStorage.fill(0);
+    StructuredVulkan2DLineHas3DSlotStorage.fill(0);
+    StructuredVulkan2DLinePure3DStorage.fill(0);
+    StructuredVulkan2DLineKnownExactStorage.fill(0);
+    StructuredVulkan2DObjCaptureIdentityStorage.fill({});
+    StructuredVulkan2DDisplayedCaptureIdentityStorage.fill({});
+    StructuredVulkan2DWriteBufferIndex = 0;
+    StructuredVulkan2DReadBufferIndex = 0;
+    StructuredVulkan2DPlanes = StructuredVulkan2DPlanesStorage.data();
+    StructuredVulkan2DLineHasPayload = StructuredVulkan2DLineHasPayloadStorage.data();
+    StructuredVulkan2DLineHas3DSlot = StructuredVulkan2DLineHas3DSlotStorage.data();
+    StructuredVulkan2DLinePure3D = StructuredVulkan2DLinePure3DStorage.data();
+    StructuredVulkan2DLineKnownExact = StructuredVulkan2DLineKnownExactStorage.data();
+    StructuredVulkan2DObjCaptureIdentity = StructuredVulkan2DObjCaptureIdentityStorage.data();
+    StructuredVulkan2DDisplayedCaptureIdentity =
+        StructuredVulkan2DDisplayedCaptureIdentityStorage.data();
+    OBJLineCaptureIdentity.fill({});
+    OBJLineCaptureIdentityAvailable.fill(false);
+    ComposedObjCaptureIdentity.fill({});
+    TrackSpriteObjCaptureIdentity = false;
+    TrackComposedObjCaptureIdentity = false;
+    CurrentSpriteRenderLine = kStructuredScreenHeight;
+    StructuredVulkan2DCurrentLineY = kStructuredScreenHeight;
     StructuredVulkan2DCapturePlanes.fill(0);
+    StructuredVulkan2DCaptureOverlayLineage.fill(
+        kStructuredVulkan2DOverlayLineageUnknown);
     StructuredVulkan2DCaptureLineValid.fill(0);
+    StructuredVulkan2DCaptureLineHasPayload.fill(0);
+    StructuredVulkan2DCaptureLineHas3DSlot.fill(0);
+    StructuredVulkan2DCapturePackedShadow.fill(0);
+    StructuredVulkan2DCaptureLineIdentity.fill({});
+    StructuredVulkan2DCaptureWriterRoute.fill(StructuredCaptureWriterRoute::Unknown);
 }
 
 bool SoftRenderer::UseStructuredVulkan2D() const noexcept
 {
     return GPU.GPU3D.GetCurrentRenderer().UsesStructured2DMetadata();
+}
+
+void SoftRenderer::ClearStructuredVulkan2DObjCaptureLineIdentity(u32 line) noexcept
+{
+    if (!UseStructuredVulkan2D() || line >= kStructuredScreenHeight)
+        return;
+
+    const size_t screenIndex = StructuredVulkan2DCurrentLineTargetsTop ? 0u : 1u;
+    StructuredVulkan2DObjCaptureIdentity[
+        (screenIndex * kStructuredScreenHeight) + static_cast<size_t>(line)] = {};
+}
+
+void SoftRenderer::ClearStructuredVulkan2DDisplayedCaptureLineIdentity(u32 line) noexcept
+{
+    if (!UseStructuredVulkan2D() || line >= kStructuredScreenHeight)
+        return;
+
+    const size_t screenIndex = StructuredVulkan2DCurrentLineTargetsTop ? 0u : 1u;
+    StructuredVulkan2DDisplayedCaptureIdentity[
+        (screenIndex * kStructuredScreenHeight) + static_cast<size_t>(line)] = {};
+}
+
+void SoftRenderer::ObserveStructuredVulkan2DObjCaptureIdentity(
+    const ObjCaptureIdentityTag& identity) noexcept
+{
+    if (!UseStructuredVulkan2D()
+        || !identity.Source.Valid
+        || StructuredVulkan2DCurrentLineY >= kStructuredScreenHeight)
+    {
+        return;
+    }
+
+    const size_t screenIndex = StructuredVulkan2DCurrentLineTargetsTop ? 0u : 1u;
+    StructuredVulkan2DObjCaptureLineIdentity& lineIdentity =
+        StructuredVulkan2DObjCaptureIdentity[
+            (screenIndex * kStructuredScreenHeight)
+            + static_cast<size_t>(StructuredVulkan2DCurrentLineY)];
+    if (lineIdentity.State == StructuredCaptureIdentityState::Unknown)
+    {
+        lineIdentity.Source = identity.Source;
+        lineIdentity.ConsumedPixels = 1u;
+        lineIdentity.DirectXYPixels = identity.DirectXY ? 1u : 0u;
+        lineIdentity.State = StructuredCaptureIdentityState::Uniform;
+        return;
+    }
+
+    if (lineIdentity.ConsumedPixels < kStructuredScreenWidth)
+        lineIdentity.ConsumedPixels++;
+    if (identity.DirectXY && lineIdentity.DirectXYPixels < kStructuredScreenWidth)
+        lineIdentity.DirectXYPixels++;
+    if (lineIdentity.State == StructuredCaptureIdentityState::Uniform
+        && (lineIdentity.Source.Sequence != identity.Source.Sequence
+            || lineIdentity.Source.PolygonCount != identity.Source.PolygonCount
+            || lineIdentity.Source.CaptureCnt != identity.Source.CaptureCnt
+            || lineIdentity.Source.ScreenSwap != identity.Source.ScreenSwap))
+    {
+        lineIdentity.Source = {};
+        lineIdentity.State = StructuredCaptureIdentityState::Conflict;
+    }
+}
+
+void SoftRenderer::ShiftComposedObjCaptureIdentity(u32* dst) noexcept
+{
+    if (!TrackComposedObjCaptureIdentity
+        || dst < BGOBJLine
+        || dst >= BGOBJLine + kStructuredScreenWidth)
+    {
+        return;
+    }
+
+    const size_t x = static_cast<size_t>(dst - BGOBJLine);
+    ComposedObjCaptureIdentity[(kStructuredScreenWidth * 2u) + x] =
+        ComposedObjCaptureIdentity[kStructuredScreenWidth + x];
+    ComposedObjCaptureIdentity[kStructuredScreenWidth + x] =
+        ComposedObjCaptureIdentity[x];
+    ComposedObjCaptureIdentity[x] = {};
+}
+
+void SoftRenderer::MarkStructuredVulkan2DObjCaptureIdentityConflict() noexcept
+{
+    if (!UseStructuredVulkan2D()
+        || StructuredVulkan2DCurrentLineY >= kStructuredScreenHeight)
+    {
+        return;
+    }
+
+    const size_t screenIndex = StructuredVulkan2DCurrentLineTargetsTop ? 0u : 1u;
+    StructuredVulkan2DObjCaptureLineIdentity& lineIdentity =
+        StructuredVulkan2DObjCaptureIdentity[
+            (screenIndex * kStructuredScreenHeight)
+            + static_cast<size_t>(StructuredVulkan2DCurrentLineY)];
+    lineIdentity.Source = {};
+    lineIdentity.ConsumedPixels = 0u;
+    lineIdentity.DirectXYPixels = 0u;
+    lineIdentity.State = StructuredCaptureIdentityState::Conflict;
+}
+
+void SoftRenderer::ObserveFinalStructuredVulkan2DObjCaptureIdentity(
+    size_t index,
+    size_t screenBase,
+    u32 originalVal1,
+    u32 originalVal2,
+    u32 originalVal3) noexcept
+{
+    if (!TrackComposedObjCaptureIdentity
+        || DirectCaptureSourceLineSink
+        || index >= kStructuredPixelCount)
+    {
+        return;
+    }
+
+    const size_t x = index % kStructuredScreenWidth;
+    const u32 outputPlane0 = StructuredVulkan2DPlanes[screenBase + index];
+    const u32 outputPlane1 =
+        StructuredVulkan2DPlanes[screenBase + kStructuredPixelCount + index];
+    const u32 outputControl =
+        StructuredVulkan2DPlanes[screenBase + (kStructuredPixelCount * 2u) + index];
+    const u32 controlAlpha = outputControl >> 24u;
+    if ((controlAlpha & kStructuredVulkan2DSlot3DFlag) == 0u)
+        return;
+
+    const std::array<u32, kStructuredPlaneCount> rawValues = {
+        originalVal1,
+        originalVal2,
+        originalVal3,
+    };
+    ObjCaptureIdentityTag survivingIdentity{};
+    bool hasSurvivingIdentity = false;
+    for (size_t depth = 0; depth < kStructuredPlaneCount; depth++)
+    {
+        const ObjCaptureIdentityTag& candidate =
+            ComposedObjCaptureIdentity[(depth * kStructuredScreenWidth) + x];
+        const u32 raw = rawValues[depth];
+        if (!candidate.Source.Valid
+            || raw == 0u
+            || raw == kStructuredVulkan2D3DPlaceholder
+            || !StructuredVulkan2DSourceIsReal2D(StructuredVulkan2DSourceClass(raw)))
+        {
+            continue;
+        }
+        bool rawValueIsUnique = true;
+        for (size_t otherDepth = 0; otherDepth < kStructuredPlaneCount; otherDepth++)
+        {
+            if (otherDepth != depth && rawValues[otherDepth] == raw)
+            {
+                rawValueIsUnique = false;
+                break;
+            }
+        }
+        if (!rawValueIsUnique)
+            continue;
+
+        const bool survivesBelow = outputPlane0 == raw;
+        const bool survivesAbove =
+            (controlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
+            && outputPlane1 == raw;
+        if (survivesBelow == survivesAbove)
+            continue;
+
+        if (!hasSurvivingIdentity)
+        {
+            survivingIdentity = candidate;
+            hasSurvivingIdentity = true;
+            continue;
+        }
+
+        MarkStructuredVulkan2DObjCaptureIdentityConflict();
+        return;
+    }
+
+    if (hasSurvivingIdentity)
+        ObserveStructuredVulkan2DObjCaptureIdentity(survivingIdentity);
+}
+
+bool SoftRenderer::TryGetEngineBDirectBitmapObjCaptureIdentity(
+    u32 objByteAddress,
+    u16 packedColor,
+    u32 screenX,
+    CaptureSourceIdentity& outIdentity) const noexcept
+{
+    outIdentity = {};
+    if (!UseStructuredVulkan2D()
+        || CurUnit == nullptr
+        || CurUnit->Num != 1u
+        || CurrentSpriteRenderLine >= kStructuredScreenHeight
+        || screenX >= kStructuredScreenWidth
+        || (packedColor & 0x8000u) == 0u
+        || (objByteAddress & 1u) != 0u)
+    {
+        return false;
+    }
+
+    const u32 mapIndex = (objByteAddress >> 14u) & 0x7u;
+    if (GPU.VRAMMap_BOBJ[mapIndex] != (1u << 3u))
+        return false;
+
+    constexpr u32 vramBank = 3u;
+    const u32 physicalByteAddress = objByteAddress & GPU.VRAMMask[vramBank];
+    const u32 captureAddress = physicalByteAddress >> 1u;
+    if (captureAddress >= kStructuredPixelCount
+        || captureAddress
+            != (CurrentSpriteRenderLine * kStructuredScreenWidth) + screenX)
+    {
+        return false;
+    }
+
+    const size_t lineIndex =
+        (static_cast<size_t>(vramBank) * kStructuredScreenHeight)
+        + static_cast<size_t>(CurrentSpriteRenderLine);
+    const StructuredCaptureLineIdentity& lineIdentity =
+        StructuredVulkan2DCaptureLineIdentity[lineIndex];
+    if (StructuredVulkan2DCaptureLineValid[lineIndex] == 0u
+        || StructuredVulkan2DCaptureLineHas3DSlot[lineIndex] == 0u
+        || lineIdentity.State != StructuredCaptureIdentityState::Uniform
+        || !lineIdentity.Source.Valid)
+    {
+        return false;
+    }
+
+    const size_t packedShadowIndex =
+        (static_cast<size_t>(vramBank) * kStructuredPixelCount)
+        + static_cast<size_t>(captureAddress);
+    if (StructuredVulkan2DCapturePackedShadow[packedShadowIndex] != packedColor)
+        return false;
+
+    const size_t captureBase =
+        static_cast<size_t>(vramBank) * kStructuredPlaneCount * kStructuredPixelCount;
+    const size_t captureIndex = static_cast<size_t>(captureAddress);
+    const u32 belowPlane = StructuredVulkan2DCapturePlanes[captureBase + captureIndex];
+    const u32 abovePlane =
+        StructuredVulkan2DCapturePlanes[captureBase + kStructuredPixelCount + captureIndex];
+    const u32 control =
+        StructuredVulkan2DCapturePlanes[
+            captureBase + (kStructuredPixelCount * 2u) + captureIndex];
+    const bool structured3DSlot =
+        StructuredVulkan2DHas3DSlot(belowPlane)
+        || StructuredVulkan2DHas3DSlot(abovePlane)
+        || ((control >> 24u) & kStructuredVulkan2DSlot3DFlag) != 0u;
+    if (!structured3DSlot)
+        return false;
+
+    const auto packStructuredColor = [](u32 color) noexcept -> u16 {
+        return static_cast<u16>(
+            ((color >> 1u) & 0x1Fu)
+            | (((color >> 9u) & 0x1Fu) << 5u)
+            | (((color >> 17u) & 0x1Fu) << 10u)
+            | ((color >> 24u) != 0u ? 0x8000u : 0u));
+    };
+    const auto matchesPackedColor = [&](u32 color) noexcept {
+        return color != 0u
+            && color != kStructuredVulkan2D3DPlaceholder
+            && packStructuredColor(color) == packedColor;
+    };
+    if (!matchesPackedColor(belowPlane) && !matchesPackedColor(abovePlane))
+        return false;
+
+    outIdentity = lineIdentity.Source;
+    return true;
+}
+
+bool SoftRenderer::StructuredVulkan2DSourceACaptureHasDominant2DReplay() const noexcept
+{
+    if (LastDebugCaptureStats.CaptureLines == 0u || LastDebugCaptureStats.CaptureMode != 0u)
+        return true;
+
+    constexpr u32 dominantLineThreshold = kStructuredScreenHeight / 2u;
+    if (LastDebugCaptureStats.CaptureBacked3DExplicitSlotLines > dominantLineThreshold
+        && LastDebugCaptureStats.CaptureBacked3DNoBestClassLines <= dominantLineThreshold)
+    {
+        return false;
+    }
+
+    constexpr u32 dominantStructured2DThreshold = (kStructuredScreenWidth * kStructuredScreenHeight) / 4u;
+    return LastDebugCaptureStats.StructuredCopy2DOnlyPixels > dominantStructured2DThreshold
+        || LastDebugCaptureStats.StructuredCopySourceBOverlayPixels > dominantStructured2DThreshold;
 }
 
 void SoftRenderer::ClearStructuredVulkan2DLine(u32 line)
@@ -372,10 +1191,139 @@ void SoftRenderer::ClearStructuredVulkan2DLine(u32 line)
     for (size_t plane = 0; plane < kStructuredPlaneCount; plane++)
     {
         std::fill_n(
-            StructuredVulkan2DPlanes.data() + screenBase + (plane * kStructuredPixelCount) + rowBase,
+            StructuredVulkan2DPlanes + screenBase + (plane * kStructuredPixelCount) + rowBase,
             kStructuredScreenWidth,
             0u);
     }
+    const size_t lineIndex = (screenIndex * kStructuredScreenHeight) + static_cast<size_t>(line);
+    StructuredVulkan2DLineHasPayload[lineIndex] = 0u;
+    StructuredVulkan2DLineHas3DSlot[lineIndex] = 0u;
+    StructuredVulkan2DLinePure3D[lineIndex] = 0u;
+    StructuredVulkan2DLineKnownExact[lineIndex] = 0u;
+    ClearStructuredVulkan2DObjCaptureLineIdentity(line);
+    ClearStructuredVulkan2DDisplayedCaptureLineIdentity(line);
+}
+
+bool SoftRenderer::CanUseStructuredVulkan2DPure3DLine(u32 dispmode) const noexcept
+{
+    if (!UseStructuredVulkan2D()
+        || !GPU.GPU3D.IsRendererAccelerated()
+        || CurUnit == nullptr
+        || CurUnit->Num != 0
+        || (CurUnit->CaptureCnt & (1u << 31u)) != 0u
+        || dispmode != 1u)
+    {
+        return false;
+    }
+    if (MelonDSAndroid::getRenderer2DDebugForcedMode(CurUnit->Num) >= 0)
+        return false;
+    if (LastDebugCaptureStats.CaptureLines != 0u
+        && LastDebugCaptureStats.CaptureMode == 0u)
+    {
+        return false;
+    }
+
+    constexpr u32 kBg0Is3D = 1u << 3u;
+    constexpr u32 kBg0Enable = 1u << 8u;
+    constexpr u32 kOtherBgEnable = (1u << 9u) | (1u << 10u) | (1u << 11u);
+    constexpr u32 kObjEnable = 1u << 12u;
+    constexpr u32 kWindowEnable = 0xE000u;
+    constexpr u32 kDisplayModeMask = 0x30000u;
+    const u32 dispcnt = CurUnit->DispCnt;
+    if ((dispcnt & (kBg0Is3D | kBg0Enable)) != (kBg0Is3D | kBg0Enable))
+        return false;
+    if ((dispcnt & (kOtherBgEnable | kObjEnable | kWindowEnable)) != 0u)
+        return false;
+    if ((dispcnt & kDisplayModeMask) != (1u << 16u))
+        return false;
+    if (!Renderer2DDebugShouldDraw3DBg(CurUnit->Num, CurUnit->BGCnt[0]))
+        return false;
+
+    return true;
+}
+
+void SoftRenderer::FillStructuredVulkan2DPure3DLine(u32 line, u32* dst, u32 masterBrightness, bool writeLineMeta)
+{
+    if (!UseStructuredVulkan2D() || line >= kStructuredScreenHeight)
+        return;
+
+    constexpr u32 kPure3DControl = kStructuredVulkan2DSlot3DFlag << 24u;
+    constexpr u32 kPure3DRaw = 0x40000000u;
+    const size_t rowBase = static_cast<size_t>(line) * kStructuredScreenWidth;
+    const size_t screenIndex = StructuredVulkan2DCurrentLineTargetsTop ? 0u : 1u;
+    const size_t screenBase = screenIndex * kStructuredPlaneCount * kStructuredPixelCount;
+
+    std::fill_n(dst, kStructuredScreenWidth, kPure3DRaw);
+    std::fill_n(dst + kStructuredScreenWidth, kStructuredScreenWidth, 0u);
+    std::fill_n(dst + (kStructuredScreenWidth * 2u), kStructuredScreenWidth, kPure3DControl);
+
+    std::fill_n(
+        StructuredVulkan2DPlanes + screenBase + rowBase,
+        kStructuredScreenWidth,
+        0u);
+    std::fill_n(
+        StructuredVulkan2DPlanes + screenBase + kStructuredPixelCount + rowBase,
+        kStructuredScreenWidth,
+        0u);
+    std::fill_n(
+        StructuredVulkan2DPlanes + screenBase + (kStructuredPixelCount * 2u) + rowBase,
+        kStructuredScreenWidth,
+        kPure3DControl);
+    const size_t lineIndex = (screenIndex * kStructuredScreenHeight) + static_cast<size_t>(line);
+    StructuredVulkan2DLineHasPayload[lineIndex] = 1u;
+    StructuredVulkan2DLineHas3DSlot[lineIndex] = 1u;
+    StructuredVulkan2DLinePure3D[lineIndex] = 1u;
+    StructuredVulkan2DLineKnownExact[lineIndex] =
+        StructuredVulkan2DCurrentLineMapsDirectly ? 1u : 0u;
+    ClearStructuredVulkan2DObjCaptureLineIdentity(line);
+    ClearStructuredVulkan2DDisplayedCaptureLineIdentity(line);
+
+    if (writeLineMeta)
+    {
+        const u32 xpos = GPU.GPU3D.GetRenderXPos();
+        dst[kStructuredScreenWidth * 3u] =
+            masterBrightness
+            | (CurUnit->DispCnt & 0x30000u)
+            | (xpos << 24u)
+            | ((xpos & 0x100u) << 15u);
+    }
+}
+
+bool SoftRenderer::TryPromoteStructuredVulkan2DComposedPure3DLine(u32 line, u32 masterBrightness)
+{
+    if (!UseStructuredVulkan2D()
+        || !GPU.GPU3D.IsRendererAccelerated()
+        || line >= kStructuredScreenHeight
+        || CurUnit == nullptr
+        || CurUnit->CaptureLatch
+        || MelonDSAndroid::getRenderer2DDebugForcedMode(CurUnit->Num) >= 0)
+    {
+        return false;
+    }
+
+    const u32 displayMode = (CurUnit->DispCnt >> 16u) & (CurUnit->Num ? 0x1u : 0x3u);
+    if (!CanUseStructuredVulkan2DPure3DLine(displayMode))
+        return false;
+
+    for (u32 x = 0; x < kStructuredScreenWidth; x++)
+    {
+        const u32 val0 = BGOBJLine[x];
+        const u32 val1 = BGOBJLine[kStructuredScreenWidth + x];
+        const u32 val2 = BGOBJLine[(kStructuredScreenWidth * 2u) + x];
+        const bool slot0 = StructuredVulkan2DHas3DSlot(val0);
+        const bool slot1 = StructuredVulkan2DHas3DSlot(val1);
+        const bool slot2 = StructuredVulkan2DHas3DSlot(val2);
+        if (!slot0 && !slot1 && !slot2)
+            return false;
+
+        const bool real0 = StructuredVulkan2DSourceIsReal2D(StructuredVulkan2DSourceClass(val0));
+        const bool real1 = StructuredVulkan2DSourceIsReal2D(StructuredVulkan2DSourceClass(val1));
+        if ((slot1 && real0) || (slot2 && (real0 || real1)))
+            return false;
+    }
+
+    FillStructuredVulkan2DPure3DLine(line, BGOBJLine, masterBrightness, false);
+    return true;
 }
 
 void SoftRenderer::ClearStructuredVulkan2DCapture(u32 vramBank)
@@ -389,15 +1337,206 @@ void SoftRenderer::ClearStructuredVulkan2DCapture(u32 vramBank)
         kStructuredPlaneCount * kStructuredPixelCount,
         0u);
     std::fill_n(
+        StructuredVulkan2DCaptureOverlayLineage.data()
+            + (static_cast<size_t>(vramBank) * kStructuredPixelCount),
+        kStructuredPixelCount,
+        kStructuredVulkan2DOverlayLineageUnknown);
+    std::fill_n(
         StructuredVulkan2DCaptureLineValid.data() + (static_cast<size_t>(vramBank) * kStructuredScreenHeight),
         kStructuredScreenHeight,
         0u);
+    std::fill_n(
+        StructuredVulkan2DCaptureLineHasPayload.data() + (static_cast<size_t>(vramBank) * kStructuredScreenHeight),
+        kStructuredScreenHeight,
+        0u);
+    std::fill_n(
+        StructuredVulkan2DCaptureLineHas3DSlot.data() + (static_cast<size_t>(vramBank) * kStructuredScreenHeight),
+        kStructuredScreenHeight,
+        0u);
+    std::fill_n(
+        StructuredVulkan2DCaptureLineIdentity.data() + (static_cast<size_t>(vramBank) * kStructuredScreenHeight),
+        kStructuredScreenHeight,
+        StructuredCaptureLineIdentity{});
+    std::fill_n(
+        StructuredVulkan2DCaptureWriterRoute.data()
+            + (static_cast<size_t>(vramBank) * kStructuredScreenHeight),
+        kStructuredScreenHeight,
+        StructuredCaptureWriterRoute::Unknown);
+    std::fill_n(
+        StructuredVulkan2DCapturePackedShadow.data()
+            + (static_cast<size_t>(vramBank) * kStructuredPixelCount),
+        kStructuredPixelCount,
+        0u);
+}
+
+void SoftRenderer::InvalidateStructuredVulkan2DCaptureIdentityRange(
+    u32 vramBank,
+    u32 dstAddress,
+    u32 width,
+    StructuredCaptureIdentityState state) noexcept
+{
+    if (!UseStructuredVulkan2D() || vramBank >= 4u)
+        return;
+
+    std::array<bool, kStructuredScreenHeight> touchedLines {};
+    const u32 invalidateWidth = std::min<u32>(width, kStructuredScreenWidth);
+    for (u32 x = 0; x < invalidateWidth; x++)
+    {
+        const u32 captureAddress = (dstAddress + x) & 0xFFFFu;
+        if (captureAddress >= kStructuredPixelCount)
+            continue;
+
+        StructuredVulkan2DCapturePackedShadow[
+            (static_cast<size_t>(vramBank) * kStructuredPixelCount)
+            + static_cast<size_t>(captureAddress)] = 0u;
+        touchedLines[captureAddress / kStructuredScreenWidth] = true;
+    }
+
+    for (u32 line = 0; line < kStructuredScreenHeight; line++)
+    {
+        if (!touchedLines[line])
+            continue;
+
+        StructuredCaptureLineIdentity& identity =
+            StructuredVulkan2DCaptureLineIdentity[
+                (static_cast<size_t>(vramBank) * kStructuredScreenHeight) + line];
+        identity = {};
+        identity.State = state;
+        StructuredVulkan2DCaptureWriterRoute[
+            (static_cast<size_t>(vramBank) * kStructuredScreenHeight) + line] =
+            StructuredCaptureWriterRoute::Unknown;
+    }
+}
+
+void SoftRenderer::SealStructuredVulkan2DCaptureIdentity(
+    u32 vramBank,
+    u32 dstAddress,
+    u32 width,
+    const CaptureSourceIdentity* sourceIdentity,
+    StructuredCaptureWriterRoute writerRoute) noexcept
+{
+    if (!UseStructuredVulkan2D() || vramBank >= 4u)
+        return;
+
+    const bool fullAlignedLine =
+        width == kStructuredScreenWidth
+        && (dstAddress % kStructuredScreenWidth) == 0u
+        && dstAddress <= (kStructuredPixelCount - kStructuredScreenWidth);
+    if (!fullAlignedLine)
+    {
+        InvalidateStructuredVulkan2DCaptureIdentityRange(
+            vramBank,
+            dstAddress,
+            width,
+            sourceIdentity != nullptr && sourceIdentity->Valid
+                ? StructuredCaptureIdentityState::Conflict
+                : StructuredCaptureIdentityState::Unknown);
+        return;
+    }
+
+    const size_t lineIndex =
+        (static_cast<size_t>(vramBank) * kStructuredScreenHeight)
+        + (static_cast<size_t>(dstAddress) / kStructuredScreenWidth);
+    StructuredVulkan2DCaptureWriterRoute[lineIndex] = writerRoute;
+    StructuredCaptureLineIdentity& identity =
+        StructuredVulkan2DCaptureLineIdentity[lineIndex];
+    identity = {};
+    u16* const packedShadow =
+        StructuredVulkan2DCapturePackedShadow.data()
+        + (static_cast<size_t>(vramBank) * kStructuredPixelCount)
+        + static_cast<size_t>(dstAddress);
+    std::fill_n(packedShadow, width, 0u);
+    if (sourceIdentity == nullptr
+        || !sourceIdentity->Valid
+        || StructuredVulkan2DCaptureLineValid[lineIndex] == 0u)
+    {
+        return;
+    }
+
+    identity.Source = *sourceIdentity;
+    identity.State = StructuredCaptureIdentityState::Uniform;
+    std::copy_n(
+        reinterpret_cast<const u16*>(GPU.VRAM[vramBank]) + dstAddress,
+        width,
+        packedShadow);
+}
+
+void SoftRenderer::SeedStructuredVulkan2DCaptureBanksFromVram()
+{
+    if (!UseStructuredVulkan2D())
+        return;
+
+    SameBankMode2WriterIdentity.fill({});
+    SameBankMode2WriterIdentityValid.fill(false);
+    SameBankMode2DisplayedIdentity = {};
+    SameBankMode2DisplayedVramBank = 4u;
+    SameBankMode2DisplayedIdentityValid = false;
+    SameBankMode2CompletedWriterIdentity = {};
+    SameBankMode2CompletedWriterVramBank = 4u;
+    SameBankMode2CompletedWriterIdentityValid = false;
+    SameBankMode2PendingWriterIdentity = {};
+    SameBankMode2PendingWriterLines = 0u;
+    SameBankMode2PendingWriterConflict = false;
+
+    StructuredVulkan2DCaptureLineIdentity.fill({});
+    StructuredVulkan2DCaptureWriterRoute.fill(StructuredCaptureWriterRoute::Unknown);
+    StructuredVulkan2DCapturePackedShadow.fill(0u);
+    StructuredVulkan2DCaptureOverlayLineage.fill(
+        kStructuredVulkan2DOverlayLineageUnknown);
+
+    for (u32 bank = 0; bank < 4u; bank++)
+    {
+        const u16* vram = reinterpret_cast<const u16*>(GPU.VRAM[bank]);
+        const size_t captureBase =
+            static_cast<size_t>(bank) * kStructuredPlaneCount * kStructuredPixelCount;
+        bool lineHasPayload[kStructuredScreenHeight] {};
+        bool bankHasContent = false;
+        for (u32 addr = 0; addr < kStructuredPixelCount; addr++)
+        {
+            const u16 value = vram[addr];
+            u32 below = 0u;
+            u32 control = 0u;
+            if (value & 0x8000u)
+            {
+                const u32 r5 = value & 0x1Fu;
+                const u32 g5 = (value >> 5u) & 0x1Fu;
+                const u32 b5 = (value >> 10u) & 0x1Fu;
+                const u32 r6 = (r5 << 1u) | (r5 >> 4u);
+                const u32 g6 = (g5 << 1u) | (g5 >> 4u);
+                const u32 b6 = (b5 << 1u) | (b5 >> 4u);
+                below = r6 | (g6 << 8u) | (b6 << 16u) | (0x10u << 24u);
+                const bool protectedBlack2D = (below & 0x00FFFFFFu) == 0u;
+                control =
+                    (0x01u
+                        | kStructuredVulkan2DOnlyFlag
+                        | (protectedBlack2D ? kStructuredVulkan2DProtectedBlackFlag : 0u)) << 24u;
+                lineHasPayload[addr / kStructuredScreenWidth] = true;
+                bankHasContent = true;
+            }
+            StructuredVulkan2DCapturePlanes[captureBase + addr] = below;
+            StructuredVulkan2DCapturePlanes[captureBase + kStructuredPixelCount + addr] = 0u;
+            StructuredVulkan2DCapturePlanes[captureBase + (kStructuredPixelCount * 2u) + addr] = control;
+        }
+
+        if (!bankHasContent)
+            continue;
+
+        for (u32 line = 0; line < kStructuredScreenHeight; line++)
+        {
+            const size_t lineIndex = (static_cast<size_t>(bank) * kStructuredScreenHeight) + line;
+            StructuredVulkan2DCaptureLineValid[lineIndex] = lineHasPayload[line] ? 1u : 0u;
+            StructuredVulkan2DCaptureLineHasPayload[lineIndex] = lineHasPayload[line] ? 1u : 0u;
+            StructuredVulkan2DCaptureLineHas3DSlot[lineIndex] = 0u;
+        }
+    }
 }
 
 void SoftRenderer::ClearStructuredVulkan2DCaptureRange(u32 vramBank, u32 dstAddress, u32 width)
 {
     if (!UseStructuredVulkan2D() || vramBank >= 4u)
         return;
+
+    InvalidateStructuredVulkan2DCaptureIdentityRange(vramBank, dstAddress, width);
 
     const size_t captureBase = static_cast<size_t>(vramBank) * kStructuredPlaneCount * kStructuredPixelCount;
     const u32 clearWidth = std::min<u32>(width, kStructuredScreenWidth);
@@ -410,11 +1549,97 @@ void SoftRenderer::ClearStructuredVulkan2DCaptureRange(u32 vramBank, u32 dstAddr
         const size_t captureIndex = static_cast<size_t>(captureAddress);
         for (size_t plane = 0; plane < kStructuredPlaneCount; plane++)
             StructuredVulkan2DCapturePlanes[captureBase + (plane * kStructuredPixelCount) + captureIndex] = 0u;
+        StructuredVulkan2DCaptureOverlayLineage[
+            (static_cast<size_t>(vramBank) * kStructuredPixelCount) + captureIndex] =
+            kStructuredVulkan2DOverlayLineageUnknown;
 
         StructuredVulkan2DCaptureLineValid[
             (static_cast<size_t>(vramBank) * kStructuredScreenHeight)
                 + (captureIndex / kStructuredScreenWidth)] = 0u;
+        StructuredVulkan2DCaptureLineHasPayload[
+            (static_cast<size_t>(vramBank) * kStructuredScreenHeight)
+                + (captureIndex / kStructuredScreenWidth)] = 0u;
+        StructuredVulkan2DCaptureLineHas3DSlot[
+            (static_cast<size_t>(vramBank) * kStructuredScreenHeight)
+                + (captureIndex / kStructuredScreenWidth)] = 0u;
     }
+}
+
+void SoftRenderer::FillStructuredVulkan2DCapturePure3DRange(u32 vramBank, u32 dstAddress, u32 width)
+{
+    if (!UseStructuredVulkan2D() || vramBank >= 4u)
+        return;
+
+    InvalidateStructuredVulkan2DCaptureIdentityRange(vramBank, dstAddress, width);
+
+    constexpr u32 kPure3DControl = kStructuredVulkan2DSlot3DFlag << 24u;
+    const size_t captureBase = static_cast<size_t>(vramBank) * kStructuredPlaneCount * kStructuredPixelCount;
+    const u32 fillWidth = std::min<u32>(width, kStructuredScreenWidth);
+    const u32 baseLine = dstAddress / kStructuredScreenWidth;
+    const u32 baseX = dstAddress % kStructuredScreenWidth;
+    if (dstAddress < kStructuredPixelCount
+        && baseLine < kStructuredScreenHeight
+        && baseX + fillWidth <= kStructuredScreenWidth)
+    {
+        const size_t captureIndex = static_cast<size_t>(dstAddress);
+        std::fill_n(
+            StructuredVulkan2DCapturePlanes.data() + captureBase + captureIndex,
+            fillWidth,
+            0u);
+        std::fill_n(
+            StructuredVulkan2DCapturePlanes.data() + captureBase + kStructuredPixelCount + captureIndex,
+            fillWidth,
+            0u);
+        std::fill_n(
+            StructuredVulkan2DCapturePlanes.data() + captureBase + (kStructuredPixelCount * 2u) + captureIndex,
+            fillWidth,
+            kPure3DControl);
+        std::fill_n(
+            StructuredVulkan2DCaptureOverlayLineage.data()
+                + (static_cast<size_t>(vramBank) * kStructuredPixelCount)
+                + captureIndex,
+            fillWidth,
+            kStructuredVulkan2DOverlayLineageUnknown);
+
+        const size_t lineValidIndex = (static_cast<size_t>(vramBank) * kStructuredScreenHeight) + baseLine;
+        if (StructuredVulkan2DCaptureLineValid[lineValidIndex] == 0u)
+            LastDebugCaptureStats.StructuredCopyLines++;
+        StructuredVulkan2DCaptureLineValid[lineValidIndex] = 1u;
+        StructuredVulkan2DCaptureLineHasPayload[lineValidIndex] = 1u;
+        StructuredVulkan2DCaptureLineHas3DSlot[lineValidIndex] = 1u;
+        LastDebugCaptureStats.StructuredCopySlotPixels += fillWidth;
+        return;
+    }
+
+    bool markedLine[kStructuredScreenHeight] {};
+    for (u32 x = 0; x < fillWidth; x++)
+    {
+        const u32 captureAddress = (dstAddress + x) & 0xFFFFu;
+        if (captureAddress >= kStructuredPixelCount)
+            continue;
+
+        const size_t captureIndex = static_cast<size_t>(captureAddress);
+        StructuredVulkan2DCapturePlanes[captureBase + captureIndex] = 0u;
+        StructuredVulkan2DCapturePlanes[captureBase + kStructuredPixelCount + captureIndex] = 0u;
+        StructuredVulkan2DCapturePlanes[captureBase + (kStructuredPixelCount * 2u) + captureIndex] = kPure3DControl;
+        StructuredVulkan2DCaptureOverlayLineage[
+            (static_cast<size_t>(vramBank) * kStructuredPixelCount) + captureIndex] =
+            kStructuredVulkan2DOverlayLineageUnknown;
+        markedLine[captureIndex / kStructuredScreenWidth] = true;
+    }
+
+    for (u32 y = 0; y < kStructuredScreenHeight; y++)
+    {
+        if (!markedLine[y])
+            continue;
+        const size_t lineValidIndex = (static_cast<size_t>(vramBank) * kStructuredScreenHeight) + y;
+        if (StructuredVulkan2DCaptureLineValid[lineValidIndex] == 0u)
+            LastDebugCaptureStats.StructuredCopyLines++;
+        StructuredVulkan2DCaptureLineValid[lineValidIndex] = 1u;
+        StructuredVulkan2DCaptureLineHasPayload[lineValidIndex] = 1u;
+        StructuredVulkan2DCaptureLineHas3DSlot[lineValidIndex] = 1u;
+    }
+    LastDebugCaptureStats.StructuredCopySlotPixels += fillWidth;
 }
 
 void SoftRenderer::SaveStructuredVulkan2DCaptureSourceLine(u32 line)
@@ -430,18 +1655,136 @@ void SoftRenderer::SaveStructuredVulkan2DCaptureSourceLine(u32 line)
     {
         std::memcpy(
             StructuredVulkan2DCaptureSourceLine.data() + (plane * kStructuredScreenWidth),
-            StructuredVulkan2DPlanes.data() + sourceBase + (plane * kStructuredPixelCount) + sourceRowBase,
+            StructuredVulkan2DPlanes + sourceBase + (plane * kStructuredPixelCount) + sourceRowBase,
             kStructuredScreenWidth * sizeof(u32));
     }
     StructuredVulkan2DCaptureSourceLineY = line;
     StructuredVulkan2DCaptureSourceLineValid = true;
 }
 
+bool SoftRenderer::StructuredVulkan2DCaptureSourceLineHas3DSlot(u32 line, u32 width) const noexcept
+{
+    if (!UseStructuredVulkan2D()
+        || !StructuredVulkan2DCaptureSourceLineValid
+        || StructuredVulkan2DCaptureSourceLineY != line)
+    {
+        return false;
+    }
+
+    const u32 checkWidth = std::min<u32>(width, kStructuredScreenWidth);
+    const u32* controlLine = StructuredVulkan2DCaptureSourceLine.data() + (kStructuredScreenWidth * 2u);
+    for (u32 x = 0; x < checkWidth; x++)
+    {
+        if (((controlLine[x] >> 24u) & kStructuredVulkan2DSlot3DFlag) != 0u)
+            return true;
+    }
+
+    return false;
+}
+
+bool SoftRenderer::StructuredVulkan2DCaptureSourceLineCanFastCopy(u32 line, u32 width) const noexcept
+{
+    if (!UseStructuredVulkan2D()
+        || !StructuredVulkan2DCaptureSourceLineValid
+        || StructuredVulkan2DCaptureSourceLineY != line)
+    {
+        return false;
+    }
+
+    const u32 checkWidth = std::min<u32>(width, kStructuredScreenWidth);
+    const u32* plane0 = StructuredVulkan2DCaptureSourceLine.data();
+    const u32* plane1 = StructuredVulkan2DCaptureSourceLine.data() + kStructuredScreenWidth;
+    const u32* controlLine = StructuredVulkan2DCaptureSourceLine.data() + (kStructuredScreenWidth * 2u);
+    bool has3DSlot = false;
+    bool has2DContext = false;
+    for (u32 x = 0; x < checkWidth; x++)
+    {
+        const u32 controlAlpha = controlLine[x] >> 24u;
+        if ((controlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u)
+            has3DSlot = true;
+        const bool plane0IsReal2D = StructuredVulkan2DSourceIsReal2D(StructuredVulkan2DSourceClass(plane0[x]));
+        const bool plane1IsReal2D = StructuredVulkan2DSourceIsReal2D(StructuredVulkan2DSourceClass(plane1[x]));
+        const bool aboveIsPreservable2D =
+            (controlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
+            && StructuredVulkan2DCanPreserveCaptureOverlay(plane1[x]);
+        if (plane0IsReal2D || plane1IsReal2D || aboveIsPreservable2D)
+        {
+            has2DContext = true;
+        }
+    }
+
+    return has3DSlot && has2DContext;
+}
+
+bool SoftRenderer::StructuredVulkan2DLineHasVisibleSourceA(const u32* line, u32 width) const noexcept
+{
+    if (line == nullptr)
+        return false;
+
+    const u32 checkWidth = std::min<u32>(width, kStructuredScreenWidth);
+    u32 visiblePixels = 0u;
+    const u32 requiredVisiblePixels = std::max<u32>(8u, checkWidth / 8u);
+    for (u32 x = 0; x < checkWidth; x++)
+    {
+        const u32 pixel = line[x];
+        if (pixel == 0u
+            || pixel == kStructuredVulkan2D3DPlaceholder
+            || StructuredVulkan2DIsOpaqueBlack(pixel))
+        {
+            continue;
+        }
+
+        visiblePixels++;
+        if (visiblePixels >= requiredVisiblePixels)
+            return true;
+    }
+
+    return false;
+}
+
+bool SoftRenderer::StructuredVulkan2DCaptureSourceLineCanCopy2DOnly(u32 line, u32 width) const noexcept
+{
+    if (!UseStructuredVulkan2D()
+        || !StructuredVulkan2DCaptureSourceLineValid
+        || StructuredVulkan2DCaptureSourceLineY != line)
+    {
+        return false;
+    }
+
+    const u32 checkWidth = std::min<u32>(width, kStructuredScreenWidth);
+    const u32* plane0 = StructuredVulkan2DCaptureSourceLine.data();
+    const u32* plane1 = StructuredVulkan2DCaptureSourceLine.data() + kStructuredScreenWidth;
+    const u32* controlLine = StructuredVulkan2DCaptureSourceLine.data() + (kStructuredScreenWidth * 2u);
+    u32 visible2D = 0u;
+    for (u32 x = 0; x < checkWidth; x++)
+    {
+        const u32 controlAlpha = controlLine[x] >> 24u;
+        if ((controlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u)
+            return false;
+
+        const bool plane0IsVisible2D =
+            StructuredVulkan2DSourceIsReal2D(StructuredVulkan2DSourceClass(plane0[x]))
+            && !StructuredVulkan2DIsOpaqueBlack(plane0[x]);
+        const bool plane1IsVisible2D =
+            StructuredVulkan2DSourceIsReal2D(StructuredVulkan2DSourceClass(plane1[x]))
+            && !StructuredVulkan2DIsOpaqueBlack(plane1[x]);
+        const bool aboveIsVisible2D =
+            (controlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
+            && plane1[x] != 0u
+            && !StructuredVulkan2DIsOpaqueBlack(plane1[x]);
+        if (plane0IsVisible2D || plane1IsVisible2D || aboveIsVisible2D)
+            visible2D++;
+    }
+
+    return visible2D >= std::max<u32>(8u, checkWidth / 8u);
+}
+
 void SoftRenderer::CopyStructuredVulkan2DCaptureSourceLineToCapture(
     u32 line,
     u32 vramBank,
     u32 dstAddress,
-    u32 width)
+    u32 width,
+    u8* carriedProtectedBlack)
 {
     if (!UseStructuredVulkan2D()
         || !StructuredVulkan2DCaptureSourceLineValid
@@ -453,7 +1796,163 @@ void SoftRenderer::CopyStructuredVulkan2DCaptureSourceLineToCapture(
 
     const size_t captureBase = static_cast<size_t>(vramBank) * kStructuredPlaneCount * kStructuredPixelCount;
     const u32 copyWidth = std::min<u32>(width, kStructuredScreenWidth);
+    if (carriedProtectedBlack != nullptr)
+        std::fill_n(carriedProtectedBlack, copyWidth, 0u);
     LastDebugCaptureStats.StructuredCopyLines++;
+    if (copyWidth == kStructuredScreenWidth
+        && (dstAddress % kStructuredScreenWidth) == 0u
+        && dstAddress <= (kStructuredPixelCount - kStructuredScreenWidth))
+    {
+        const size_t captureIndex = static_cast<size_t>(dstAddress);
+        const size_t lineIndex = (static_cast<size_t>(vramBank) * kStructuredScreenHeight)
+            + (captureIndex / kStructuredScreenWidth);
+        u32* const destinationPlane0 = StructuredVulkan2DCapturePlanes.data()
+            + captureBase + captureIndex;
+        u32* const destinationPlane1 = destinationPlane0 + kStructuredPixelCount;
+        u32* const destinationControl = destinationPlane1 + kStructuredPixelCount;
+        u8* const destinationOverlayLineage =
+            StructuredVulkan2DCaptureOverlayLineage.data()
+            + (static_cast<size_t>(vramBank) * kStructuredPixelCount)
+            + captureIndex;
+        const u32* const sourcePlane0 = StructuredVulkan2DCaptureSourceLine.data();
+        const u32* const sourcePlane1 = sourcePlane0 + kStructuredScreenWidth;
+        const u32* const sourceControl = sourcePlane1 + kStructuredScreenWidth;
+        const bool initialLineValid = StructuredVulkan2DCaptureLineValid[lineIndex] != 0u;
+        bool lineHasPayload = StructuredVulkan2DCaptureLineHasPayload[lineIndex] != 0u;
+        bool lineHas3DSlot = StructuredVulkan2DCaptureLineHas3DSlot[lineIndex] != 0u;
+        const bool captureModeIsSourceA = LastDebugCaptureStats.CaptureMode == 0u;
+        u32 plane0UsefulPixels = 0u;
+        u32 plane1UsefulPixels = 0u;
+        u32 slotPixels = 0u;
+        u32 abovePixels = 0u;
+        u32 only2DPixels = 0u;
+        u32 overlayPixels = 0u;
+
+        for (u32 x = 0u; x < kStructuredScreenWidth; x++)
+        {
+            const u32 oldPlane0 = destinationPlane0[x];
+            const u32 oldPlane1 = destinationPlane1[x];
+            const u32 oldControl = destinationControl[x];
+            const u8 oldOverlayLineage = destinationOverlayLineage[x];
+            u32 newPlane0 = sourcePlane0[x];
+            u32 newPlane1 = sourcePlane1[x];
+            u32 newControl = sourceControl[x];
+            plane0UsefulPixels += newPlane0 != 0u ? 1u : 0u;
+            plane1UsefulPixels += newPlane1 != 0u ? 1u : 0u;
+
+            const u32 sourceControlAlpha = newControl >> 24u;
+            const bool structuredSlot =
+                (sourceControlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u;
+            const bool sourceHas2DAbove =
+                structuredSlot
+                && (sourceControlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
+                && newPlane1 != 0u
+                && StructuredVulkan2DCanPreserveCaptureOverlay(newPlane1);
+            const bool allowCaptureMatchedOverlay =
+                captureModeIsSourceA && structuredSlot && !sourceHas2DAbove;
+            slotPixels += structuredSlot ? 1u : 0u;
+            abovePixels +=
+                structuredSlot && (sourceControlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
+                    ? 1u
+                    : 0u;
+            only2DPixels +=
+                !structuredSlot && (sourceControlAlpha & kStructuredVulkan2DOnlyFlag) != 0u
+                    ? 1u
+                    : 0u;
+
+            u32 existingOverlayPixel = 0u;
+            u32 existingOverlayControl = 0u;
+            if ((initialLineValid || x != 0u) && (oldControl >> 24u) != 0u)
+            {
+                const u32 oldControlAlpha = oldControl >> 24u;
+                const bool oldStructuredSlot =
+                    (oldControlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u;
+                if (oldStructuredSlot
+                    && (oldControlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
+                    && oldPlane1 != 0u
+                    && (StructuredVulkan2DCanPreserveCaptureOverlay(oldPlane1)
+                        || (allowCaptureMatchedOverlay
+                            && StructuredVulkan2DCanUseCaptureMatched3DOverlay(oldPlane1))))
+                {
+                    existingOverlayPixel = oldPlane1;
+                    existingOverlayControl = oldControl;
+                }
+                else if (!oldStructuredSlot
+                    && (oldControlAlpha & kStructuredVulkan2DOnlyFlag) != 0u
+                    && oldPlane0 != 0u
+                    && (StructuredVulkan2DCanPreserveCaptureOverlay(oldPlane0)
+                        || (allowCaptureMatchedOverlay
+                            && StructuredVulkan2DCanUseCaptureMatched3DOverlay(oldPlane0))))
+                {
+                    existingOverlayPixel = oldPlane0;
+                    existingOverlayControl = oldControl;
+                }
+            }
+
+            const bool carriedExistingOverlay =
+                structuredSlot && !sourceHas2DAbove && existingOverlayPixel != 0u;
+            if (carriedExistingOverlay)
+            {
+                if (carriedProtectedBlack != nullptr)
+                {
+                    if (StructuredVulkan2DIsUnblendedProtectedBlackTargetBottom(
+                            existingOverlayPixel,
+                            existingOverlayControl))
+                    {
+                        carriedProtectedBlack[x] |=
+                            kStructuredVulkan2DCarriedProtectedBlack;
+                    }
+                }
+                const u32 overlayControlAlpha = existingOverlayControl >> 24u;
+                const u32 protectedBlack =
+                    overlayControlAlpha & kStructuredVulkan2DProtectedBlackFlag;
+                const bool protectedBlackTargetTop =
+                    (existingOverlayControl & kStructuredVulkan2DProtectedBlackTargetsBottomFlag) == 0u;
+                newPlane1 = existingOverlayPixel;
+                newControl = StructuredVulkan2DControlRgbWithProtectedBlackTarget(
+                    newControl & 0x00FFFFFFu,
+                    protectedBlack != 0u,
+                    protectedBlackTargetTop)
+                    | ((sourceControlAlpha
+                        | kStructuredVulkan2DAbove3DFlag
+                        | protectedBlack) << 24u);
+                overlayPixels++;
+            }
+
+            destinationPlane0[x] = newPlane0;
+            destinationPlane1[x] = newPlane1;
+            destinationControl[x] = newControl;
+            destinationOverlayLineage[x] =
+                !StructuredVulkan2DHasPreservableCaptureOverlay(
+                    newPlane0,
+                    newPlane1,
+                    newControl)
+                ? kStructuredVulkan2DOverlayLineageUnknown
+                : carriedExistingOverlay
+                    ? AdvanceStructuredVulkan2DOverlayLineage(oldOverlayLineage)
+                    : kStructuredVulkan2DOverlayLineageFresh;
+            if (newPlane0 != 0u || newPlane1 != 0u || newControl != 0u)
+                lineHasPayload = true;
+            if (((newPlane0 >> 24u) & 0xC0u) == 0x40u
+                || ((newPlane1 >> 24u) & 0xC0u) == 0x40u
+                || ((newControl >> 24u) & kStructuredVulkan2DSlot3DFlag) != 0u)
+            {
+                lineHas3DSlot = true;
+            }
+        }
+
+        StructuredVulkan2DCaptureLineValid[lineIndex] = 1u;
+        StructuredVulkan2DCaptureLineHasPayload[lineIndex] = lineHasPayload ? 1u : 0u;
+        StructuredVulkan2DCaptureLineHas3DSlot[lineIndex] = lineHas3DSlot ? 1u : 0u;
+        LastDebugCaptureStats.StructuredCopyPlane0UsefulPixels += plane0UsefulPixels;
+        LastDebugCaptureStats.StructuredCopyPlane1UsefulPixels += plane1UsefulPixels;
+        LastDebugCaptureStats.StructuredCopySlotPixels += slotPixels;
+        LastDebugCaptureStats.StructuredCopyAbovePixels += abovePixels;
+        LastDebugCaptureStats.StructuredCopy2DOnlyPixels += only2DPixels;
+        LastDebugCaptureStats.StructuredCopySourceBOverlayPixels += overlayPixels;
+        return;
+    }
+
     for (u32 x = 0; x < copyWidth; x++)
     {
         const u32 captureAddress = (dstAddress + x) & 0xFFFFu;
@@ -461,6 +1960,10 @@ void SoftRenderer::CopyStructuredVulkan2DCaptureSourceLineToCapture(
             continue;
 
         const size_t captureIndex = static_cast<size_t>(captureAddress);
+        const size_t overlayLineageIndex =
+            (static_cast<size_t>(vramBank) * kStructuredPixelCount) + captureIndex;
+        const u8 oldOverlayLineage =
+            StructuredVulkan2DCaptureOverlayLineage[overlayLineageIndex];
         const u32 sourcePlane0 = StructuredVulkan2DCaptureSourceLine[static_cast<size_t>(x)];
         const u32 sourcePlane1 =
             StructuredVulkan2DCaptureSourceLine[kStructuredScreenWidth + static_cast<size_t>(x)];
@@ -472,6 +1975,25 @@ void SoftRenderer::CopyStructuredVulkan2DCaptureSourceLineToCapture(
             LastDebugCaptureStats.StructuredCopyPlane1UsefulPixels++;
         const u32 sourceControlAlpha = sourceControl >> 24u;
         const bool structuredSlot = (sourceControlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u;
+        const bool sourcePlane1IsReal2D =
+            StructuredVulkan2DCanPreserveCaptureOverlay(sourcePlane1);
+        const bool sourceHas2DAbove =
+            structuredSlot
+            && (sourceControlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
+            && sourcePlane1 != 0u
+            && sourcePlane1IsReal2D;
+        u32 existingOverlayPixel = 0u;
+        u32 existingOverlayControl = 0u;
+        const bool allowSourceACaptureMatchedOverlay =
+            LastDebugCaptureStats.CaptureMode == 0u
+            && structuredSlot
+            && !sourceHas2DAbove;
+        ReadStructuredVulkan2DCapture2DOverlayPixel(
+            vramBank,
+            captureAddress,
+            existingOverlayPixel,
+            existingOverlayControl,
+            allowSourceACaptureMatchedOverlay);
         if (structuredSlot)
             LastDebugCaptureStats.StructuredCopySlotPixels++;
         if (structuredSlot && (sourceControlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u)
@@ -482,9 +2004,41 @@ void SoftRenderer::CopyStructuredVulkan2DCaptureSourceLineToCapture(
         StructuredVulkan2DCapturePlanes[captureBase + captureIndex] = sourcePlane0;
         StructuredVulkan2DCapturePlanes[captureBase + kStructuredPixelCount + captureIndex] = sourcePlane1;
         StructuredVulkan2DCapturePlanes[captureBase + (kStructuredPixelCount * 2u) + captureIndex] = sourceControl;
+        StructuredVulkan2DCaptureOverlayLineage[overlayLineageIndex] =
+            StructuredVulkan2DHasPreservableCaptureOverlay(
+                sourcePlane0,
+                sourcePlane1,
+                sourceControl)
+            ? kStructuredVulkan2DOverlayLineageFresh
+            : kStructuredVulkan2DOverlayLineageUnknown;
         StructuredVulkan2DCaptureLineValid[
             (static_cast<size_t>(vramBank) * kStructuredScreenHeight)
                 + (captureIndex / kStructuredScreenWidth)] = 1u;
+        MarkStructuredVulkan2DCaptureLine(
+            vramBank,
+            captureAddress,
+            sourcePlane0,
+            sourcePlane1,
+            sourceControl);
+        if (structuredSlot && !sourceHas2DAbove && existingOverlayPixel != 0u)
+        {
+            if (carriedProtectedBlack != nullptr)
+            {
+                if (StructuredVulkan2DIsUnblendedProtectedBlackTargetBottom(
+                        existingOverlayPixel,
+                        existingOverlayControl))
+                {
+                    carriedProtectedBlack[x] |=
+                        kStructuredVulkan2DCarriedProtectedBlack;
+                }
+            }
+            MergeStructuredVulkan2DCapture2DOverlayPixel(
+                vramBank,
+                captureAddress,
+                existingOverlayPixel,
+                existingOverlayControl,
+                oldOverlayLineage);
+        }
     }
 }
 
@@ -512,6 +2066,10 @@ void SoftRenderer::CopyStructuredVulkan2DCurrentLineToCapture(u32 line, u32 vram
 
         const size_t sourceIndex = sourceRowBase + static_cast<size_t>(x);
         const size_t captureIndex = static_cast<size_t>(captureAddress);
+        const size_t overlayLineageIndex =
+            (static_cast<size_t>(vramBank) * kStructuredPixelCount) + captureIndex;
+        const u8 oldOverlayLineage =
+            StructuredVulkan2DCaptureOverlayLineage[overlayLineageIndex];
         const u32 sourcePlane0 = StructuredVulkan2DPlanes[sourceBase + sourceIndex];
         const u32 sourcePlane1 = StructuredVulkan2DPlanes[sourceBase + kStructuredPixelCount + sourceIndex];
         const u32 sourceControl = StructuredVulkan2DPlanes[sourceBase + (kStructuredPixelCount * 2u) + sourceIndex];
@@ -521,6 +2079,25 @@ void SoftRenderer::CopyStructuredVulkan2DCurrentLineToCapture(u32 line, u32 vram
             LastDebugCaptureStats.StructuredCopyPlane1UsefulPixels++;
         const u32 sourceControlAlpha = sourceControl >> 24u;
         const bool structuredSlot = (sourceControlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u;
+        const bool sourcePlane1IsReal2D =
+            StructuredVulkan2DCanPreserveCaptureOverlay(sourcePlane1);
+        const bool sourceHas2DAbove =
+            structuredSlot
+            && (sourceControlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
+            && sourcePlane1 != 0u
+            && sourcePlane1IsReal2D;
+        u32 existingOverlayPixel = 0u;
+        u32 existingOverlayControl = 0u;
+        const bool allowSourceACaptureMatchedOverlay =
+            LastDebugCaptureStats.CaptureMode == 0u
+            && structuredSlot
+            && !sourceHas2DAbove;
+        ReadStructuredVulkan2DCapture2DOverlayPixel(
+            vramBank,
+            captureAddress,
+            existingOverlayPixel,
+            existingOverlayControl,
+            allowSourceACaptureMatchedOverlay);
         if (structuredSlot)
             LastDebugCaptureStats.StructuredCopySlotPixels++;
         if (structuredSlot && (sourceControlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u)
@@ -532,14 +2109,48 @@ void SoftRenderer::CopyStructuredVulkan2DCurrentLineToCapture(u32 line, u32 vram
             StructuredVulkan2DCapturePlanes[captureBase + (plane * kStructuredPixelCount) + captureIndex] =
                 StructuredVulkan2DPlanes[sourceBase + (plane * kStructuredPixelCount) + sourceIndex];
         }
+        StructuredVulkan2DCaptureOverlayLineage[overlayLineageIndex] =
+            StructuredVulkan2DHasPreservableCaptureOverlay(
+                sourcePlane0,
+                sourcePlane1,
+                sourceControl)
+            ? kStructuredVulkan2DOverlayLineageFresh
+            : kStructuredVulkan2DOverlayLineageUnknown;
         StructuredVulkan2DCaptureLineValid[
             (static_cast<size_t>(vramBank) * kStructuredScreenHeight)
                 + (captureIndex / kStructuredScreenWidth)] = 1u;
+        MarkStructuredVulkan2DCaptureLine(
+            vramBank,
+            captureAddress,
+            sourcePlane0,
+            sourcePlane1,
+            sourceControl);
+        if (structuredSlot && !sourceHas2DAbove && existingOverlayPixel != 0u)
+        {
+            MergeStructuredVulkan2DCapture2DOverlayPixel(
+                vramBank,
+                captureAddress,
+                existingOverlayPixel,
+                existingOverlayControl,
+                oldOverlayLineage);
+        }
     }
 }
 
-void SoftRenderer::CopyStructuredVulkan2DCaptureLineToCurrentScreen(u32 line, u32 vramBank)
+void SoftRenderer::CopyStructuredVulkan2DCaptureLineToCurrentScreen(
+    u32 line,
+    u32 vramBank,
+    const u32* packedLine)
 {
+    if (line < kStructuredScreenHeight)
+    {
+        const size_t targetScreenIndex =
+            StructuredVulkan2DCurrentLineTargetsTop ? 0u : 1u;
+        const size_t targetLineIndex =
+            (targetScreenIndex * kStructuredScreenHeight) + line;
+        StructuredVulkan2DLineKnownExact[targetLineIndex] = 0u;
+        ClearStructuredVulkan2DDisplayedCaptureLineIdentity(line);
+    }
     if (!UseStructuredVulkan2D()
         || line >= kStructuredScreenHeight
         || vramBank >= 4u
@@ -552,23 +2163,312 @@ void SoftRenderer::CopyStructuredVulkan2DCaptureLineToCurrentScreen(u32 line, u3
     const size_t screenBase = screenIndex * kStructuredPlaneCount * kStructuredPixelCount;
     const size_t captureBase = static_cast<size_t>(vramBank) * kStructuredPlaneCount * kStructuredPixelCount;
     const size_t rowBase = static_cast<size_t>(line) * kStructuredScreenWidth;
+    const u16* const displayedVram =
+        reinterpret_cast<const u16*>(GPU.VRAM[vramBank]) + rowBase;
+    const u16* const capturedVramShadow =
+        StructuredVulkan2DCapturePackedShadow.data()
+        + (static_cast<size_t>(vramBank) * kStructuredPixelCount)
+        + rowBase;
+    const bool displayedPackedShadowExact =
+        std::equal(
+            capturedVramShadow,
+            capturedVramShadow + kStructuredScreenWidth,
+            displayedVram);
+    for (size_t plane = 0; plane < kStructuredPlaneCount - 1u; plane++)
+    {
+        std::memcpy(
+            StructuredVulkan2DPlanes + screenBase + (plane * kStructuredPixelCount) + rowBase,
+            StructuredVulkan2DCapturePlanes.data() + captureBase + (plane * kStructuredPixelCount) + rowBase,
+            kStructuredScreenWidth * sizeof(u32));
+    }
+    u32* const dstPlane0 =
+        StructuredVulkan2DPlanes + screenBase + rowBase;
+    u32* const dstAbove =
+        StructuredVulkan2DPlanes + screenBase + kStructuredPixelCount + rowBase;
+    u32* dstControl =
+        StructuredVulkan2DPlanes + screenBase + (2u * kStructuredPixelCount) + rowBase;
+    const u32* srcControl =
+        StructuredVulkan2DCapturePlanes.data() + captureBase + (2u * kStructuredPixelCount) + rowBase;
+    const u8* const captureOverlayLineage =
+        StructuredVulkan2DCaptureOverlayLineage.data()
+        + (static_cast<size_t>(vramBank) * kStructuredPixelCount)
+        + rowBase;
+    const size_t captureLineIndex =
+        (static_cast<size_t>(vramBank) * kStructuredScreenHeight)
+        + static_cast<size_t>(line);
+    const bool goldenCarriedOverlayTuple =
+        CurUnit != nullptr
+        && CurUnit->Num == 0u
+        && (CurUnit->CaptureCnt & 0x7FFFFFFFu) == 0x00330010u
+        && (CurUnit->DispCnt & 0x000F0000u) == 0x000E0000u
+        && (GPU.GPU2D_B.DispCnt & 0x00030000u) == 0x00010000u
+        && vramBank == 3u;
+    const bool filterGoldenCarriedTopOverlay =
+        goldenCarriedOverlayTuple
+        && StructuredVulkan2DCurrentLineTargetsTop;
+    const StructuredCaptureWriterRoute captureWriterRoute =
+        StructuredVulkan2DCaptureWriterRoute[captureLineIndex];
+    const StructuredCaptureLineIdentity& captureIdentity =
+        StructuredVulkan2DCaptureLineIdentity[captureLineIndex];
+    u32 oppositeTopLcd3DSlotLines = 0u;
+    if (goldenCarriedOverlayTuple
+        && !StructuredVulkan2DCurrentLineTargetsTop
+        && captureWriterRoute == StructuredCaptureWriterRoute::General)
+    {
+        for (u32 maskLine = 0u;
+             maskLine < kStructuredScreenHeight;
+             maskLine++)
+        {
+            if (StructuredVulkan2DLineHas3DSlot[maskLine] != 0u)
+                oppositeTopLcd3DSlotLines++;
+        }
+    }
+    const bool oppositeTopLcdSlotCountMatchesLine =
+        oppositeTopLcd3DSlotLines == line;
+    CaptureSourceIdentity latestCaptureIdentity {};
+    const bool latestCaptureIdentityValid =
+        oppositeTopLcdSlotCountMatchesLine
+        && GPU.GPU3D.GetLastServedCaptureSourceIdentity(
+            latestCaptureIdentity)
+        && latestCaptureIdentity.Valid;
+    const bool captureIdentityContradictedByLatest =
+        latestCaptureIdentityValid
+        && (captureIdentity.Source.Sequence
+                != latestCaptureIdentity.Sequence
+            || captureIdentity.Source.PolygonCount
+                != latestCaptureIdentity.PolygonCount
+            || captureIdentity.Source.CaptureCnt
+                != latestCaptureIdentity.CaptureCnt
+            || captureIdentity.Source.ScreenSwap
+                != latestCaptureIdentity.ScreenSwap);
+    const bool preserveUncontradictedGeneralWriterStructure =
+        captureWriterRoute == StructuredCaptureWriterRoute::General
+        && displayedPackedShadowExact
+        && captureIdentity.State == StructuredCaptureIdentityState::Uniform
+        && captureIdentity.Source.Valid
+        && oppositeTopLcdSlotCountMatchesLine
+        && !captureIdentityContradictedByLatest;
+    const bool replaceGoldenCarriedBottomOverlayWithRaw =
+        goldenCarriedOverlayTuple
+        && !StructuredVulkan2DCurrentLineTargetsTop
+        && StructuredVulkan2DCurrentLineMapsDirectly
+        && packedLine != nullptr
+        && captureWriterRoute != StructuredCaptureWriterRoute::Fast
+        && !preserveUncontradictedGeneralWriterStructure;
+    bool lineKnownExact =
+        StructuredVulkan2DCurrentLineMapsDirectly && packedLine != nullptr;
+    bool replacedGoldenBottomRaw = false;
+    for (size_t x = 0; x < kStructuredScreenWidth; x++)
+    {
+        const u32 control = srcControl[x];
+        const bool protectedBlack = ((control >> 24u) & kStructuredVulkan2DProtectedBlackFlag) != 0u;
+        dstControl[x] = StructuredVulkan2DControlRgbWithProtectedBlackTarget(
+            control & 0x00FFFFFFu,
+            protectedBlack,
+            StructuredVulkan2DCurrentLineTargetsTop)
+            | (control & 0xFF000000u);
+        const u32 controlAlpha = dstControl[x] >> 24u;
+        if (filterGoldenCarriedTopOverlay
+            && captureOverlayLineage[x]
+                == kStructuredVulkan2DOverlayLineageCarried2Plus
+            && (controlAlpha & 0x0Fu) == 4u
+            && (controlAlpha
+                    & (kStructuredVulkan2DSlot3DFlag
+                        | kStructuredVulkan2DAbove3DFlag))
+                == (kStructuredVulkan2DSlot3DFlag
+                    | kStructuredVulkan2DAbove3DFlag)
+            && StructuredVulkan2DCanPreserveCaptureOverlay(dstAbove[x]))
+        {
+            const u32 retainedControlRgb =
+                (dstControl[x] & 0x00FFFFFFu)
+                & ~kStructuredVulkan2DProtectedBlackTargetsBottomFlag;
+            const u32 retainedControlAlpha =
+                controlAlpha
+                & ~(kStructuredVulkan2DAbove3DFlag
+                    | kStructuredVulkan2DProtectedBlackFlag);
+            dstAbove[x] = 0u;
+            dstControl[x] =
+                retainedControlRgb | (retainedControlAlpha << 24u);
+            lineKnownExact = false;
+        }
+        else if (replaceGoldenCarriedBottomOverlayWithRaw
+            && captureOverlayLineage[x]
+                == kStructuredVulkan2DOverlayLineageCarried2Plus
+            && (controlAlpha & 0x0Fu) == 4u
+            && (controlAlpha
+                    & (kStructuredVulkan2DSlot3DFlag
+                        | kStructuredVulkan2DAbove3DFlag))
+                == (kStructuredVulkan2DSlot3DFlag
+                    | kStructuredVulkan2DAbove3DFlag)
+            && StructuredVulkan2DCanPreserveCaptureOverlay(dstAbove[x]))
+        {
+            const u32 rawRgb = packedLine[x] & 0x00FFFFFFu;
+            const bool protectedBlack2D = rawRgb == 0u;
+            dstPlane0[x] = rawRgb | (0x10u << 24u);
+            dstAbove[x] = 0u;
+            dstControl[x] = StructuredVulkan2DControlRgbWithProtectedBlackTarget(
+                0u,
+                protectedBlack2D,
+                false)
+                | ((0x01u
+                    | kStructuredVulkan2DOnlyFlag
+                    | (protectedBlack2D
+                        ? kStructuredVulkan2DProtectedBlackFlag
+                        : 0u)) << 24u);
+            replacedGoldenBottomRaw = true;
+            lineKnownExact = false;
+        }
+        if (lineKnownExact
+            && !StructuredVulkan2DMergePixelResolvesToStructured(
+                packedLine[x],
+                packedLine[kStructuredScreenWidth + x],
+                packedLine[(kStructuredScreenWidth * 2u) + x],
+                dstPlane0[x],
+                dstAbove[x],
+                dstControl[x]))
+        {
+            lineKnownExact = false;
+        }
+    }
+    const size_t screenLineIndex = (screenIndex * kStructuredScreenHeight) + static_cast<size_t>(line);
+    if (replacedGoldenBottomRaw)
+    {
+        bool lineHasPayload = false;
+        bool lineHas3DSlot = false;
+        for (size_t x = 0; x < kStructuredScreenWidth; x++)
+        {
+            const u32 controlAlpha = dstControl[x] >> 24u;
+            lineHasPayload =
+                lineHasPayload
+                || dstPlane0[x] != 0u
+                || dstAbove[x] != 0u
+                || dstControl[x] != 0u;
+            lineHas3DSlot =
+                lineHas3DSlot
+                || StructuredVulkan2DHas3DSlot(dstPlane0[x])
+                || StructuredVulkan2DHas3DSlot(dstAbove[x])
+                || (controlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u;
+        }
+        StructuredVulkan2DLineHasPayload[screenLineIndex] = lineHasPayload ? 1u : 0u;
+        StructuredVulkan2DLineHas3DSlot[screenLineIndex] = lineHas3DSlot ? 1u : 0u;
+    }
+    else
+    {
+        StructuredVulkan2DLineHasPayload[screenLineIndex] =
+            StructuredVulkan2DCaptureLineHasPayload[captureLineIndex];
+        StructuredVulkan2DLineHas3DSlot[screenLineIndex] =
+            StructuredVulkan2DCaptureLineHas3DSlot[captureLineIndex];
+    }
+    StructuredVulkan2DLineKnownExact[screenLineIndex] = lineKnownExact ? 1u : 0u;
+    StructuredVulkan2DDisplayedCaptureLineIdentity& displayedIdentity =
+        StructuredVulkan2DDisplayedCaptureIdentity[screenLineIndex];
+    displayedIdentity.Copied = true;
+    displayedIdentity.VramBank = static_cast<u8>(vramBank);
+    displayedIdentity.PackedShadowExact = displayedPackedShadowExact;
+    displayedIdentity.WriterRoute =
+        StructuredVulkan2DCaptureWriterRoute[captureLineIndex];
+    if (lineKnownExact || displayedPackedShadowExact)
+    {
+        const StructuredCaptureLineIdentity& captureIdentity =
+            StructuredVulkan2DCaptureLineIdentity[captureLineIndex];
+        displayedIdentity.State = captureIdentity.State;
+        if (captureIdentity.State == StructuredCaptureIdentityState::Uniform
+            && captureIdentity.Source.Valid)
+        {
+            displayedIdentity.Source = captureIdentity.Source;
+        }
+    }
+}
+
+void SoftRenderer::CopyStructuredVulkan2DCaptureLineToCurrentScreenCompatibility(
+    u32 line,
+    u32 vramBank)
+{
+    if (!UseStructuredVulkan2D()
+        || line >= kStructuredScreenHeight
+        || vramBank >= 4u
+        || StructuredVulkan2DCaptureLineValid[
+            (static_cast<size_t>(vramBank) * kStructuredScreenHeight)
+                + line] == 0u)
+    {
+        return;
+    }
+
+    const size_t screenIndex =
+        StructuredVulkan2DCurrentLineTargetsTop ? 0u : 1u;
+    const size_t screenBase =
+        screenIndex * kStructuredPlaneCount * kStructuredPixelCount;
+    const size_t captureBase =
+        static_cast<size_t>(vramBank)
+        * kStructuredPlaneCount
+        * kStructuredPixelCount;
+    const size_t rowBase =
+        static_cast<size_t>(line) * kStructuredScreenWidth;
     for (size_t plane = 0; plane < kStructuredPlaneCount; plane++)
     {
         std::memcpy(
-            StructuredVulkan2DPlanes.data() + screenBase + (plane * kStructuredPixelCount) + rowBase,
-            StructuredVulkan2DCapturePlanes.data() + captureBase + (plane * kStructuredPixelCount) + rowBase,
+            StructuredVulkan2DPlanes
+                + screenBase
+                + (plane * kStructuredPixelCount)
+                + rowBase,
+            StructuredVulkan2DCapturePlanes.data()
+                + captureBase
+                + (plane * kStructuredPixelCount)
+                + rowBase,
             kStructuredScreenWidth * sizeof(u32));
     }
 }
 
-bool SoftRenderer::ReadStructuredVulkan2DCapture2DOverlayPixel(
+void SoftRenderer::FillStructuredVulkan2DVramDisplayLine(u32 line, const u16* vramLine)
+{
+    if (!UseStructuredVulkan2D() || line >= kStructuredScreenHeight)
+        return;
+
+    ClearStructuredVulkan2DDisplayedCaptureLineIdentity(line);
+
+    const size_t screenIndex = StructuredVulkan2DCurrentLineTargetsTop ? 0u : 1u;
+    const size_t screenBase = screenIndex * kStructuredPlaneCount * kStructuredPixelCount;
+    const size_t rowBase = static_cast<size_t>(line) * kStructuredScreenWidth;
+    u32* dstBelow = StructuredVulkan2DPlanes + screenBase + rowBase;
+    u32* dstAbove = StructuredVulkan2DPlanes + screenBase + kStructuredPixelCount + rowBase;
+    u32* dstControl = StructuredVulkan2DPlanes + screenBase + (2u * kStructuredPixelCount) + rowBase;
+    for (size_t x = 0; x < kStructuredScreenWidth; x++)
+    {
+        const u16 value = vramLine != nullptr ? vramLine[x] : 0u;
+        const u32 r5 = value & 0x1Fu;
+        const u32 g5 = (value >> 5u) & 0x1Fu;
+        const u32 b5 = (value >> 10u) & 0x1Fu;
+        const u32 r6 = (r5 << 1u) | (r5 >> 4u);
+        const u32 g6 = (g5 << 1u) | (g5 >> 4u);
+        const u32 b6 = (b5 << 1u) | (b5 >> 4u);
+        const u32 below = r6 | (g6 << 8u) | (b6 << 16u) | (0x10u << 24u);
+        const bool protectedBlack2D = (below & 0x00FFFFFFu) == 0u;
+        dstBelow[x] = below;
+        dstAbove[x] = 0u;
+        dstControl[x] = StructuredVulkan2DControlRgbWithProtectedBlackTarget(
+            0u,
+            protectedBlack2D,
+            StructuredVulkan2DCurrentLineTargetsTop)
+            | ((0x01u
+                | kStructuredVulkan2DOnlyFlag
+                | (protectedBlack2D ? kStructuredVulkan2DProtectedBlackFlag : 0u)) << 24u);
+    }
+    const size_t screenLineIndex = (screenIndex * kStructuredScreenHeight) + static_cast<size_t>(line);
+    StructuredVulkan2DLineHasPayload[screenLineIndex] = 1u;
+    StructuredVulkan2DLineHas3DSlot[screenLineIndex] = 0u;
+    StructuredVulkan2DLineKnownExact[screenLineIndex] =
+        StructuredVulkan2DCurrentLineMapsDirectly ? 1u : 0u;
+}
+
+inline __attribute__((always_inline)) bool SoftRenderer::ReadStructuredVulkan2DCapture2DOverlayPixel(
     u32 vramBank,
     u32 vramAddress,
     u32& overlayPixel,
-    u32& overlayControlAlpha) const noexcept
+    u32& overlayControl,
+    bool allowCaptureMatched3DSlot) const noexcept
 {
     overlayPixel = 0u;
-    overlayControlAlpha = 0u;
+    overlayControl = 0u;
     if (!UseStructuredVulkan2D() || vramBank >= 4u || vramAddress >= kStructuredPixelCount)
         return false;
 
@@ -589,17 +2489,33 @@ bool SoftRenderer::ReadStructuredVulkan2DCapture2DOverlayPixel(
         return false;
 
     const bool structuredSlot = (controlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u;
-    if (structuredSlot && (controlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u && abovePlane != 0u)
+    const bool abovePlaneIsReal2D =
+        StructuredVulkan2DCanPreserveCaptureOverlay(abovePlane);
+    const bool abovePlaneIsCaptureMatchedCandidate =
+        allowCaptureMatched3DSlot
+        && StructuredVulkan2DCanUseCaptureMatched3DOverlay(abovePlane);
+    if (structuredSlot
+        && (controlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
+        && abovePlane != 0u
+        && (abovePlaneIsReal2D || abovePlaneIsCaptureMatchedCandidate))
     {
         overlayPixel = abovePlane;
-        overlayControlAlpha = controlAlpha;
+        overlayControl = control;
         return true;
     }
 
-    if (!structuredSlot && (controlAlpha & kStructuredVulkan2DOnlyFlag) != 0u && belowPlane != 0u)
+    const bool belowPlaneIsReal2D =
+        StructuredVulkan2DCanPreserveCaptureOverlay(belowPlane);
+    const bool belowPlaneIsCaptureMatchedCandidate =
+        allowCaptureMatched3DSlot
+        && StructuredVulkan2DCanUseCaptureMatched3DOverlay(belowPlane);
+    if (!structuredSlot
+        && (controlAlpha & kStructuredVulkan2DOnlyFlag) != 0u
+        && belowPlane != 0u
+        && (belowPlaneIsReal2D || belowPlaneIsCaptureMatchedCandidate))
     {
         overlayPixel = belowPlane;
-        overlayControlAlpha = controlAlpha;
+        overlayControl = control;
         return true;
     }
 
@@ -610,7 +2526,8 @@ void SoftRenderer::MergeStructuredVulkan2DCapture2DOverlayPixel(
     u32 vramBank,
     u32 vramAddress,
     u32 overlayPixel,
-    u32 overlayControlAlpha)
+    u32 overlayControl,
+    u8 overlayLineage)
 {
     if (!UseStructuredVulkan2D() || vramBank >= 4u || vramAddress >= kStructuredPixelCount || overlayPixel == 0u)
         return;
@@ -623,13 +2540,20 @@ void SoftRenderer::MergeStructuredVulkan2DCapture2DOverlayPixel(
         StructuredVulkan2DCapturePlanes[captureBase + (kStructuredPixelCount * 2u) + captureIndex];
     const u32 controlAlpha = control >> 24u;
     const bool destinationHas3DSlot = (controlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u;
+    const u32 overlayControlAlpha = overlayControl >> 24u;
     const u32 protectedBlack =
         overlayControlAlpha & kStructuredVulkan2DProtectedBlackFlag;
+    const bool protectedBlackTargetTop =
+        (overlayControl & kStructuredVulkan2DProtectedBlackTargetsBottomFlag) == 0u;
+    const u32 controlRgb = StructuredVulkan2DControlRgbWithProtectedBlackTarget(
+        control & 0x00FFFFFFu,
+        protectedBlack != 0u,
+        protectedBlackTargetTop);
 
     if (destinationHas3DSlot)
     {
         abovePlane = overlayPixel;
-        control = (control & 0x00FFFFFFu)
+        control = controlRgb
             | ((controlAlpha
                 | kStructuredVulkan2DAbove3DFlag
                 | protectedBlack) << 24u);
@@ -638,7 +2562,7 @@ void SoftRenderer::MergeStructuredVulkan2DCapture2DOverlayPixel(
     {
         belowPlane = overlayPixel;
         const u32 compMode = controlAlpha & 0x0Fu;
-        control = (control & 0x00FFFFFFu)
+        control = controlRgb
             | (((compMode <= 7u ? compMode : 5u)
                 | kStructuredVulkan2DOnlyFlag
                 | protectedBlack) << 24u);
@@ -647,6 +2571,15 @@ void SoftRenderer::MergeStructuredVulkan2DCapture2DOverlayPixel(
     const u32 line = vramAddress / kStructuredScreenWidth;
     StructuredVulkan2DCaptureLineValid[
         (static_cast<size_t>(vramBank) * kStructuredScreenHeight) + line] = 1u;
+    StructuredVulkan2DCaptureOverlayLineage[
+        (static_cast<size_t>(vramBank) * kStructuredPixelCount) + captureIndex] =
+        StructuredVulkan2DHasPreservableCaptureOverlay(
+            belowPlane,
+            abovePlane,
+            control)
+        ? AdvanceStructuredVulkan2DOverlayLineage(overlayLineage)
+        : kStructuredVulkan2DOverlayLineageUnknown;
+    MarkStructuredVulkan2DCaptureLine(vramBank, vramAddress, belowPlane, abovePlane, control);
     LastDebugCaptureStats.StructuredCopySourceBOverlayPixels++;
 }
 
@@ -668,19 +2601,119 @@ bool SoftRenderer::CurrentUnitTargetsTopScreen() const noexcept
     return CurUnit->Num == 0 ? unitAWritesTop : !unitAWritesTop;
 }
 
-void SoftRenderer::StoreStructuredVulkan2DPixel(
+void SoftRenderer::MarkStructuredVulkan2DLine(
     u32 line,
-    u32 x,
+    size_t screenIndex,
+    u32 plane0,
+    u32 plane1,
+    u32 control) noexcept
+{
+    if (line >= kStructuredScreenHeight || screenIndex >= kStructuredScreenCount)
+        return;
+
+    const size_t lineIndex = (screenIndex * kStructuredScreenHeight) + static_cast<size_t>(line);
+    if (plane0 != 0u || plane1 != 0u || control != 0u)
+        StructuredVulkan2DLineHasPayload[lineIndex] = 1u;
+
+    const u32 plane0Alpha = plane0 >> 24u;
+    const u32 plane1Alpha = plane1 >> 24u;
+    const u32 controlAlpha = control >> 24u;
+    if ((plane0Alpha & 0xC0u) == 0x40u
+        || (plane1Alpha & 0xC0u) == 0x40u
+        || (controlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u)
+    {
+        StructuredVulkan2DLineHas3DSlot[lineIndex] = 1u;
+    }
+
+}
+
+void SoftRenderer::MarkStructuredVulkan2DCaptureLine(
+    u32 vramBank,
+    u32 captureAddress,
+    u32 plane0,
+    u32 plane1,
+    u32 control) noexcept
+{
+    if (vramBank >= 4u || captureAddress >= kStructuredPixelCount)
+        return;
+
+    const size_t lineIndex =
+        (static_cast<size_t>(vramBank) * kStructuredScreenHeight)
+            + (static_cast<size_t>(captureAddress) / kStructuredScreenWidth);
+    if (plane0 != 0u || plane1 != 0u || control != 0u)
+        StructuredVulkan2DCaptureLineHasPayload[lineIndex] = 1u;
+
+    const u32 plane0Alpha = plane0 >> 24u;
+    const u32 plane1Alpha = plane1 >> 24u;
+    const u32 controlAlpha = control >> 24u;
+    if ((plane0Alpha & 0xC0u) == 0x40u
+        || (plane1Alpha & 0xC0u) == 0x40u
+        || (controlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u)
+    {
+        StructuredVulkan2DCaptureLineHas3DSlot[lineIndex] = 1u;
+    }
+
+}
+
+inline __attribute__((always_inline)) bool SoftRenderer::StoreStructuredVulkan2DPixel(
+    size_t index,
+    size_t screenBase,
+    size_t lineIndex,
     u32 originalVal1,
     u32 originalVal2,
     u32 originalVal3,
     u32 legacyVal1,
     u32 legacyVal2,
     u32 legacyControl,
-    u32 captureBacked3DSourceClass)
+    u32 captureBacked3DSourceClass,
+    bool preserveCaptureBackedReplayAs2D,
+    bool evaluateKnownExact)
 {
-    if (!UseStructuredVulkan2D() || line >= kStructuredScreenHeight || x >= kStructuredScreenWidth)
-        return;
+    const size_t directSinkX = index % kStructuredScreenWidth;
+    const bool currentLineIsRegularDisplay =
+        CurUnit != nullptr
+        && (((CurUnit->DispCnt >> 16u) & (CurUnit->Num ? 0x1u : 0x3u)) == 1u);
+    u32* const outputPlane0 = DirectCaptureSourceLineSink
+        ? StructuredVulkan2DCaptureSourceLine.data() + directSinkX
+        : StructuredVulkan2DPlanes + screenBase + index;
+    u32* const outputPlane1 = DirectCaptureSourceLineSink
+        ? StructuredVulkan2DCaptureSourceLine.data() + kStructuredScreenWidth + directSinkX
+        : StructuredVulkan2DPlanes + screenBase + kStructuredPixelCount + index;
+    u32* const outputControl = DirectCaptureSourceLineSink
+        ? StructuredVulkan2DCaptureSourceLine.data() + (kStructuredScreenWidth * 2u) + directSinkX
+        : StructuredVulkan2DPlanes + screenBase + (kStructuredPixelCount * 2u) + index;
+    auto markLine =
+        [&](u32 plane0, u32 plane1, u32 control) {
+            if (DirectCaptureSourceLineSink)
+            {
+                if (directSinkX == (kStructuredScreenWidth - 1u))
+                    DirectCaptureSourceLineSinkComplete = true;
+                return false;
+            }
+            StructuredVulkan2DLinePure3D[lineIndex] = 0u;
+            if (plane0 != 0u || plane1 != 0u || control != 0u)
+                StructuredVulkan2DLineHasPayload[lineIndex] = 1u;
+
+            const u32 plane0Alpha = plane0 >> 24u;
+            const u32 plane1Alpha = plane1 >> 24u;
+            const u32 controlAlpha = control >> 24u;
+            if ((plane0Alpha & 0xC0u) == 0x40u
+                || (plane1Alpha & 0xC0u) == 0x40u
+                || (controlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u)
+            {
+                StructuredVulkan2DLineHas3DSlot[lineIndex] = 1u;
+            }
+            return evaluateKnownExact
+                && StructuredVulkan2DCurrentLineMapsDirectly
+                && currentLineIsRegularDisplay
+                && StructuredVulkan2DMergePixelResolvesToStructured(
+                    legacyVal1,
+                    legacyVal2,
+                    legacyControl,
+                    plane0,
+                    plane1,
+                    control);
+        };
 
     const u32 flags0 = originalVal1 >> 24u;
     const u32 flags1 = originalVal2 >> 24u;
@@ -695,24 +2728,149 @@ void SoftRenderer::StoreStructuredVulkan2DPixel(
         legacyCompMode4
         && legacyVal1 == kStructuredVulkan2D3DPlaceholder
         && legacyVal2 == kStructuredVulkan2D3DPlaceholder;
-    const size_t index = static_cast<size_t>(line) * kStructuredScreenWidth + static_cast<size_t>(x);
-    const size_t screenIndex = StructuredVulkan2DCurrentLineTargetsTop ? 0u : 1u;
-    const size_t screenBase = screenIndex * kStructuredPlaneCount * kStructuredPixelCount;
     if (!has3DSlot
         && captureBacked3DSourceClass == 0u
         && !legacyCaptureBackedComp4
-        && !StructuredVulkan2DIsOpaqueBlack(legacyVal1))
+        && !preserveCaptureBackedReplayAs2D)
     {
-        StructuredVulkan2DPlanes[screenBase + index] = legacyVal1;
-        StructuredVulkan2DPlanes[screenBase + kStructuredPixelCount + index] = 0u;
-        StructuredVulkan2DPlanes[screenBase + (kStructuredPixelCount * 2u) + index] =
-            (legacyControl & 0x00FFFFFFu) | ((legacyAlpha | kStructuredVulkan2DOnlyFlag) << 24u);
-        return;
+        const bool protectedBlack2D = StructuredVulkan2DIsOpaqueBlack(legacyVal1);
+        const u32 controlRgb = StructuredVulkan2DControlRgbWithProtectedBlackTarget(
+            legacyControl & 0x00FFFFFFu,
+            protectedBlack2D,
+            CurrentUnitTargetsTopScreen());
+        *outputPlane0 = legacyVal1;
+        *outputPlane1 = 0u;
+        *outputControl =
+            controlRgb
+            | ((legacyAlpha
+                | kStructuredVulkan2DOnlyFlag
+                | (protectedBlack2D ? kStructuredVulkan2DProtectedBlackFlag : 0u)) << 24u);
+        return markLine(legacyVal1, 0u, *outputControl);
     }
-
     const u32 sourceClass0 = StructuredVulkan2DSourceClass(originalVal1);
     const u32 sourceClass1 = StructuredVulkan2DSourceClass(originalVal2);
     const u32 sourceClass2 = StructuredVulkan2DSourceClass(originalVal3);
+    const bool targetTop = CurrentUnitTargetsTopScreen();
+    const bool replayHasReal2DSource =
+        StructuredVulkan2DSourceIsReal2D(sourceClass0)
+        || StructuredVulkan2DSourceIsReal2D(sourceClass1)
+        || StructuredVulkan2DSourceIsReal2D(sourceClass2);
+    const bool preserveRegularCaptureOverlayAbove3D =
+        preserveCaptureBackedReplayAs2D
+        && CurUnit != nullptr
+        && CurUnit->Num == 1
+        && currentLineIsRegularDisplay
+        && captureBacked3DSourceClass == 0u
+        && (originalVal1 >> 24u) == 0xD0u
+        && originalVal2 == kStructuredVulkan2D3DPlaceholder
+        && originalVal3 == 0u
+        && legacyVal1 == originalVal1
+        && legacyVal2 == 0u
+        && legacyControl == 0x07000000u;
+    if (preserveRegularCaptureOverlayAbove3D)
+    {
+        const bool protectedBlack2D = StructuredVulkan2DIsOpaqueBlack(originalVal1);
+        const u32 controlRgb = StructuredVulkan2DControlRgbWithProtectedBlackTarget(
+            legacyControl & 0x00FFFFFFu,
+            protectedBlack2D,
+            targetTop);
+        const u32 control =
+            controlRgb
+            | ((legacyAlpha
+                | kStructuredVulkan2DSlot3DFlag
+                | kStructuredVulkan2DAbove3DFlag
+                | (protectedBlack2D ? kStructuredVulkan2DProtectedBlackFlag : 0u)) << 24u);
+        *outputPlane0 = 0u;
+        *outputPlane1 = originalVal1;
+        *outputControl = control;
+        return markLine(0u, originalVal1, control);
+    }
+    if (preserveCaptureBackedReplayAs2D
+        && !replayHasReal2DSource
+        && !legacyCaptureBackedComp4
+        && legacyVal1 != 0u
+        && legacyVal1 != kStructuredVulkan2D3DPlaceholder)
+    {
+        *outputPlane0 = legacyVal1;
+        *outputPlane1 = 0u;
+        *outputControl =
+            (legacyControl & 0x00FFFFFFu)
+            | ((legacyAlpha | kStructuredVulkan2DSlot3DFlag) << 24u);
+        return markLine(legacyVal1, 0u, *outputControl);
+    }
+    if (preserveCaptureBackedReplayAs2D && replayHasReal2DSource && !legacyCaptureBackedComp4)
+    {
+        u32 replayPixel = legacyVal1;
+        if (replayPixel == 0u
+            || replayPixel == kStructuredVulkan2D3DPlaceholder
+            || StructuredVulkan2DIsOpaqueBlack(replayPixel))
+        {
+            if (StructuredVulkan2DSourceIsReal2D(sourceClass0)
+                && originalVal1 != 0u
+                && originalVal1 != kStructuredVulkan2D3DPlaceholder)
+            {
+                replayPixel = originalVal1;
+            }
+            else if (StructuredVulkan2DSourceIsReal2D(StructuredVulkan2DSourceClass(originalVal2))
+                && originalVal2 != 0u
+                && originalVal2 != kStructuredVulkan2D3DPlaceholder)
+            {
+                replayPixel = originalVal2;
+            }
+            else if (legacyVal2 != 0u && legacyVal2 != kStructuredVulkan2D3DPlaceholder)
+            {
+                replayPixel = legacyVal2;
+            }
+        }
+
+        if (replayPixel != 0u && replayPixel != kStructuredVulkan2D3DPlaceholder)
+        {
+            const bool protectedBlack2D = StructuredVulkan2DIsOpaqueBlack(replayPixel);
+            const u32 controlRgb = StructuredVulkan2DControlRgbWithProtectedBlackTarget(
+                legacyControl & 0x00FFFFFFu,
+                protectedBlack2D,
+                targetTop);
+            *outputPlane0 = replayPixel;
+            *outputPlane1 = 0u;
+            *outputControl =
+                controlRgb
+                | ((legacyAlpha
+                    | kStructuredVulkan2DOnlyFlag
+                    | (protectedBlack2D ? kStructuredVulkan2DProtectedBlackFlag : 0u)) << 24u);
+            return markLine(replayPixel, 0u, *outputControl);
+        }
+    }
+    if (!has3DSlot
+        && captureBacked3DSourceClass != 0u
+        && sourceClass0 == captureBacked3DSourceClass
+        && !legacyCaptureBackedComp4)
+    {
+        *outputPlane0 = legacyVal2;
+        *outputPlane1 = 0u;
+        *outputControl =
+            (legacyControl & 0x00FFFFFFu)
+            | ((legacyAlpha | kStructuredVulkan2DSlot3DFlag) << 24u);
+        return markLine(legacyVal2, 0u, *outputControl);
+    }
+    if (!has3DSlot
+        && captureBacked3DSourceClass == 0u
+        && !legacyCaptureBackedComp4)
+    {
+        const bool protectedBlack2D = StructuredVulkan2DIsOpaqueBlack(legacyVal1);
+        const u32 controlRgb = StructuredVulkan2DControlRgbWithProtectedBlackTarget(
+            legacyControl & 0x00FFFFFFu,
+            protectedBlack2D,
+            targetTop);
+        *outputPlane0 = legacyVal1;
+        *outputPlane1 = 0u;
+        *outputControl =
+            controlRgb
+            | ((legacyAlpha
+                | kStructuredVulkan2DOnlyFlag
+                | (protectedBlack2D ? kStructuredVulkan2DProtectedBlackFlag : 0u)) << 24u);
+        return markLine(legacyVal1, 0u, *outputControl);
+    }
+
     const bool captureBackedSlotInPlane0 =
         captureBacked3DSourceClass != 0u
         && sourceClass0 == captureBacked3DSourceClass;
@@ -741,6 +2899,17 @@ void SoftRenderer::StoreStructuredVulkan2DPixel(
         else if (slotInPlane0 || captureBackedSlotInPlane0)
         {
             belowPlane = legacyVal2;
+            if (CurUnit != nullptr
+                && CurUnit->Num == 1
+                && CurrentLineRegularCaptureUses3d
+                && StructuredVulkan2DSourceIsReal2D(sourceClass1))
+            {
+                abovePlane = originalVal2;
+                hasAbovePlane = true;
+                protectedBlack2D =
+                    StructuredVulkan2DSourceIsReal2D(sourceClass1)
+                    && StructuredVulkan2DIsOpaqueBlack(abovePlane);
+            }
         }
         else if (slotInPlane1 || captureBackedSlotInPlane1)
         {
@@ -771,7 +2940,11 @@ void SoftRenderer::StoreStructuredVulkan2DPixel(
         const u32 structuredAlpha = legacyAlpha
             | kStructuredVulkan2DSlot3DFlag
             | (hasAbovePlane ? kStructuredVulkan2DAbove3DFlag : 0u);
-        control = (legacyControl & 0x00FFFFFFu)
+        const u32 controlRgb = StructuredVulkan2DControlRgbWithProtectedBlackTarget(
+            legacyControl & 0x00FFFFFFu,
+            protectedBlack2D,
+            targetTop);
+        control = controlRgb
             | ((structuredAlpha
                 | (protectedBlack2D ? kStructuredVulkan2DProtectedBlackFlag : 0u)) << 24u);
     }
@@ -782,15 +2955,20 @@ void SoftRenderer::StoreStructuredVulkan2DPixel(
                 || StructuredVulkan2DSourceIsReal2D(sourceClass1)
                 || StructuredVulkan2DSourceIsReal2D(sourceClass2))
             && StructuredVulkan2DIsOpaqueBlack(legacyVal1);
-        control = (legacyControl & 0x00FFFFFFu)
+        const u32 controlRgb = StructuredVulkan2DControlRgbWithProtectedBlackTarget(
+            legacyControl & 0x00FFFFFFu,
+            protectedBlack2D,
+            targetTop);
+        control = controlRgb
             | ((legacyAlpha
                 | kStructuredVulkan2DOnlyFlag
                 | (protectedBlack2D ? kStructuredVulkan2DProtectedBlackFlag : 0u)) << 24u);
     }
 
-    StructuredVulkan2DPlanes[screenBase + index] = belowPlane;
-    StructuredVulkan2DPlanes[screenBase + kStructuredPixelCount + index] = abovePlane;
-    StructuredVulkan2DPlanes[screenBase + (kStructuredPixelCount * 2u) + index] = control;
+    *outputPlane0 = belowPlane;
+    *outputPlane1 = abovePlane;
+    *outputControl = control;
+    return markLine(belowPlane, abovePlane, control);
 }
 
 void SoftRenderer::StoreStructuredVulkan2DCapturePixel(
@@ -805,24 +2983,150 @@ void SoftRenderer::StoreStructuredVulkan2DCapturePixel(
     u32 external3DSourceClass,
     bool external3DSlot,
     bool external3DCoverage,
-    bool allowUnclassifiedExternal3DSlot)
+    bool allowUnclassifiedExternal3DSlot,
+    u8 carriedProtectedBlack)
 {
-    if (!UseStructuredVulkan2D() || vramBank >= 4u || vramAddress >= kStructuredPixelCount)
+    if (vramBank >= 4u || vramAddress >= kStructuredPixelCount)
         return;
 
-    const size_t screenBase = static_cast<size_t>(vramBank) * kStructuredPlaneCount * kStructuredPixelCount;
+    const size_t screenBase =
+        static_cast<size_t>(vramBank) * kStructuredPlaneCount * kStructuredPixelCount;
     const u32 line = vramAddress / kStructuredScreenWidth;
     const u32 x = vramAddress % kStructuredScreenWidth;
-    const size_t screenIndex = screenBase + static_cast<size_t>(line) * kStructuredScreenWidth + static_cast<size_t>(x);
-    const size_t lineValidIndex = (static_cast<size_t>(vramBank) * kStructuredScreenHeight) + line;
-
+    const size_t screenIndex =
+        screenBase
+        + (static_cast<size_t>(line) * kStructuredScreenWidth)
+        + static_cast<size_t>(x);
+    const size_t pixelOffset = screenIndex - screenBase;
+    const size_t overlayLineageIndex =
+        (static_cast<size_t>(vramBank) * kStructuredPixelCount) + pixelOffset;
+    const size_t lineValidIndex =
+        (static_cast<size_t>(vramBank) * kStructuredScreenHeight) + line;
     const u32 sourceClass0 = StructuredVulkan2DSourceClass(originalVal1);
     const u32 sourceClass1 = StructuredVulkan2DSourceClass(originalVal2);
     const u32 sourceClass2 = StructuredVulkan2DSourceClass(originalVal3);
+    const bool targetTop = CurrentUnitTargetsTopScreen();
     const bool slotInPlane0 = StructuredVulkan2DHas3DSlot(originalVal1);
     const bool slotInPlane1 = StructuredVulkan2DHas3DSlot(originalVal2);
     const bool slotInPlane2 = StructuredVulkan2DHas3DSlot(originalVal3);
     const bool has3DSlot = slotInPlane0 || slotInPlane1 || slotInPlane2;
+    const u32 legacyAlpha = (legacyControl >> 24u) & 0x0Fu;
+    u32 existingBelowPlane = StructuredVulkan2DCapturePlanes[screenIndex];
+    u32 existingAbovePlane =
+        StructuredVulkan2DCapturePlanes[
+            screenBase + kStructuredPixelCount + pixelOffset];
+    u32 existingControl =
+        StructuredVulkan2DCapturePlanes[
+            screenBase + (kStructuredPixelCount * 2u) + pixelOffset];
+    const u8 existingOverlayLineage =
+        StructuredVulkan2DCaptureOverlayLineage[overlayLineageIndex];
+    const u32 existingControlAlpha = existingControl >> 24u;
+    const bool existingHasStructuredAbove =
+        (existingControlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u
+        && (existingControlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
+        && existingAbovePlane != 0u;
+    u32 existingOverlayPixel = 0u;
+    u32 existingOverlayControl = 0u;
+    if (StructuredVulkan2DCaptureLineValid[lineValidIndex] != 0u
+        && existingControlAlpha != 0u)
+    {
+        const bool existingHasStructuredSlot =
+            (existingControlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u;
+        if (existingHasStructuredSlot
+            && (existingControlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
+            && existingAbovePlane != 0u
+            && StructuredVulkan2DCanPreserveCaptureOverlay(existingAbovePlane))
+        {
+            existingOverlayPixel = existingAbovePlane;
+            existingOverlayControl = existingControl;
+        }
+        else if (!existingHasStructuredSlot
+            && (existingControlAlpha & kStructuredVulkan2DOnlyFlag) != 0u)
+        {
+            if (existingBelowPlane != 0u
+                && StructuredVulkan2DCanPreserveCaptureOverlay(existingBelowPlane))
+            {
+                existingOverlayPixel = existingBelowPlane;
+                existingOverlayControl = existingControl;
+            }
+        }
+    }
+    if (external3DSlot
+        && external3DSourceClass == 0u
+        && !allowUnclassifiedExternal3DSlot
+        && !StructuredVulkan2DSourceIsReal2D(sourceClass0)
+        && !StructuredVulkan2DSourceIsReal2D(sourceClass1)
+        && !StructuredVulkan2DSourceIsReal2D(sourceClass2)
+        && legacyVal1 != 0u
+        && legacyVal1 != kStructuredVulkan2D3DPlaceholder)
+    {
+        const bool protectedBlack2D = StructuredVulkan2DIsOpaqueBlack(legacyVal1);
+        const u32 controlRgb = StructuredVulkan2DControlRgbWithProtectedBlackTarget(
+            legacyControl & 0x00FFFFFFu,
+            protectedBlack2D,
+            targetTop);
+        const u32 control =
+            controlRgb
+            | ((legacyAlpha
+                | kStructuredVulkan2DOnlyFlag
+                | (protectedBlack2D ? kStructuredVulkan2DProtectedBlackFlag : 0u)) << 24u);
+
+        if (StructuredVulkan2DCaptureLineValid[lineValidIndex] == 0u)
+            LastDebugCaptureStats.StructuredCopyLines++;
+        LastDebugCaptureStats.StructuredCopyPlane0UsefulPixels++;
+        LastDebugCaptureStats.StructuredCopy2DOnlyPixels++;
+
+        StructuredVulkan2DCapturePlanes[screenIndex] = legacyVal1;
+        StructuredVulkan2DCapturePlanes[
+            screenBase + kStructuredPixelCount + pixelOffset] = 0u;
+        StructuredVulkan2DCapturePlanes[
+            screenBase + (kStructuredPixelCount * 2u) + pixelOffset] = control;
+        StructuredVulkan2DCaptureOverlayLineage[overlayLineageIndex] =
+            kStructuredVulkan2DOverlayLineageFresh;
+        StructuredVulkan2DCaptureLineValid[lineValidIndex] = 1u;
+        MarkStructuredVulkan2DCaptureLine(
+            vramBank,
+            vramAddress,
+            legacyVal1,
+            0u,
+            control);
+        return;
+    }
+
+    if (!has3DSlot
+        && external3DSlot
+        && legacyAlpha == 4u
+        && (external3DSourceClass != 0u || allowUnclassifiedExternal3DSlot))
+    {
+        const u32 structuredAlpha =
+            legacyAlpha
+            | kStructuredVulkan2DSlot3DFlag
+            | (!external3DCoverage ? kStructuredVulkan2DNo3DCoverageFlag : 0u);
+        const u32 control = (legacyControl & 0x00FFFFFFu) | (structuredAlpha << 24u);
+
+        if (StructuredVulkan2DCaptureLineValid[lineValidIndex] == 0u)
+            LastDebugCaptureStats.StructuredCopyLines++;
+        if (legacyVal2 != 0u)
+            LastDebugCaptureStats.StructuredCopyPlane0UsefulPixels++;
+        LastDebugCaptureStats.StructuredCopySlotPixels++;
+
+        StructuredVulkan2DCapturePlanes[screenIndex] = legacyVal2;
+        StructuredVulkan2DCapturePlanes[
+            screenBase + kStructuredPixelCount + pixelOffset] = 0u;
+        StructuredVulkan2DCapturePlanes[
+            screenBase + (kStructuredPixelCount * 2u) + pixelOffset] = control;
+        StructuredVulkan2DCaptureOverlayLineage[overlayLineageIndex] =
+            kStructuredVulkan2DOverlayLineageUnknown;
+        StructuredVulkan2DCaptureLineValid[lineValidIndex] = 1u;
+        MarkStructuredVulkan2DCaptureLine(
+            vramBank,
+            vramAddress,
+            legacyVal2,
+            0u,
+            control);
+        return;
+    }
+
     const bool hasExternal3DSlot =
         !has3DSlot
         && external3DSlot
@@ -856,22 +3160,14 @@ void SoftRenderer::StoreStructuredVulkan2DCapturePixel(
     u32 belowPlane = legacyVal1;
     u32 abovePlane = 0u;
     u32 control = legacyControl;
-    const u32 existingAbovePlane =
-        StructuredVulkan2DCapturePlanes[screenBase + kStructuredPixelCount + (screenIndex - screenBase)];
-    const u32 existingControl =
-        StructuredVulkan2DCapturePlanes[screenBase + (kStructuredPixelCount * 2u) + (screenIndex - screenBase)];
-    const u32 existingControlAlpha = existingControl >> 24u;
-    const bool existingHasStructuredAbove =
-        (existingControlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u
-        && (existingControlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
-        && existingAbovePlane != 0u;
-    const u32 legacyAlpha = (legacyControl >> 24u) & 0x0Fu;
+    bool usedExistingOverlay = false;
     const bool legacyCompMode4 = legacyAlpha == 4u;
     const bool legacyCaptureBackedComp4 =
         legacyCompMode4
         && legacyVal1 == kStructuredVulkan2D3DPlaceholder
         && legacyVal2 == kStructuredVulkan2D3DPlaceholder;
     bool protectedBlack2D = false;
+    bool protectedBlackTargetTop = targetTop;
     if (has3DSlot || hasExternal3DSlot || hasCaptureBacked3DSlot || legacyCaptureBackedComp4)
     {
         bool hasAbovePlane = false;
@@ -882,13 +3178,12 @@ void SoftRenderer::StoreStructuredVulkan2DCapturePixel(
         else if (hasExternal3DSlot)
         {
             belowPlane = legacyVal2;
-            if (legacyAlpha == 1u && StructuredVulkan2DSourceIsReal2D(sourceClass0))
+            if ((legacyAlpha == 1u || legacyAlpha == 2u || legacyAlpha == 3u)
+                && StructuredVulkan2DCanPreserveCaptureOverlay(originalVal1))
             {
                 abovePlane = originalVal1;
                 hasAbovePlane = true;
-                protectedBlack2D =
-                    StructuredVulkan2DSourceIsReal2D(sourceClass0)
-                    && StructuredVulkan2DIsOpaqueBlack(abovePlane);
+                protectedBlack2D = StructuredVulkan2DIsOpaqueBlack(abovePlane);
             }
             else if (
                 legacyAlpha == 7u
@@ -897,8 +3192,11 @@ void SoftRenderer::StoreStructuredVulkan2DCapturePixel(
             {
                 abovePlane = existingAbovePlane;
                 hasAbovePlane = true;
+                usedExistingOverlay = true;
                 protectedBlack2D =
                     (existingControlAlpha & kStructuredVulkan2DProtectedBlackFlag) != 0u;
+                protectedBlackTargetTop =
+                    (existingControl & kStructuredVulkan2DProtectedBlackTargetsBottomFlag) == 0u;
             }
             else if (
                 legacyAlpha == 7u
@@ -910,6 +3208,16 @@ void SoftRenderer::StoreStructuredVulkan2DCapturePixel(
                 hasAbovePlane = true;
                 protectedBlack2D =
                     StructuredVulkan2DSourceIsReal2D(sourceClass0)
+                    && StructuredVulkan2DIsOpaqueBlack(abovePlane);
+            }
+            else if (
+                slotInPlane0
+                && StructuredVulkan2DCanPreserveCaptureOverlay(originalVal2))
+            {
+                abovePlane = originalVal2;
+                hasAbovePlane = true;
+                protectedBlack2D =
+                    StructuredVulkan2DSourceIsReal2D(sourceClass1)
                     && StructuredVulkan2DIsOpaqueBlack(abovePlane);
             }
         }
@@ -928,6 +3236,14 @@ void SoftRenderer::StoreStructuredVulkan2DCapturePixel(
         else if (slotInPlane0 || captureBackedSlotInPlane0)
         {
             belowPlane = legacyVal2;
+            if (StructuredVulkan2DCanPreserveCaptureOverlay(originalVal2))
+            {
+                abovePlane = originalVal2;
+                hasAbovePlane = true;
+                protectedBlack2D =
+                    StructuredVulkan2DSourceIsReal2D(sourceClass1)
+                    && StructuredVulkan2DIsOpaqueBlack(abovePlane);
+            }
         }
         else if (slotInPlane1 || captureBackedSlotInPlane1)
         {
@@ -954,12 +3270,36 @@ void SoftRenderer::StoreStructuredVulkan2DCapturePixel(
                     && StructuredVulkan2DIsOpaqueBlack(abovePlane);
             }
         }
+        const bool dropCarriedProtectedBlackOverlay =
+            (carriedProtectedBlack & kStructuredVulkan2DCarriedProtectedBlack) != 0u
+            && legacyAlpha == 4u
+            && StructuredVulkan2DIsUnblendedProtectedBlackTargetBottom(
+                existingOverlayPixel,
+                existingOverlayControl);
+        if (!hasAbovePlane
+            && !dropCarriedProtectedBlackOverlay
+            && existingOverlayPixel != 0u
+            && StructuredVulkan2DCanPreserveCaptureOverlay(existingOverlayPixel))
+        {
+            abovePlane = existingOverlayPixel;
+            hasAbovePlane = true;
+            usedExistingOverlay = true;
+            protectedBlack2D =
+                ((existingOverlayControl >> 24u) & kStructuredVulkan2DProtectedBlackFlag) != 0u
+                || StructuredVulkan2DIsOpaqueBlack(abovePlane);
+            protectedBlackTargetTop =
+                (existingOverlayControl & kStructuredVulkan2DProtectedBlackTargetsBottomFlag) == 0u;
+        }
 
         const u32 structuredAlpha = legacyAlpha
             | kStructuredVulkan2DSlot3DFlag
             | (hasAbovePlane ? kStructuredVulkan2DAbove3DFlag : 0u)
             | (external3DSlot && !external3DCoverage ? kStructuredVulkan2DNo3DCoverageFlag : 0u);
-        control = (legacyControl & 0x00FFFFFFu)
+        const u32 controlRgb = StructuredVulkan2DControlRgbWithProtectedBlackTarget(
+            legacyControl & 0x00FFFFFFu,
+            protectedBlack2D,
+            protectedBlackTargetTop);
+        control = controlRgb
             | ((structuredAlpha
                 | (protectedBlack2D ? kStructuredVulkan2DProtectedBlackFlag : 0u)) << 24u);
     }
@@ -970,7 +3310,11 @@ void SoftRenderer::StoreStructuredVulkan2DCapturePixel(
                 || StructuredVulkan2DSourceIsReal2D(sourceClass1)
                 || StructuredVulkan2DSourceIsReal2D(sourceClass2))
             && StructuredVulkan2DIsOpaqueBlack(legacyVal1);
-        control = (legacyControl & 0x00FFFFFFu)
+        const u32 controlRgb = StructuredVulkan2DControlRgbWithProtectedBlackTarget(
+            legacyControl & 0x00FFFFFFu,
+            protectedBlack2D,
+            targetTop);
+        control = controlRgb
             | ((legacyAlpha
                 | kStructuredVulkan2DOnlyFlag
                 | (protectedBlack2D ? kStructuredVulkan2DProtectedBlackFlag : 0u)) << 24u);
@@ -983,7 +3327,8 @@ void SoftRenderer::StoreStructuredVulkan2DCapturePixel(
     if (abovePlane != 0u)
         LastDebugCaptureStats.StructuredCopyPlane1UsefulPixels++;
     const u32 controlAlpha = control >> 24u;
-    const bool structuredSlot = (controlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u;
+    const bool structuredSlot =
+        (controlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u;
     if (structuredSlot)
         LastDebugCaptureStats.StructuredCopySlotPixels++;
     if (structuredSlot && (controlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u)
@@ -992,16 +3337,37 @@ void SoftRenderer::StoreStructuredVulkan2DCapturePixel(
         LastDebugCaptureStats.StructuredCopy2DOnlyPixels++;
 
     StructuredVulkan2DCapturePlanes[screenIndex] = belowPlane;
-    StructuredVulkan2DCapturePlanes[screenBase + kStructuredPixelCount + (screenIndex - screenBase)] = abovePlane;
-    StructuredVulkan2DCapturePlanes[screenBase + (kStructuredPixelCount * 2u) + (screenIndex - screenBase)] = control;
+    StructuredVulkan2DCapturePlanes[
+        screenBase + kStructuredPixelCount + pixelOffset] = abovePlane;
+    StructuredVulkan2DCapturePlanes[
+        screenBase + (kStructuredPixelCount * 2u) + pixelOffset] = control;
+    StructuredVulkan2DCaptureOverlayLineage[overlayLineageIndex] =
+        !StructuredVulkan2DHasPreservableCaptureOverlay(
+            belowPlane,
+            abovePlane,
+            control)
+        ? kStructuredVulkan2DOverlayLineageUnknown
+        : usedExistingOverlay
+            ? AdvanceStructuredVulkan2DOverlayLineage(existingOverlayLineage)
+            : kStructuredVulkan2DOverlayLineageFresh;
     StructuredVulkan2DCaptureLineValid[lineValidIndex] = 1u;
+    MarkStructuredVulkan2DCaptureLine(
+        vramBank,
+        vramAddress,
+        belowPlane,
+        abovePlane,
+        control);
 }
 
-void SoftRenderer::DrawScanline(u32 line, Unit* unit)
+
+void SoftRenderer::DrawScanlineActivePipeline(u32 line, Unit* unit)
 {
     CurUnit = unit;
     _3DLine = nullptr;
     CurrentLineRegularCaptureUses3d = false;
+    DirectCaptureSourceLineSink = false;
+    DirectCaptureSourceLineSinkComplete = false;
+    DirectCaptureDeferredTail = false;
 
     int stride = GPU.GPU3D.IsRendererAccelerated() ? (256*3 + 1) : 256;
     u32* dst = &Framebuffer[CurUnit->Num][stride * line];
@@ -1009,8 +3375,122 @@ void SoftRenderer::DrawScanline(u32 line, Unit* unit)
     int n3dline = line;
     line = GPU.VCount;
     StructuredVulkan2DCurrentLineTargetsTop = CurrentUnitTargetsTopScreen();
+    StructuredVulkan2DCurrentLineY =
+        line < kStructuredScreenHeight ? line : kStructuredScreenHeight;
+    StructuredVulkan2DCurrentLineMapsDirectly =
+        n3dline == static_cast<int>(line)
+        && n3dline >= 0
+        && n3dline < static_cast<int>(kStructuredScreenHeight);
+    if (n3dline >= 0 && n3dline < static_cast<int>(kStructuredScreenHeight))
+    {
+        const size_t physicalScreenIndex =
+            StructuredVulkan2DCurrentLineTargetsTop ? 0u : 1u;
+        const size_t physicalLineIndex =
+            (physicalScreenIndex * kStructuredScreenHeight)
+            + static_cast<size_t>(n3dline);
+        StructuredVulkan2DLineKnownExact[physicalLineIndex] = 0u;
+        StructuredVulkan2DDisplayedCaptureIdentity[physicalLineIndex] = {};
+    }
+
+    bool forceblank = false;
+
+    // scanlines that end up outside of the GPU drawing range
+    // (as a result of writing to VCount) are filled white
+    if (line > 192) forceblank = true;
+
+    // GPU B can be completely disabled by POWCNT1
+    // oddly that's not the case for GPU A
+    if (CurUnit->Num && !CurUnit->Enabled) forceblank = true;
+
+    const bool useStructuredVulkan2D = UseStructuredVulkan2D();
+
+    if (useStructuredVulkan2D && CurUnit->Num == 0 && line == 0)
+    {
+        CaptureLineUses3d.fill(0);
+        if (FramesSinceLastCapture < 255u)
+            FramesSinceLastCapture++;
+    }
+
+    if (line == 0 && CurUnit->CaptureCnt & (1 << 31) && !forceblank)
+        CurUnit->CaptureLatch = true;
+
+    if (CurUnit->Num == 0)
+    {
+        if (!GPU.GPU3D.IsRendererAccelerated())
+            _3DLine = GPU.GPU3D.GetLine(n3dline);
+        else if (!useStructuredVulkan2D && CurUnit->CaptureLatch && (((CurUnit->CaptureCnt >> 29) & 0x3) != 1))
+            _3DLine = GPU.GPU3D.GetLine(n3dline);
+    }
+
+    if (forceblank)
+    {
+        ClearStructuredVulkan2DLine(line);
+        for (int i = 0; i < 256; i++)
+            dst[i] = 0xFFFFFFFF;
+
+        if (GPU.GPU3D.IsRendererAccelerated())
+        {
+            dst[256*3] = 0;
+        }
+        return;
+    }
+
+    u32 dispmode = CurUnit->DispCnt >> 16;
+    dispmode &= (CurUnit->Num ? 0x1 : 0x3);
+    u32 masterBrightness = CurUnit->MasterBrightness;
+
+    const u32 directSinkCaptureCnt = CurUnit->CaptureCnt;
+    const u32 directSinkDstBank = (directSinkCaptureCnt >> 16u) & 0x3u;
+    DirectCaptureSourceLineSink =
+        useStructuredVulkan2D
+        && CurUnit->Num == 0
+        && CurUnit->CaptureLatch
+        && (directSinkCaptureCnt & (1u << 31u)) != 0u
+        && ((directSinkCaptureCnt >> 29u) & 0x3u) == 0u
+        && (directSinkCaptureCnt & (1u << 24u)) == 0u
+        && ((directSinkCaptureCnt >> 20u) & 0x3u) == 3u
+        && ((directSinkCaptureCnt >> 18u) & 0x3u) == 0u
+        && (GPU.VRAMMap_LCDC & (1u << directSinkDstBank)) != 0u
+        && dispmode == 2u
+        && (CurUnit->DispCnt & (1u << 7u)) == 0u
+        && n3dline == static_cast<int>(line);
+
+    auto capturePure3DLineIfNeeded = [&]() {
+        if (!CurUnit->CaptureLatch)
+            return;
+
+        constexpr u32 kPure3DControl = kStructuredVulkan2DSlot3DFlag << 24u;
+        std::fill_n(BGOBJLine, 256, 0x40000000u);
+        std::fill_n(BGOBJLine + 256, 256, 0u);
+        std::fill_n(BGOBJLine + 512, 256, kPure3DControl);
+        SaveStructuredVulkan2DCaptureSourceLine(line);
+
+        u32 capwidth = 128u;
+        u32 capheight = 128u;
+        switch ((CurUnit->CaptureCnt >> 20) & 0x3)
+        {
+        case 0: capwidth = 128; capheight = 128; break;
+        case 1: capwidth = 256; capheight = 64;  break;
+        case 2: capwidth = 256; capheight = 128; break;
+        case 3: capwidth = 256; capheight = 192; break;
+        }
+
+        if (line < capheight)
+            DoCapture(line, capwidth, static_cast<u32>(n3dline));
+    };
+
+    if (!CurUnit->CaptureLatch && CanUseStructuredVulkan2DPure3DLine(dispmode))
+    {
+        FillStructuredVulkan2DPure3DLine(line, dst, masterBrightness);
+        CurUnit->UpdateMosaicCounters(line);
+        capturePure3DLineIfNeeded();
+
+        return;
+    }
+
     ClearStructuredVulkan2DLine(line);
 
+    // always render regular graphics
     if (CurUnit->Num == 0)
     {
         auto bgDirty = GPU.VRAMDirty_ABG.DeriveState(GPU.VRAMMap_ABG, GPU);
@@ -1030,51 +3510,18 @@ void SoftRenderer::DrawScanline(u32 line, Unit* unit)
         GPU.MakeVRAMFlat_BOBJExtPalCoherent(objExtPalDirty);
     }
 
-    bool forceblank = false;
-
-    // scanlines that end up outside of the GPU drawing range
-    // (as a result of writing to VCount) are filled white
-    if (line > 192) forceblank = true;
-
-    // GPU B can be completely disabled by POWCNT1
-    // oddly that's not the case for GPU A
-    if (CurUnit->Num && !CurUnit->Enabled) forceblank = true;
-
-    const bool useStructuredVulkan2D = UseStructuredVulkan2D();
-
-    if (useStructuredVulkan2D && CurUnit->Num == 0 && line == 0)
-        CaptureLineUses3d.fill(0);
-
-    if (line == 0 && CurUnit->CaptureCnt & (1 << 31) && !forceblank)
-        CurUnit->CaptureLatch = true;
-
-    if (CurUnit->Num == 0)
-    {
-        if (!GPU.GPU3D.IsRendererAccelerated())
-            _3DLine = GPU.GPU3D.GetLine(n3dline);
-        else if (!useStructuredVulkan2D && CurUnit->CaptureLatch && (((CurUnit->CaptureCnt >> 29) & 0x3) != 1))
-            _3DLine = GPU.GPU3D.GetLine(n3dline);
-    }
-
-    if (forceblank)
-    {
-        for (int i = 0; i < 256; i++)
-            dst[i] = 0xFFFFFFFF;
-
-        if (GPU.GPU3D.IsRendererAccelerated())
-        {
-            dst[256*3] = 0;
-        }
-        return;
-    }
-
-    u32 dispmode = CurUnit->DispCnt >> 16;
-    dispmode &= (CurUnit->Num ? 0x1 : 0x3);
-
-    // always render regular graphics
     DrawScanline_BGOBJ(line);
     CurUnit->UpdateMosaicCounters(line);
-    if (useStructuredVulkan2D && CurUnit->Num == 0 && CurUnit->CaptureLatch)
+    if (DirectCaptureDeferredTail)
+    {
+        StructuredVulkan2DCaptureSourceLineValid = false;
+    }
+    else if (DirectCaptureSourceLineSink && DirectCaptureSourceLineSinkComplete)
+    {
+        StructuredVulkan2DCaptureSourceLineY = line;
+        StructuredVulkan2DCaptureSourceLineValid = true;
+    }
+    else if (useStructuredVulkan2D && CurUnit->Num == 0 && CurUnit->CaptureLatch)
         SaveStructuredVulkan2DCaptureSourceLine(line);
 
     switch (dispmode)
@@ -1097,6 +3544,42 @@ void SoftRenderer::DrawScanline(u32 line, Unit* unit)
     case 2: // VRAM display
         {
             u32 vrambank = (CurUnit->DispCnt >> 18) & 0x3;
+            if (line == 0u && useStructuredVulkan2D)
+            {
+                const u32 captureCnt = CurUnit->CaptureCnt;
+                const bool sameBankMode2Tuple =
+                    CurUnit->Num == 0u
+                    && ((CurUnit->DispCnt >> 16u) & 0x3u) == 2u
+                    && ((captureCnt >> 29u) & 0x3u) == 2u
+                    && ((captureCnt >> 20u) & 0x3u) == 3u
+                    && (captureCnt & (1u << 25u)) == 0u
+                    && ((captureCnt >> 16u) & 0x3u) == vrambank
+                    && (captureCnt & 0x1Fu) != 0u
+                    && ((captureCnt >> 8u) & 0x1Fu) != 0u
+                    && (GPU.VRAMMap_LCDC & (1u << vrambank)) != 0u;
+                if (sameBankMode2Tuple)
+                {
+                    const StructuredVulkan2DCaptureBankIdentity bankIdentity =
+                        GetStructuredVulkan2DCaptureBankIdentity(vrambank);
+                    SameBankMode2DisplayedVramBank = vrambank;
+                    SameBankMode2DisplayedIdentity =
+                        SameBankMode2WriterIdentity[vrambank];
+                    SameBankMode2DisplayedIdentityValid =
+                        SameBankMode2WriterIdentityValid[vrambank]
+                        && SameBankMode2DisplayedIdentity.Valid
+                        && bankIdentity.Valid
+                        && bankIdentity.VramBank == vrambank
+                        && bankIdentity.Source.Valid
+                        && bankIdentity.Source.Sequence
+                            == SameBankMode2DisplayedIdentity.Sequence
+                        && bankIdentity.Source.PolygonCount
+                            == SameBankMode2DisplayedIdentity.PolygonCount
+                        && bankIdentity.Source.CaptureCnt
+                            == SameBankMode2DisplayedIdentity.CaptureCnt
+                        && bankIdentity.Source.ScreenSwap
+                            == SameBankMode2DisplayedIdentity.ScreenSwap;
+                }
+            }
             if (GPU.VRAMMap_LCDC & (1<<vrambank))
             {
                 u16* vram = (u16*)GPU.VRAM[vrambank];
@@ -1111,8 +3594,84 @@ void SoftRenderer::DrawScanline(u32 line, Unit* unit)
 
                     dst[i] = r | (g << 8) | (b << 16);
                 }
+                const u16* vramLineForStructured = vram;
                 if (useStructuredVulkan2D)
-                    CopyStructuredVulkan2DCaptureLineToCurrentScreen(line, vrambank);
+                {
+                    if (activeVulkan2DPipelineStrategy()
+                            .UsesHistoricalVramDisplayCopy())
+                    {
+                        CopyStructuredVulkan2DCaptureLineToCurrentScreenCompatibility(
+                            line,
+                            vrambank);
+                    }
+                    else
+                    {
+                    const size_t captureLineIndex =
+                        (static_cast<size_t>(vrambank) * kStructuredScreenHeight) + line;
+                    bool mirrorRepresentsBank = false;
+                    if (line < kStructuredScreenHeight
+                        && StructuredVulkan2DCaptureLineValid[captureLineIndex] != 0u)
+                    {
+                        if (StructuredVulkan2DCaptureLineHas3DSlot[captureLineIndex] != 0u
+                            && line < CaptureLineUses3d.size()
+                            && CaptureLineUses3d[line] != 0)
+                        {
+                            mirrorRepresentsBank = true;
+                        }
+                        else
+                        {
+                            const size_t captureBase =
+                                static_cast<size_t>(vrambank) * kStructuredPlaneCount * kStructuredPixelCount;
+                            const u32* mirrorBelow = StructuredVulkan2DCapturePlanes.data()
+                                + captureBase
+                                + (static_cast<size_t>(line) * kStructuredScreenWidth);
+                            u32 visible = 0;
+                            u32 matches = 0;
+                            for (size_t x = 0; x < kStructuredScreenWidth; x += 4)
+                            {
+                                const u32 mirror = mirrorBelow[x];
+                                if ((mirror >> 24u) == 0u)
+                                    continue;
+                                visible++;
+                                const u16 value = vramLineForStructured[x];
+                                const u32 r5 = value & 0x1Fu;
+                                const u32 g5 = (value >> 5u) & 0x1Fu;
+                                const u32 b5 = (value >> 10u) & 0x1Fu;
+                                const u32 bank = ((r5 << 1u) | (r5 >> 4u))
+                                    | (((g5 << 1u) | (g5 >> 4u)) << 8u)
+                                    | (((b5 << 1u) | (b5 >> 4u)) << 16u);
+                                const int dr = static_cast<int>(mirror & 0xFFu) - static_cast<int>(bank & 0xFFu);
+                                const int dg = static_cast<int>((mirror >> 8u) & 0xFFu) - static_cast<int>((bank >> 8u) & 0xFFu);
+                                const int db = static_cast<int>((mirror >> 16u) & 0xFFu) - static_cast<int>((bank >> 16u) & 0xFFu);
+                                if (dr >= -2 && dr <= 2 && dg >= -2 && dg <= 2 && db >= -2 && db <= 2)
+                                    matches++;
+                            }
+                            mirrorRepresentsBank = visible >= 48u && matches * 20u >= visible * 19u;
+                            if (!mirrorRepresentsBank
+                                && line < kStructuredScreenHeight
+                                && StructuredVulkan2DCaptureLineHas3DSlot[captureLineIndex] != 0u
+                                && FramesSinceLastCapture <= 2u)
+                            {
+                                u32 bankReal = 0;
+                                u32 bankSampled = 0;
+                                for (size_t x = 0; x < kStructuredScreenWidth; x += 8)
+                                {
+                                    bankSampled++;
+                                    const u16 value = vramLineForStructured[x];
+                                    if ((value & 0x8000u) != 0u && (value & 0x7FFFu) != 0u)
+                                        bankReal++;
+                                }
+                                if (bankReal * 4u >= bankSampled)
+                                    mirrorRepresentsBank = true;
+                            }
+                        }
+                    }
+                    if (mirrorRepresentsBank)
+                        CopyStructuredVulkan2DCaptureLineToCurrentScreen(line, vrambank, dst);
+                    else
+                        FillStructuredVulkan2DVramDisplayLine(line, vram);
+                    }
+                }
             }
             else
             {
@@ -1120,6 +3679,8 @@ void SoftRenderer::DrawScanline(u32 line, Unit* unit)
                 {
                     dst[i] = 0;
                 }
+                if (useStructuredVulkan2D)
+                    FillStructuredVulkan2DVramDisplayLine(line, nullptr);
             }
         }
         break;
@@ -1155,8 +3716,6 @@ void SoftRenderer::DrawScanline(u32 line, Unit* unit)
             DoCapture(line, capwidth, static_cast<u32>(n3dline));
     }
 
-    u32 masterBrightness = CurUnit->MasterBrightness;
-
     if (GPU.GPU3D.IsRendererAccelerated())
     {
         constexpr u32 kMetaFlagRegularCaptureUses3d = 1u << 21u;
@@ -1168,10 +3727,40 @@ void SoftRenderer::DrawScanline(u32 line, Unit* unit)
         const bool captureConfiguredFullScreen =
             (engineACaptureCnt & (1u << 31u)) != 0u
             && ((engineACaptureCnt >> 20u) & 0x3u) == 3u;
+        const bool structuredLineHas3DSlot =
+            useStructuredVulkan2D
+            && line < kStructuredScreenHeight
+            && StructuredVulkan2DLineHas3DSlot[
+                ((StructuredVulkan2DCurrentLineTargetsTop ? 0u : 1u) * kStructuredScreenHeight)
+                    + static_cast<size_t>(line)] != 0u;
+        const u32 captureDstVram = (engineACaptureCnt >> 16u) & 0x3u;
+        const u32 displayVram = (CurUnit->DispCnt >> 18u) & 0x3u;
+        const u32 captureMode = (engineACaptureCnt >> 29u) & 0x3u;
+        const u32 captureEva = engineACaptureCnt & 0x1Fu;
+        const u32 captureEvb = (engineACaptureCnt >> 8u) & 0x1Fu;
+        const bool fullSameBankBlendCaptureReplay =
+            CurUnit->Num == 0u
+            && dispmode == 2u
+            && captureMode == 2u
+            && ((engineACaptureCnt >> 20u) & 0x3u) == 3u
+            && (engineACaptureCnt & (1u << 25u)) == 0u
+            && captureDstVram == displayVram
+            && captureEva != 0u
+            && captureEvb != 0u
+            && (GPU.VRAMMap_LCDC & (1u << displayVram)) != 0u;
+        const bool captureLineHas3DSlot =
+            useStructuredVulkan2D
+            && line < kStructuredScreenHeight
+            && captureDstVram < 4u
+            && StructuredVulkan2DCaptureLineHas3DSlot[
+                (static_cast<size_t>(captureDstVram) * kStructuredScreenHeight)
+                    + static_cast<size_t>(line)] != 0u;
 
         if (useStructuredVulkan2D && dispmode == 2)
         {
-            if (line < CaptureLineUses3d.size() && CaptureLineUses3d[line] != 0)
+            if (line < CaptureLineUses3d.size()
+                && CaptureLineUses3d[line] != 0
+                && (structuredLineHas3DSlot || fullSameBankBlendCaptureReplay))
             {
                 rendererMetaFlags |= kMetaFlagVramCaptureUses3d;
             }
@@ -1182,7 +3771,8 @@ void SoftRenderer::DrawScanline(u32 line, Unit* unit)
                 CurUnit->Num == 1
                 && captureConfiguredFullScreen
                 && line < CaptureLineUses3d.size()
-                && CaptureLineUses3d[line] != 0;
+                && CaptureLineUses3d[line] != 0
+                && captureLineHas3DSlot;
             if (CurrentLineRegularCaptureUses3d || broadCaptureLineUses3d)
             {
                 rendererMetaFlags |= kMetaFlagRegularCaptureUses3d;
@@ -1241,7 +3831,7 @@ void SoftRenderer::DrawScanline(u32 line, Unit* unit)
     }
 }
 
-void SoftRenderer::VBlankEnd(Unit* unitA, Unit* unitB)
+void SoftRenderer::VBlankEndActivePipeline(Unit* unitA, Unit* unitB)
 {
 #ifdef OGLRENDERER_ENABLED
     if (Renderer3D& renderer3d = GPU.GPU3D.GetCurrentRenderer(); renderer3d.Accelerated)
@@ -1264,7 +3854,10 @@ void SoftRenderer::VBlankEnd(Unit* unitA, Unit* unitB)
             && captureMode != 1u
             && (captureUsesDirect3D || (bg0Uses3D && sourceAContributes)))
         {
-            renderer3d.SetCaptureScreenSwapHint((GPU.NDS.PowerControl9 & (1u << 15u)) != 0u);
+            renderer3d.SetCaptureScreenSwapHint(
+                (GPU.NDS.PowerControl9 & (1u << 15u)) != 0u,
+                captureCnt,
+                unitA->DispCnt);
             renderer3d.BeginCaptureFrame();
             renderer3d.PrepareCaptureFrame();
         }
@@ -1282,6 +3875,19 @@ void SoftRenderer::DoCapture(u32 line, u32 width, u32 sourceLine)
     bool captureDestinationHasNonZeroPixel = false;
     bool debugCaptureSourceReady = false;
     const bool useStructuredVulkan2D = UseStructuredVulkan2D();
+    CaptureSourceIdentity servedCaptureSourceIdentity {};
+    bool servedCaptureSourceIdentityValid = false;
+    const auto latchServedCaptureSourceIdentity = [&]() {
+        servedCaptureSourceIdentity = {};
+        if (!useStructuredVulkan2D)
+            return;
+        servedCaptureSourceIdentityValid =
+            _3DLine != nullptr
+            && GPU.GPU3D.GetLastServedCaptureSourceIdentity(servedCaptureSourceIdentity)
+            && servedCaptureSourceIdentity.Valid;
+        if (!servedCaptureSourceIdentityValid)
+            servedCaptureSourceIdentity = {};
+    };
     if (useStructuredVulkan2D && CurUnit->Num == 0 && line < CaptureLineUses3d.size())
         CaptureLineUses3d[line] = 0;
     const bool captureScreenSwap = (GPU.NDS.PowerControl9 & (1u << 15u)) != 0u;
@@ -1296,6 +3902,7 @@ void SoftRenderer::DoCapture(u32 line, u32 width, u32 sourceLine)
         LastDebugCaptureStats.CaptureWidth = width;
         LastDebugCaptureStats.CaptureMode = captureMode;
         LastDebugCaptureStats.CaptureBit24 = (captureCnt & (1u << 24u)) != 0u ? 1u : 0u;
+        FramesSinceLastCapture = 0;
     }
     LastDebugCaptureStats.CaptureLines++;
     u32 dstvram = (captureCnt >> 16) & 0x3;
@@ -1307,6 +3914,31 @@ void SoftRenderer::DoCapture(u32 line, u32 width, u32 sourceLine)
 
     u16* dst = (u16*)GPU.VRAM[dstvram];
     u32 dstaddr = (((captureCnt >> 18) & 0x3) << 14) + (line * width);
+
+    const u32 captureDisplayMode = (CurUnit->DispCnt >> 16u) & (CurUnit->Num ? 0x1u : 0x3u);
+    const bool canUsePure3DStructuredCapture =
+        useStructuredVulkan2D
+        && CurUnit->Num == 0
+        && GPU.GPU3D.IsRendererAccelerated()
+        && !captureUsesDirect3D
+        && !CurUnit->CaptureLatch
+        && captureMode == 0u
+        && CanUseStructuredVulkan2DPure3DLine(captureDisplayMode);
+    if (canUsePure3DStructuredCapture)
+    {
+        dstaddr &= 0xFFFFu;
+        static_assert(VRAMDirtyGranularity == 512);
+        GPU.VRAMDirty[dstvram][(dstaddr * 2) / VRAMDirtyGranularity] = true;
+        FillStructuredVulkan2DCapturePure3DRange(dstvram, dstaddr, width);
+        if (line < CaptureLineUses3d.size())
+            CaptureLineUses3d[line] = 1u;
+        if (captureMetadataEnabled)
+        {
+            LastDebugCaptureStats.SourceACompositeLines++;
+            LastDebugCaptureStats.CaptureLineUses3dLines++;
+        }
+        return;
+    }
     if (!useStructuredVulkan2D)
     {
         u32* srcA;
@@ -1536,35 +4168,54 @@ void SoftRenderer::DoCapture(u32 line, u32 width, u32 sourceLine)
         && sourceBEvb != 0u
         && structuredSourceBFromVram;
     std::array<u32, 256> structuredSourceBOverlayPixels {};
-    std::array<u32, 256> structuredSourceBOverlayControlAlpha {};
+    std::array<u32, 256> structuredSourceBOverlayControl {};
+    std::array<u8, 256> structuredSourceBOverlayLineage {};
     std::array<u16, 256> structuredCaptureOutputPixels {};
     if (captureBlendsStructuredSourceB)
     {
         const u32 sampleWidth = std::min<u32>(width, 256u);
         for (u32 i = 0; i < sampleWidth; i++)
         {
+            const u32 sourceAddress =
+                (structuredSourceBBaseAddr + i) & 0xFFFFu;
             ReadStructuredVulkan2DCapture2DOverlayPixel(
                 structuredSourceBVram,
-                (structuredSourceBBaseAddr + i) & 0xFFFFu,
+                sourceAddress,
                 structuredSourceBOverlayPixels[static_cast<size_t>(i)],
-                structuredSourceBOverlayControlAlpha[static_cast<size_t>(i)]);
+                structuredSourceBOverlayControl[static_cast<size_t>(i)],
+                true);
+            if (sourceAddress < kStructuredPixelCount)
+            {
+                structuredSourceBOverlayLineage[static_cast<size_t>(i)] =
+                    StructuredVulkan2DCaptureOverlayLineage[
+                        (static_cast<size_t>(structuredSourceBVram)
+                            * kStructuredPixelCount)
+                        + static_cast<size_t>(sourceAddress)];
+            }
         }
     }
-
-    if (useStructuredVulkan2D)
+    const bool structuredCaptureWritesFullLine =
+        width >= kStructuredScreenWidth
+        && (structuredCaptureDstBase % kStructuredScreenWidth) == 0u;
+    if (useStructuredVulkan2D && !structuredCaptureWritesFullLine)
         ClearStructuredVulkan2DCaptureRange(dstvram, structuredCaptureDstBase, width);
 
     // TODO: handle 3D in GPU3D::CurrentRenderer->Accelerated mode!!
 
+    bool acceleratedSourceACompositeNeeded = false;
     u32* srcA;
     if (captureUsesDirect3D)
     {
         if (captureDebugEnabled)
             LastDebugCaptureStats.Direct3DLines++;
         if (GPU.GPU3D.IsRendererAccelerated())
-            GPU.GPU3D.GetCurrentRenderer().SetCaptureScreenSwapHint(captureScreenSwap);
+            GPU.GPU3D.GetCurrentRenderer().SetCaptureScreenSwapHint(
+                captureScreenSwap, captureCnt, CurUnit->DispCnt);
         if (GPU.GPU3D.IsRendererAccelerated())
+        {
             _3DLine = GPU.GPU3D.GetLine(static_cast<int>(sourceLine));
+            latchServedCaptureSourceIdentity();
+        }
         srcA = _3DLine;
         captureLineUses3d = srcA != nullptr;
         if (captureMetadataEnabled && srcA != nullptr)
@@ -1603,49 +4254,165 @@ void SoftRenderer::DoCapture(u32 line, u32 width, u32 sourceLine)
                         needs3dComposite = true;
                         break;
                     }
+                    if (((BGOBJLine[i] >> 24) & 0xC0u) == 0x40u)
+                    {
+                        needs3dComposite = true;
+                        break;
+                    }
                 }
             }
 
+            acceleratedSourceACompositeNeeded = needs3dComposite;
             if (needs3dComposite)
             {
                 if (captureDebugEnabled)
                     LastDebugCaptureStats.SourceACompositeLines++;
-                GPU.GPU3D.GetCurrentRenderer().SetCaptureScreenSwapHint(captureScreenSwap);
-                _3DLine = GPU.GPU3D.GetLine(static_cast<int>(sourceLine));
-                if (_3DLine)
+                if (captureMode == 0u
+                    && StructuredVulkan2DCaptureSourceLineCanFastCopy(line, width)
+                    && StructuredVulkan2DLineHasVisibleSourceA(BGOBJLine, width))
                 {
+                    dstaddr &= 0xFFFFu;
+                    static_assert(VRAMDirtyGranularity == 512);
+                    GPU.VRAMDirty[dstvram][(dstaddr * 2) / VRAMDirtyGranularity] = true;
                     CopyStructuredVulkan2DCaptureSourceLineToCapture(
                         line,
                         dstvram,
                         structuredCaptureDstBase,
                         width);
-
-                    u32 external3DSourceClass = 0u;
-                    u32 external3DSourceCounts[17] {};
-                    const u32 captureOutputMode = (captureCnt >> 29) & 0x3u;
-                    const bool allowUnclassifiedExternal3DSlot =
-                        captureOutputMode >= 2u
-                        && width == 256u
-                        && srcB != nullptr;
-
-                    for (int i = 0; i < 256; i++)
+                    GPU.GPU3D.GetCurrentRenderer().SetCaptureScreenSwapHint(
+                        captureScreenSwap, captureCnt, CurUnit->DispCnt);
+                    _3DLine = GPU.GPU3D.GetLine(static_cast<int>(sourceLine));
+                    latchServedCaptureSourceIdentity();
+                    u32 dstWriteAddr = structuredCaptureDstBase;
+                    for (u32 i = 0; i < width; i++)
                     {
-                        const u32 sourceClass = StructuredVulkan2DSourceClass(BGOBJLine[i]);
-                        if (sourceClass <= 16u)
-                            external3DSourceCounts[sourceClass]++;
-                    }
-                    constexpr u32 sourceClasses[] = {1u, 2u, 4u, 8u};
-                    u32 bestSourceCount = 0u;
-                    for (u32 sourceClass : sourceClasses)
-                    {
-                        if (external3DSourceCounts[sourceClass] > bestSourceCount)
+                        u32 val = BGOBJLine[i];
+                        const u32 control = BGOBJLine[512 + i];
+                        const u32 compmode = (control >> 24) & 0xF;
+                        if (_3DLine != nullptr && compmode <= 4u)
                         {
-                            bestSourceCount = external3DSourceCounts[sourceClass];
-                            external3DSourceClass = sourceClass;
+                            const u32 _3dval = _3DLine[i];
+                            const bool has3d = (_3dval >> 24) != 0u;
+                            if (compmode == 4)
+                                val = has3d ? ColorBlend5(_3dval, val) : BGOBJLine[256 + i];
+                            else if (compmode == 1)
+                                val = has3d
+                                    ? ColorBlend4(val, _3dval, (control >> 8) & 0x1F, (control >> 16) & 0x1F)
+                                    : BGOBJLine[256 + i];
+                            else if (has3d)
+                            {
+                                const u32 evy = (control >> 8) & 0x1F;
+                                val = _3dval;
+                                if      (compmode == 2) val = ColorBrightnessUp(val, evy, 0x8);
+                                else if (compmode == 3) val = ColorBrightnessDown(val, evy, 0x7);
+                            }
+                            else
+                                val = BGOBJLine[256 + i];
                         }
+                        const u16 packed =
+                            static_cast<u16>(((val >> 1u) & 0x1Fu)
+                                | (((val >> 9u) & 0x1Fu) << 5u)
+                                | (((val >> 17u) & 0x1Fu) << 10u)
+                                | (((val >> 24u) != 0u) ? 0x8000u : 0u));
+                        dst[dstWriteAddr] = packed;
+                        if (captureMetadataEnabled && packed != 0u)
+                        {
+                            LastDebugCaptureStats.SourceAOutputUsefulPixels++;
+                            if ((packed & 0x7FFFu) != 0u)
+                                LastDebugCaptureStats.SourceAOutputVisiblePixels++;
+                            else
+                                LastDebugCaptureStats.SourceAOutputOpaqueBlackPixels++;
+                        }
+                        if (logCaptureSamples)
+                        {
+                            struct CaptureFastSamplePoint
+                            {
+                                const char* label;
+                                u32 x;
+                                u32 y;
+                            };
+                            static constexpr CaptureFastSamplePoint kFastSamples[] = {
+                                {"seamA", 85u, 14u},
+                                {"goodA", 84u, 14u},
+                                {"seamB", 75u, 58u},
+                                {"goodB", 74u, 58u},
+                                {"seamC", 150u, 81u},
+                                {"goodC", 149u, 81u},
+                            };
+                            for (const CaptureFastSamplePoint& sample : kFastSamples)
+                            {
+                                if (sample.y != sourceLine || sample.x != i)
+                                    continue;
+
+                                Platform::Log(
+                                    Platform::LogLevel::Warn,
+                                    "RendererDebug[CaptureFastCopy]: label=%s line=%u sourceLine=%u x=%u dstvram=%u dst=%04X val=%08X packed=%04X cnt=%08X",
+                                    sample.label,
+                                    line,
+                                    sourceLine,
+                                    i,
+                                    dstvram,
+                                    dstWriteAddr,
+                                    val,
+                                    packed,
+                                    captureCnt);
+                                break;
+                            }
+                        }
+                        dstWriteAddr = (dstWriteAddr + 1u) & 0xFFFFu;
                     }
-                    if (bestSourceCount < 128u)
-                        external3DSourceClass = 0u;
+                    if (line < CaptureLineUses3d.size())
+                        CaptureLineUses3d[line] = 1u;
+                    if (captureMetadataEnabled)
+                        LastDebugCaptureStats.CaptureLineUses3dLines++;
+                    SealStructuredVulkan2DCaptureIdentity(
+                        dstvram,
+                        structuredCaptureDstBase,
+                        width,
+                        servedCaptureSourceIdentityValid
+                            ? &servedCaptureSourceIdentity
+                            : nullptr,
+                        StructuredCaptureWriterRoute::Fast);
+                    return;
+                }
+
+                GPU.GPU3D.GetCurrentRenderer().SetCaptureScreenSwapHint(
+                    captureScreenSwap, captureCnt, CurUnit->DispCnt);
+                _3DLine = GPU.GPU3D.GetLine(static_cast<int>(sourceLine));
+                latchServedCaptureSourceIdentity();
+                if (_3DLine)
+                {
+                    std::array<u8, kStructuredScreenWidth> carriedProtectedBlack {};
+                    u8* const carriedProtectedBlackOutput =
+                        captureMode == 0u && width == kStructuredScreenWidth
+                            ? carriedProtectedBlack.data()
+                            : nullptr;
+                    if (DirectCaptureDeferredTail)
+                    {
+                        const u32 copyWidth = std::min<u32>(width, kStructuredScreenWidth);
+                        LastDebugCaptureStats.StructuredCopyLines++;
+                        for (u32 x = 0; x < copyWidth; x++)
+                        {
+                            if (BGOBJLine[kStructuredScreenWidth + x] != 0u)
+                                LastDebugCaptureStats.StructuredCopyPlane0UsefulPixels++;
+                        }
+                        LastDebugCaptureStats.StructuredCopySlotPixels += copyWidth;
+                        const size_t captureLineIndex =
+                            (static_cast<size_t>(dstvram) * kStructuredScreenHeight)
+                            + (static_cast<size_t>(structuredCaptureDstBase) / kStructuredScreenWidth);
+                        StructuredVulkan2DCaptureLineValid[captureLineIndex] = 1u;
+                        StructuredVulkan2DCaptureLineHasPayload[captureLineIndex] = 1u;
+                        StructuredVulkan2DCaptureLineHas3DSlot[captureLineIndex] = 1u;
+                    }
+                    else
+                    {
+                        CopyStructuredVulkan2DCaptureSourceLineToCapture(
+                            line,
+                            dstvram,
+                            structuredCaptureDstBase,
+                            width,
+                            carriedProtectedBlackOutput);
+                    }
 
                     captureLineUses3d = true;
                     if (captureDebugEnabled)
@@ -1659,127 +4426,310 @@ void SoftRenderer::DoCapture(u32 line, u32 width, u32 sourceLine)
                             }
                         }
                     }
-                    struct CaptureSamplePoint
-                    {
-                        const char* label;
-                        u32 x;
-                        u32 y;
-                    };
-                    static constexpr CaptureSamplePoint kCaptureSamplePoints[] = {
-                        {"seamA", 85u, 14u},
-                        {"goodA", 84u, 14u},
-                        {"seamB", 75u, 58u},
-                        {"goodB", 74u, 58u},
-                        {"seamC", 150u, 81u},
-                        {"goodC", 149u, 81u},
-                    };
 
-                    // In accelerated mode compositing is normally done on the GPU, but
-                    // display capture needs source A on CPU for VRAM writes.
-                    for (int i = 0; i < 256; i++)
-                    {
-                        const u32 originalVal1 = BGOBJLine[i];
-                        const u32 originalVal2 = BGOBJLine[256+i];
-                        const u32 originalVal3 = BGOBJLine[512+i];
-                        u32 val1 = originalVal1;
-                        u32 val2 = originalVal2;
-                        u32 val3 = originalVal3;
-
-                        u32 compmode = (val3 >> 24) & 0xF;
-                        const u32 _3dval = _3DLine[i];
-                        if (captureDebugEnabled && (_3dval >> 24) > 0)
+                        u32 external3DSourceClass = 0u;
+                        u32 external3DSourceCounts[17] {};
+                        const u32 captureOutputMode = (captureCnt >> 29) & 0x3u;
+                        const bool allowUnclassifiedExternal3DSlot =
+                            captureOutputMode >= 2u
+                            && width == 256u
+                            && srcB != nullptr;
+                        const bool captureBackedPlane2LineGeometry =
+                            useStructuredVulkan2D
+                            && width == kStructuredScreenWidth
+                            && dstvram < 4u
+                            && (structuredCaptureDstBase % kStructuredScreenWidth) == 0u
+                            && structuredCaptureDstBase
+                                <= (kStructuredPixelCount - kStructuredScreenWidth);
+                        const size_t captureBackedPlane2Base = captureBackedPlane2LineGeometry
+                            ? static_cast<size_t>(dstvram) * kStructuredPlaneCount * kStructuredPixelCount
+                            : 0u;
+                        const size_t captureBackedPlane2Index = captureBackedPlane2LineGeometry
+                            ? static_cast<size_t>(structuredCaptureDstBase)
+                            : 0u;
+                        const size_t captureBackedPlane2LineIndex = captureBackedPlane2LineGeometry
+                            ? (static_cast<size_t>(dstvram) * kStructuredScreenHeight)
+                                + (captureBackedPlane2Index / kStructuredScreenWidth)
+                            : 0u;
+                        const bool captureBackedPlane2InitialLineValid =
+                            captureBackedPlane2LineGeometry
+                            && StructuredVulkan2DCaptureLineValid[captureBackedPlane2LineIndex] != 0u;
+                        bool captureBackedPlane2LineShape = true;
+                        bool captureBackedPlane2HasExplicitSlot = false;
+                        bool captureBackedPlane2HasConsumableOverlay = false;
+                        bool captureBackedPlane2HasLegacyComp4 = false;
+                        if (!DirectCaptureDeferredTail)
                         {
-                            LastDebugCaptureStats.Opaque3DSourcePixels++;
-                            if ((val1 & 0xFF000000u) == 0x20000000u)
-                                LastDebugCaptureStats.Opaque3DBackdropPixels++;
-                        }
-
-                        if (compmode == 4)
-                        {
-                            // 3D on top, blending
-
-                            if ((_3dval >> 24) > 0)
-                                val1 = ColorBlend5(_3dval, val1);
-                            else
-                                val1 = val2;
-                        }
-                        else if (compmode == 1)
-                        {
-                            // 3D on bottom, blending
-
-                            if ((_3dval >> 24) > 0)
+                            for (int i = 0; i < 256; i++)
                             {
-                                u32 eva = (val3 >> 8) & 0x1F;
-                                u32 evb = (val3 >> 16) & 0x1F;
+                                const u32 raw0 = BGOBJLine[i];
+                                const u32 raw1 = BGOBJLine[256 + i];
+                                const u32 raw2 = BGOBJLine[512 + i];
+                                const u32 sourceClass = StructuredVulkan2DSourceClass(raw0);
+                                if (sourceClass <= 16u)
+                                    external3DSourceCounts[sourceClass]++;
+                                if (captureBackedPlane2LineGeometry
+                                    && !DirectCaptureDeferredTail
+                                    && captureBackedPlane2LineShape)
+                                {
+                                    const u32 sourceClass1 = StructuredVulkan2DSourceClass(raw1);
+                                    const u32 sourceClass2 = StructuredVulkan2DSourceClass(raw2);
+                                    const bool explicitSlot =
+                                        StructuredVulkan2DHas3DSlot(raw0)
+                                        || StructuredVulkan2DHas3DSlot(raw1)
+                                        || StructuredVulkan2DHas3DSlot(raw2);
+                                    captureBackedPlane2HasExplicitSlot =
+                                        captureBackedPlane2HasExplicitSlot || explicitSlot;
+                                    captureBackedPlane2LineShape =
+                                        sourceClass == 0u
+                                        && sourceClass1 == 0u
+                                        && sourceClass2 != 0u
+                                        && sourceClass2 != 0x10u
+                                        && !explicitSlot;
+                                    if (!captureBackedPlane2LineShape)
+                                        continue;
 
-                                val1 = ColorBlend4(val1, _3dval, eva, evb);
+                                    const size_t x = static_cast<size_t>(i);
+                                    if (captureBackedPlane2InitialLineValid || x != 0u)
+                                    {
+                                        const u32 oldBelow = StructuredVulkan2DCapturePlanes[
+                                            captureBackedPlane2Base + captureBackedPlane2Index + x];
+                                        const u32 oldAbove = StructuredVulkan2DCapturePlanes[
+                                            captureBackedPlane2Base + kStructuredPixelCount
+                                                + captureBackedPlane2Index + x];
+                                        const u32 oldControl = StructuredVulkan2DCapturePlanes[
+                                            captureBackedPlane2Base + (kStructuredPixelCount * 2u)
+                                                + captureBackedPlane2Index + x];
+                                        const u32 oldAlpha = oldControl >> 24u;
+                                        const bool oldSlot =
+                                            (oldAlpha & kStructuredVulkan2DSlot3DFlag) != 0u;
+                                        captureBackedPlane2HasConsumableOverlay =
+                                            captureBackedPlane2HasConsumableOverlay
+                                            || (oldSlot
+                                                && (oldAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
+                                                && oldAbove != 0u
+                                                && StructuredVulkan2DCanPreserveCaptureOverlay(oldAbove))
+                                            || (!oldSlot
+                                                && (oldAlpha & kStructuredVulkan2DOnlyFlag) != 0u
+                                                && oldBelow != 0u
+                                                && StructuredVulkan2DCanPreserveCaptureOverlay(oldBelow));
+                                    }
+
+                                    const u32 legacyAlpha = (raw2 >> 24u) & 0x0Fu;
+                                    if (legacyAlpha == 4u)
+                                    {
+                                        const u32 resolvedVal1 = (_3DLine[i] >> 24u) != 0u
+                                            ? ColorBlend5(_3DLine[i], raw0)
+                                            : raw1;
+                                        captureBackedPlane2HasLegacyComp4 =
+                                            captureBackedPlane2HasLegacyComp4
+                                            || (resolvedVal1 == kStructuredVulkan2D3DPlaceholder
+                                                && raw1 == kStructuredVulkan2D3DPlaceholder);
+                                    }
+                                }
                             }
-                            else
-                                val1 = val2;
-                        }
-                        else if (compmode <= 3)
-                        {
-                            // 3D on top, normal/fade
-
-                            if ((_3dval >> 24) > 0)
+                            constexpr u32 sourceClasses[] = {1u, 2u, 4u, 8u};
+                            u32 bestSourceCount = 0u;
+                            for (u32 sourceClass : sourceClasses)
                             {
-                                u32 evy = (val3 >> 8) & 0x1F;
-
-                                val1 = _3dval;
-                                if      (compmode == 2) val1 = ColorBrightnessUp(val1, evy, 0x8);
-                                else if (compmode == 3) val1 = ColorBrightnessDown(val1, evy, 0x7);
+                                if (external3DSourceCounts[sourceClass] > bestSourceCount)
+                                {
+                                    bestSourceCount = external3DSourceCounts[sourceClass];
+                                    external3DSourceClass = sourceClass;
+                                }
                             }
-                            else
-                                val1 = val2;
+                            if (bestSourceCount < 128u)
+                                external3DSourceClass = 0u;
                         }
+                        const bool captureBackedPlane2DirectStore =
+                            captureBackedPlane2LineGeometry
+                            && !DirectCaptureDeferredTail
+                            && captureBackedPlane2LineShape
+                            && !captureBackedPlane2HasExplicitSlot
+                            && external3DSourceClass == 0u
+                            && !allowUnclassifiedExternal3DSlot
+                            && !captureBackedPlane2HasConsumableOverlay
+                            && !captureBackedPlane2HasLegacyComp4;
+                        u32 captureBackedPlane2UsefulPixels = 0u;
 
-                        if (logCaptureSamples)
+                        struct CaptureSamplePoint
                         {
-                            for (const CaptureSamplePoint& sample : kCaptureSamplePoints)
+                            const char* label;
+                            u32 x;
+                            u32 y;
+                        };
+                        static constexpr CaptureSamplePoint kCaptureSamplePoints[] = {
+                            {"seamA", 85u, 14u},
+                            {"goodA", 84u, 14u},
+                            {"seamB", 75u, 58u},
+                            {"goodB", 74u, 58u},
+                            {"seamC", 150u, 81u},
+                            {"goodC", 149u, 81u},
+                        };
+
+                        // In accelerated mode compositing is normally done on the GPU, but
+                        // display capture needs source A on CPU for VRAM writes.
+                        for (int i = 0; i < 256; i++)
+                        {
+                            const u32 originalVal1 = BGOBJLine[i];
+                            const u32 originalVal2 = BGOBJLine[256+i];
+                            const u32 originalVal3 = BGOBJLine[512+i];
+                            u32 val1 = originalVal1;
+                            u32 val2 = originalVal2;
+                            u32 val3 = originalVal3;
+
+                            u32 compmode = (val3 >> 24) & 0xF;
+                            const u32 _3dval = _3DLine[i];
+                            const bool sourceA3dHasAlpha = (_3dval >> 24u) != 0u;
+                            if (captureDebugEnabled && sourceA3dHasAlpha)
                             {
-                                if (sample.y != sourceLine || sample.x != static_cast<u32>(i))
-                                    continue;
+                                LastDebugCaptureStats.Opaque3DSourcePixels++;
+                                if ((val1 & 0xFF000000u) == 0x20000000u)
+                                    LastDebugCaptureStats.Opaque3DBackdropPixels++;
+                            }
 
-                                const u32 packedWord =
-                                    ((val1 >> 1) & 0x1Fu)
-                                    | (((val1 >> 9) & 0x1Fu) << 5)
-                                    | (((val1 >> 17) & 0x1Fu) << 10)
-                                    | (((val1 >> 24) != 0u) ? 0x8000u : 0u);
+                            if (compmode == 4)
+                            {
+                                // 3D on top, blending
 
-                                Platform::Log(
-                                    Platform::LogLevel::Warn,
-                                    "RendererDebug[CaptureLoop]: label=%s line=%u sourceLine=%u x=%u comp=%u raw3d=%08X val1=%08X val2=%08X val3=%08X packed=%08X",
-                                    sample.label,
-                                    line,
-                                    sourceLine,
-                                    static_cast<u32>(i),
-                                    compmode,
-                                    _3dval,
+                                if (sourceA3dHasAlpha)
+                                    val1 = ColorBlend5(_3dval, val1);
+                                else
+                                    val1 = val2;
+                            }
+                            else if (compmode == 1)
+                            {
+                                // 3D on bottom, blending
+
+                                if (sourceA3dHasAlpha)
+                                {
+                                    u32 eva = (val3 >> 8) & 0x1F;
+                                    u32 evb = (val3 >> 16) & 0x1F;
+
+                                    val1 = ColorBlend4(val1, _3dval, eva, evb);
+                                }
+                                else
+                                    val1 = val2;
+                            }
+                            else if (compmode <= 3)
+                            {
+                                // 3D on top, normal/fade
+
+                                if (sourceA3dHasAlpha)
+                                {
+                                    u32 evy = (val3 >> 8) & 0x1F;
+
+                                    val1 = _3dval;
+                                    if      (compmode == 2) val1 = ColorBrightnessUp(val1, evy, 0x8);
+                                    else if (compmode == 3) val1 = ColorBrightnessDown(val1, evy, 0x7);
+                                }
+                                else
+                                    val1 = val2;
+                            }
+
+                            if (logCaptureSamples)
+                            {
+                                for (const CaptureSamplePoint& sample : kCaptureSamplePoints)
+                                {
+                                    if (sample.y != sourceLine || sample.x != static_cast<u32>(i))
+                                        continue;
+
+                                    const u32 packedWord =
+                                        ((val1 >> 1) & 0x1Fu)
+                                        | (((val1 >> 9) & 0x1Fu) << 5)
+                                        | (((val1 >> 17) & 0x1Fu) << 10)
+                                        | (((val1 >> 24) != 0u) ? 0x8000u : 0u);
+
+                                    Platform::Log(
+                                        Platform::LogLevel::Warn,
+                                        "RendererDebug[CaptureLoop]: label=%s line=%u sourceLine=%u x=%u comp=%u raw3d=%08X val1=%08X val2=%08X val3=%08X packed=%08X",
+                                        sample.label,
+                                        line,
+                                        sourceLine,
+                                        static_cast<u32>(i),
+                                        compmode,
+                                        _3dval,
+                                        val1,
+                                        val2,
+                                        val3,
+                                        packedWord
+                                    );
+                                    break;
+                                }
+                            }
+
+                            BGOBJLine[i] = val1;
+                            if (captureBackedPlane2DirectStore)
+                            {
+                                const size_t x = static_cast<size_t>(i);
+                                const u32 legacyAlpha = (val3 >> 24u) & 0x0Fu;
+                                const u32 structuredAlpha =
+                                    legacyAlpha
+                                    | kStructuredVulkan2DSlot3DFlag
+                                    | (!sourceA3dHasAlpha
+                                        ? kStructuredVulkan2DNo3DCoverageFlag
+                                        : 0u);
+                                StructuredVulkan2DCapturePlanes[
+                                    captureBackedPlane2Base + captureBackedPlane2Index + x] = val1;
+                                StructuredVulkan2DCapturePlanes[
+                                    captureBackedPlane2Base + kStructuredPixelCount
+                                        + captureBackedPlane2Index + x] = 0u;
+                                StructuredVulkan2DCapturePlanes[
+                                    captureBackedPlane2Base + (kStructuredPixelCount * 2u)
+                                        + captureBackedPlane2Index + x] =
+                                    (val3 & 0x00FFFFFFu) | (structuredAlpha << 24u);
+                                StructuredVulkan2DCaptureOverlayLineage[
+                                    (static_cast<size_t>(dstvram)
+                                        * kStructuredPixelCount)
+                                    + captureBackedPlane2Index + x] =
+                                    kStructuredVulkan2DOverlayLineageUnknown;
+                                captureBackedPlane2UsefulPixels += val1 != 0u ? 1u : 0u;
+                            }
+                            else if (useStructuredVulkan2D)
+                            {
+                                const bool currentSourceA3DVisibleNonBlack =
+                                    sourceA3dHasAlpha
+                                    && (val1 >> 24u) != 0u
+                                    && (val1 & 0x00FFFFFFu) != 0u;
+                                const u8 currentCarriedProtectedBlack =
+                                    currentSourceA3DVisibleNonBlack
+                                        ? carriedProtectedBlack[static_cast<size_t>(i)]
+                                        : static_cast<u8>(
+                                            carriedProtectedBlack[static_cast<size_t>(i)]
+                                            & ~kStructuredVulkan2DCarriedProtectedBlack);
+                                StoreStructuredVulkan2DCapturePixel(
+                                    dstvram,
+                                    (structuredCaptureDstBase + static_cast<u32>(i)) & 0xFFFFu,
+                                    originalVal1,
+                                    originalVal2,
+                                    originalVal3,
                                     val1,
                                     val2,
                                     val3,
-                                    packedWord
-                                );
-                                break;
+                                    external3DSourceClass,
+                                    true,
+                                    sourceA3dHasAlpha,
+                                    allowUnclassifiedExternal3DSlot,
+                                    currentCarriedProtectedBlack);
                             }
+                            structuredCaptureStoredFromSourceA = true;
                         }
 
-                        BGOBJLine[i] = val1;
-                        StoreStructuredVulkan2DCapturePixel(
-                            dstvram,
-                            (structuredCaptureDstBase + static_cast<u32>(i)) & 0xFFFFu,
-                            originalVal1,
-                            originalVal2,
-                            originalVal3,
-                            val1,
-                            val2,
-                            val3,
-                            external3DSourceClass,
-                            true,
-                            (_3dval >> 24u) != 0u,
-                            allowUnclassifiedExternal3DSlot);
-                        structuredCaptureStoredFromSourceA = true;
-                    }
+                        if (captureBackedPlane2DirectStore)
+                        {
+                            if (!captureBackedPlane2InitialLineValid)
+                                LastDebugCaptureStats.StructuredCopyLines++;
+                            LastDebugCaptureStats.StructuredCopyPlane0UsefulPixels +=
+                                captureBackedPlane2UsefulPixels;
+                            LastDebugCaptureStats.StructuredCopySlotPixels +=
+                                kStructuredScreenWidth;
+                            StructuredVulkan2DCaptureLineValid[
+                                captureBackedPlane2LineIndex] = 1u;
+                            StructuredVulkan2DCaptureLineHasPayload[
+                                captureBackedPlane2LineIndex] = 1u;
+                            StructuredVulkan2DCaptureLineHas3DSlot[
+                                captureBackedPlane2LineIndex] = 1u;
+                        }
 
                     debugCaptureSourceReady = true;
                 }
@@ -1790,6 +4740,8 @@ void SoftRenderer::DoCapture(u32 line, u32 width, u32 sourceLine)
     dstaddr &= 0xFFFF;
     if (useStructuredVulkan2D && captureLineUses3d && !structuredCaptureStoredFromSourceA)
         CopyStructuredVulkan2DCurrentLineToCapture(line, dstvram, dstaddr, width);
+    else if (useStructuredVulkan2D && !captureLineUses3d)
+        ClearStructuredVulkan2DCaptureRange(dstvram, structuredCaptureDstBase, width);
 
     if (useStructuredVulkan2D && CurUnit->Num == 0 && line < CaptureLineUses3d.size())
         CaptureLineUses3d[line] = captureLineUses3d ? 1 : 0;
@@ -1827,7 +4779,6 @@ void SoftRenderer::DoCapture(u32 line, u32 width, u32 sourceLine)
             && std::abs(lhsG - rhsG) <= 2
             && std::abs(lhsB - rhsB) <= 2;
     };
-
     switch ((captureCnt >> 29) & 0x3)
     {
     case 0: // source A
@@ -1969,18 +4920,25 @@ void SoftRenderer::DoCapture(u32 line, u32 width, u32 sourceLine)
         for (u32 i = 0; i < mergeWidth; i++)
         {
             const u32 overlayPixel = structuredSourceBOverlayPixels[static_cast<size_t>(i)];
-            if (overlayPixel == 0u)
-                continue;
-            const u16 overlayPacked = packCaptureColor(overlayPixel);
             const u16 outputPacked = structuredCaptureOutputPixels[static_cast<size_t>(i)];
+            const u16 overlayPacked = packCaptureColor(overlayPixel);
             if (!captureColorsClose(overlayPacked, outputPacked))
+                continue;
+            const bool canPreserveOverlay =
+                StructuredVulkan2DCanPreserveCaptureOverlay(overlayPixel);
+            const bool captureMatched3DOverlay =
+                !canPreserveOverlay
+                && outputPacked != 0u
+                && StructuredVulkan2DCanUseCaptureMatched3DOverlay(overlayPixel);
+            if (!canPreserveOverlay && !captureMatched3DOverlay)
                 continue;
 
             MergeStructuredVulkan2DCapture2DOverlayPixel(
                 dstvram,
                 (structuredCaptureDstBase + i) & 0xFFFFu,
                 overlayPixel,
-                structuredSourceBOverlayControlAlpha[static_cast<size_t>(i)]);
+                structuredSourceBOverlayControl[static_cast<size_t>(i)],
+                structuredSourceBOverlayLineage[static_cast<size_t>(i)]);
         }
     }
 
@@ -1994,6 +4952,86 @@ void SoftRenderer::DoCapture(u32 line, u32 width, u32 sourceLine)
         if (!captureDestinationHasNonZeroPixel)
             LastDebugCaptureStats.CaptureDestinationBlankLines++;
     }
+
+    const bool sameBankMode2CaptureLine =
+        useStructuredVulkan2D
+        && CurUnit->Num == 0u
+        && captureMode == 2u
+        && width == kStructuredScreenWidth
+        && ((captureCnt >> 20u) & 0x3u) == 3u
+        && (captureCnt & (1u << 25u)) == 0u
+        && ((CurUnit->DispCnt >> 16u) & 0x3u) == 2u
+        && dstvram == ((CurUnit->DispCnt >> 18u) & 0x3u)
+        && (captureCnt & 0x1Fu) != 0u
+        && ((captureCnt >> 8u) & 0x1Fu) != 0u;
+    if (useStructuredVulkan2D)
+    {
+        const CaptureSourceIdentity* sourceIdentity =
+            ((captureMode == 0u && captureLineUses3d)
+                || sameBankMode2CaptureLine)
+                && servedCaptureSourceIdentityValid
+            ? &servedCaptureSourceIdentity
+            : nullptr;
+        SealStructuredVulkan2DCaptureIdentity(
+            dstvram,
+            structuredCaptureDstBase,
+            width,
+            sourceIdentity,
+            StructuredCaptureWriterRoute::General);
+    }
+
+    const bool sameBankMode2Tuple = sameBankMode2CaptureLine;
+    if (sameBankMode2Tuple)
+    {
+        if (line == 0u)
+        {
+            SameBankMode2PendingWriterIdentity = {};
+            SameBankMode2PendingWriterLines = 0u;
+            SameBankMode2PendingWriterConflict = false;
+        }
+        if (!servedCaptureSourceIdentityValid)
+        {
+            SameBankMode2PendingWriterConflict = true;
+        }
+        else if (SameBankMode2PendingWriterLines == 0u)
+        {
+            SameBankMode2PendingWriterIdentity =
+                servedCaptureSourceIdentity;
+        }
+        else if (SameBankMode2PendingWriterIdentity.Sequence
+                != servedCaptureSourceIdentity.Sequence
+            || SameBankMode2PendingWriterIdentity.PolygonCount
+                != servedCaptureSourceIdentity.PolygonCount
+            || SameBankMode2PendingWriterIdentity.CaptureCnt
+                != servedCaptureSourceIdentity.CaptureCnt
+            || SameBankMode2PendingWriterIdentity.ScreenSwap
+                != servedCaptureSourceIdentity.ScreenSwap)
+        {
+            SameBankMode2PendingWriterConflict = true;
+        }
+        SameBankMode2PendingWriterLines++;
+
+        if (line + 1u == kStructuredScreenHeight)
+        {
+            const bool uniformFullWriter =
+                !SameBankMode2PendingWriterConflict
+                && SameBankMode2PendingWriterLines
+                    == kStructuredScreenHeight
+                && SameBankMode2PendingWriterIdentity.Valid;
+            SameBankMode2WriterIdentity[dstvram] =
+                uniformFullWriter
+                    ? SameBankMode2PendingWriterIdentity
+                    : CaptureSourceIdentity{};
+            SameBankMode2WriterIdentityValid[dstvram] =
+                uniformFullWriter;
+            SameBankMode2CompletedWriterIdentity =
+                SameBankMode2WriterIdentity[dstvram];
+            SameBankMode2CompletedWriterVramBank = dstvram;
+            SameBankMode2CompletedWriterIdentityValid =
+                uniformFullWriter;
+        }
+    }
+
 }
 
 #define DoDrawBG(type, line, num) \
@@ -2003,12 +5041,14 @@ void SoftRenderer::DoCapture(u32 line, u32 width, u32 sourceLine)
             break; \
         if ((bgCnt[num] & 0x0040) && (CurUnit->BGMosaicSize[0] > 0)) \
         { \
-            if (GPU.GPU3D.IsRendererAccelerated()) DrawBG_##type<true, DrawPixel_Accel>(line, num); \
+            if (TrackComposedObjCaptureIdentity) DrawBG_##type<true, DrawPixel_AccelTracked>(line, num); \
+            else if (GPU.GPU3D.IsRendererAccelerated()) DrawBG_##type<true, DrawPixel_Accel>(line, num); \
             else DrawBG_##type<true, DrawPixel_Normal>(line, num); \
         } \
         else \
         { \
-            if (GPU.GPU3D.IsRendererAccelerated()) DrawBG_##type<false, DrawPixel_Accel>(line, num); \
+            if (TrackComposedObjCaptureIdentity) DrawBG_##type<false, DrawPixel_AccelTracked>(line, num); \
+            else if (GPU.GPU3D.IsRendererAccelerated()) DrawBG_##type<false, DrawPixel_Accel>(line, num); \
             else DrawBG_##type<false, DrawPixel_Normal>(line, num); \
         } \
     } while (false)
@@ -2020,18 +5060,20 @@ void SoftRenderer::DoCapture(u32 line, u32 width, u32 sourceLine)
             break; \
         if ((bgCnt[2] & 0x0040) && (CurUnit->BGMosaicSize[0] > 0)) \
         { \
-            if (GPU.GPU3D.IsRendererAccelerated()) DrawBG_Large<true, DrawPixel_Accel>(line); \
+            if (TrackComposedObjCaptureIdentity) DrawBG_Large<true, DrawPixel_AccelTracked>(line); \
+            else if (GPU.GPU3D.IsRendererAccelerated()) DrawBG_Large<true, DrawPixel_Accel>(line); \
             else DrawBG_Large<true, DrawPixel_Normal>(line); \
         } \
         else \
         { \
-            if (GPU.GPU3D.IsRendererAccelerated()) DrawBG_Large<false, DrawPixel_Accel>(line); \
+            if (TrackComposedObjCaptureIdentity) DrawBG_Large<false, DrawPixel_AccelTracked>(line); \
+            else if (GPU.GPU3D.IsRendererAccelerated()) DrawBG_Large<false, DrawPixel_Accel>(line); \
             else DrawBG_Large<false, DrawPixel_Normal>(line); \
         } \
     } while (false)
 
 #define DoInterleaveSprites(prio) \
-    if (Renderer2DDebugShouldInterleaveObjects(CurUnit->Num, ((prio) >> 16) & 0x3u)) { if (GPU.GPU3D.IsRendererAccelerated()) InterleaveSprites<DrawPixel_Accel>(prio); else InterleaveSprites<DrawPixel_Normal>(prio); }
+    if (Renderer2DDebugShouldInterleaveObjects(CurUnit->Num, ((prio) >> 16) & 0x3u)) { if (TrackComposedObjCaptureIdentity) InterleaveSprites<DrawPixel_AccelTracked>(prio); else if (GPU.GPU3D.IsRendererAccelerated()) InterleaveSprites<DrawPixel_Accel>(prio); else InterleaveSprites<DrawPixel_Normal>(prio); }
 
 template<u32 bgmode>
 void SoftRenderer::DrawScanlineBGMode(u32 line)
@@ -2164,6 +5206,7 @@ void SoftRenderer::DrawScanlineBGMode7(u32 line)
 
 void SoftRenderer::DrawScanline_BGOBJ(u32 line)
 {
+    TrackComposedObjCaptureIdentity = false;
     if (!UseStructuredVulkan2D() && !MelonDSAndroid::areRendererDebugToolsEnabled())
     {
         if (CurUnit->DispCnt & (1<<7))
@@ -2334,15 +5377,19 @@ void SoftRenderer::DrawScanline_BGOBJ(u32 line)
         {"hud_can",    50u,  8u},
         {"hud_arrow",  35u, 18u},
         {"hud_lawn",    5u, 65u},
+        {"band_mid",  128u, 132u},
+        {"band_lo",   128u, 145u},
+        {"band_hi",   128u, 120u},
     };
     const bool logCaptureSamples = MelonDSAndroid::areRendererDebugBgObjLogsEnabled();
     const bool useStructuredVulkan2D = UseStructuredVulkan2D();
+    const bool measureStructuredBgObj =
+        useStructuredVulkan2D && MelonDSAndroid::isVulkanGpu2DPerfLoggingEnabled();
+    const u64 structuredBgObjStartNs = measureStructuredBgObj ? PerfNowNs() : 0;
 
     auto logHudStageAfterBGMode =
         [&]() {
             if (!logCaptureSamples)
-                return;
-            if (CurUnit->Num != 0)
                 return;
             for (const CaptureSamplePoint& sample : kCaptureSamplePoints)
             {
@@ -2373,6 +5420,15 @@ void SoftRenderer::DrawScanline_BGOBJ(u32 line)
 
         return;
     }
+
+    TrackComposedObjCaptureIdentity =
+        useStructuredVulkan2D
+        && GPU.GPU3D.IsRendererAccelerated()
+        && CurUnit->Num == 1u
+        && OBJLineCaptureIdentityAvailable[CurUnit->Num]
+        && line < kStructuredScreenHeight;
+    if (TrackComposedObjCaptureIdentity)
+        ComposedObjCaptureIdentity.fill({});
 
     u64 backdrop;
     if (CurUnit->Num) backdrop = *(u16*)&GPU.Palette[0x400];
@@ -2410,6 +5466,7 @@ void SoftRenderer::DrawScanline_BGOBJ(u32 line)
     if (forcedBgMode >= 0 && forcedBgMode <= 6)
         bgMode = static_cast<u32>(forcedBgMode);
 
+    const u64 structuredBgObjBgStartNs = measureStructuredBgObj ? PerfNowNs() : 0;
     switch (bgMode)
     {
     case 0: DrawScanlineBGMode<0>(line); break;
@@ -2421,8 +5478,36 @@ void SoftRenderer::DrawScanline_BGOBJ(u32 line)
     case 6: DrawScanlineBGMode6(line); break;
     case 7: DrawScanlineBGMode7(line); break;
     }
+    const u64 structuredBgObjAfterBgNs = measureStructuredBgObj ? PerfNowNs() : 0;
 
     logHudStageAfterBGMode();
+
+    if (useStructuredVulkan2D
+        && GPU.GPU3D.IsRendererAccelerated()
+        && !CurrentLineRegularCaptureUses3d
+        && TryPromoteStructuredVulkan2DComposedPure3DLine(line, CurUnit->MasterBrightness))
+    {
+        if (measureStructuredBgObj)
+        {
+            const u64 structuredBgObjEndNs = PerfNowNs();
+            RecordStructuredBGObjPerf(
+                structuredBgObjBgStartNs - structuredBgObjStartNs,
+                structuredBgObjAfterBgNs - structuredBgObjBgStartNs,
+                0,
+                structuredBgObjEndNs - structuredBgObjAfterBgNs);
+        }
+
+        if (CurUnit->BGMosaicY >= CurUnit->BGMosaicYMax)
+        {
+            CurUnit->BGMosaicY = 0;
+            CurUnit->BGMosaicYMax = CurUnit->BGMosaicSize[1];
+        }
+        else
+            CurUnit->BGMosaicY++;
+
+        TrackComposedObjCaptureIdentity = false;
+        return;
+    }
 
     // color special effects
     // can likely be optimized
@@ -2441,6 +5526,18 @@ void SoftRenderer::DrawScanline_BGOBJ(u32 line)
     {
         const u32 displayMode =
             (CurUnit->DispCnt >> 16u) & (CurUnit->Num ? 0x1u : 0x3u);
+        const bool trackKnownExactLine =
+            useStructuredVulkan2D
+            && StructuredVulkan2DCurrentLineMapsDirectly
+            && displayMode == 1u
+            && line < kStructuredScreenHeight;
+        bool knownExactLine = trackKnownExactLine;
+        u32 knownExactPixelCount = 0u;
+        const size_t knownExactScreenIndex =
+            StructuredVulkan2DCurrentLineTargetsTop ? 0u : 1u;
+        const size_t knownExactLineIndex =
+            (knownExactScreenIndex * kStructuredScreenHeight)
+            + (line < kStructuredScreenHeight ? static_cast<size_t>(line) : 0u);
         const bool captureBacked3DLine =
             useStructuredVulkan2D
             &&
@@ -2449,6 +5546,7 @@ void SoftRenderer::DrawScanline_BGOBJ(u32 line)
             && line < CaptureLineUses3d.size()
             && CaptureLineUses3d[line] != 0u;
         u32 captureBacked3DSourceClass = 0u;
+        bool captureBackedNoDominantReplay = false;
         if (captureBacked3DLine)
         {
             LastDebugCaptureStats.CaptureBacked3DLines++;
@@ -2483,7 +5581,10 @@ void SoftRenderer::DrawScanline_BGOBJ(u32 line)
                 if (bestSourceCount >= 128u)
                     captureBacked3DSourceClass = bestSourceClass;
                 else
+                {
                     LastDebugCaptureStats.CaptureBacked3DNoBestClassLines++;
+                    captureBackedNoDominantReplay = true;
+                }
             }
             else
             {
@@ -2493,9 +5594,86 @@ void SoftRenderer::DrawScanline_BGOBJ(u32 line)
             if (captureBacked3DSourceClass < (sizeof(LastDebugCaptureStats.CaptureBacked3DBestClassCounts) / sizeof(LastDebugCaptureStats.CaptureBacked3DBestClassCounts[0])))
                 LastDebugCaptureStats.CaptureBacked3DBestClassCounts[captureBacked3DSourceClass]++;
         }
+        const u64 structuredBgObjAfterClassifyNs = measureStructuredBgObj ? PerfNowNs() : 0;
 
         if (CurUnit->Num == 0)
         {
+            const size_t structuredScreenIndex = StructuredVulkan2DCurrentLineTargetsTop ? 0u : 1u;
+            const size_t structuredScreenBase = structuredScreenIndex * kStructuredPlaneCount * kStructuredPixelCount;
+            const size_t structuredLineIndex =
+                (structuredScreenIndex * kStructuredScreenHeight) + static_cast<size_t>(line);
+            const size_t structuredRowBase = static_cast<size_t>(line) * kStructuredScreenWidth;
+
+            DirectCaptureDeferredTail =
+                DirectCaptureSourceLineSink
+                && GPU.GPU3D.IsRendererAccelerated()
+                && ((CurUnit->BlendCnt >> 6u) & 0x3u) == 3u
+                && (CurUnit->BlendCnt & 0x0001u) != 0u;
+            if (DirectCaptureDeferredTail)
+            {
+                const u32 captureCnt = CurUnit->CaptureCnt;
+                const u32 captureBank = (captureCnt >> 16u) & 0x3u;
+                const u32 captureAddressBase = static_cast<u32>(line) * kStructuredScreenWidth;
+                const size_t captureBase =
+                    static_cast<size_t>(captureBank) * kStructuredPlaneCount * kStructuredPixelCount;
+                for (u32 x = 0; x < kStructuredScreenWidth; x++)
+                {
+                    const u32 raw0 = BGOBJLine[x];
+                    const u32 raw1 = BGOBJLine[kStructuredScreenWidth + x];
+                    const u32 raw2 = BGOBJLine[(kStructuredScreenWidth * 2u) + x];
+                    const u32 flags1 = raw1 >> 24u;
+                    const u32 target2 = (flags1 & 0x80u) != 0u
+                        ? 0x1000u
+                        : ((flags1 & 0x40u) != 0u ? 0x0100u : (flags1 << 8u));
+                    const u32 tail1 = ColorComposite(static_cast<int>(x), raw1, raw2);
+                    const bool pixelShapeMatches =
+                        StructuredVulkan2DHas3DSlot(raw0)
+                        && !StructuredVulkan2DHas3DSlot(raw1)
+                        && !StructuredVulkan2DHas3DSlot(raw2)
+                        && StructuredVulkan2DSourceClass(raw0) == 0u
+                        && StructuredVulkan2DSourceClass(raw1) == 0u
+                        && StructuredVulkan2DSourceClass(raw2) == 0u
+                        && !StructuredVulkan2DCanPreserveCaptureOverlay(raw1)
+                        && (CurUnit->BlendCnt & target2) == 0u
+                        && (WindowMask[x] & 0x20u) != 0u
+                        && StructuredVulkan2DSourceClass(tail1) == 0u;
+                    if (!pixelShapeMatches)
+                    {
+                        DirectCaptureDeferredTail = false;
+                        break;
+                    }
+
+                    const size_t captureIndex =
+                        static_cast<size_t>((captureAddressBase + x) & 0xFFFFu);
+                    const u32 oldBelow = StructuredVulkan2DCapturePlanes[captureBase + captureIndex];
+                    const u32 oldAbove = StructuredVulkan2DCapturePlanes[
+                        captureBase + kStructuredPixelCount + captureIndex];
+                    const u32 oldControl = StructuredVulkan2DCapturePlanes[
+                        captureBase + (kStructuredPixelCount * 2u) + captureIndex];
+                    const u32 oldAlpha = oldControl >> 24u;
+                    const bool oldSlot = (oldAlpha & kStructuredVulkan2DSlot3DFlag) != 0u;
+                    const bool oldAboveCandidate =
+                        StructuredVulkan2DCanPreserveCaptureOverlay(oldAbove)
+                        || StructuredVulkan2DCanUseCaptureMatched3DOverlay(oldAbove);
+                    const bool oldBelowCandidate =
+                        StructuredVulkan2DCanPreserveCaptureOverlay(oldBelow)
+                        || StructuredVulkan2DCanUseCaptureMatched3DOverlay(oldBelow);
+                    const bool oldOverlayVisible =
+                        (oldSlot
+                            && (oldAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
+                            && oldAbove != 0u
+                            && oldAboveCandidate)
+                        || (!oldSlot
+                            && (oldAlpha & kStructuredVulkan2DOnlyFlag) != 0u
+                            && oldBelow != 0u
+                            && oldBelowCandidate);
+                    if (oldOverlayVisible)
+                    {
+                        DirectCaptureDeferredTail = false;
+                        break;
+                    }
+                }
+            }
             for (int i = 0; i < 256; i++)
             {
                 const u32 originalVal1 = BGOBJLine[i];
@@ -2569,23 +5747,63 @@ void SoftRenderer::DrawScanline_BGOBJ(u32 line)
                     // no potential 3D pixel involved
 
                     const u32 flag3 = originalVal3 >> 24;
-                    const bool overlayOver3d = useStructuredVulkan2D && (flag3 & 0x40u) != 0;
+                    const bool overlayOver3d = useStructuredVulkan2D
+                        && (((flag2 & 0xC0u) == 0x40u)
+                            || ((flag3 & 0xC0u) == 0x40u));
+
+                    u32 overlayBlend = 0u;
+                    if (overlayOver3d)
+                    {
+                        u32 target1Mask = flag1;
+                        if      (target1Mask & 0x80u) target1Mask = 0x10u;
+                        else if (target1Mask & 0x40u) target1Mask = 0x01u;
+                        const bool spriteBlend = (flag1 & 0x80u) != 0u;
+                        const bool effect1 = ((CurUnit->BlendCnt >> 6u) & 0x3u) == 1u;
+                        const bool targets3dBelow = (CurUnit->BlendCnt & 0x0100u) != 0u;
+                        if (targets3dBelow
+                            && (spriteBlend
+                                || (effect1
+                                    && (CurUnit->BlendCnt & target1Mask)
+                                    && (WindowMask[i] & 0x20u))))
+                        {
+                            u32 eva, evb;
+                            if ((flag1 & 0xC0u) == 0xC0u)
+                            {
+                                eva = flag1 & 0x1Fu;
+                                evb = 16u - eva;
+                            }
+                            else
+                            {
+                                eva = CurUnit->EVA;
+                                evb = CurUnit->EVB;
+                            }
+                            overlayBlend = (evb << 16u) | (eva << 8u);
+                        }
+                    }
 
                     BGOBJLine[i]     = ColorComposite(i, val1, val2);
                     BGOBJLine[256+i] = 0;
-                    BGOBJLine[512+i] = overlayOver3d ? 0x87000000u : 0x07000000u;
+                    BGOBJLine[512+i] = (overlayOver3d ? 0x87000000u : 0x07000000u) | overlayBlend;
                 }
 
-                StoreStructuredVulkan2DPixel(
-                    line,
-                    static_cast<u32>(i),
-                    originalVal1,
-                    originalVal2,
-                    originalVal3,
-                    BGOBJLine[i],
-                    BGOBJLine[256+i],
-                    BGOBJLine[512+i],
-                    captureBacked3DSourceClass);
+                if (useStructuredVulkan2D && !DirectCaptureDeferredTail)
+                {
+                    knownExactLine = StoreStructuredVulkan2DPixel(
+                        structuredRowBase + static_cast<size_t>(i),
+                        structuredScreenBase,
+                        structuredLineIndex,
+                        originalVal1,
+                        originalVal2,
+                        originalVal3,
+                        BGOBJLine[i],
+                        BGOBJLine[256+i],
+                        BGOBJLine[512+i],
+                        captureBacked3DSourceClass,
+                        false,
+                        knownExactLine)
+                        && knownExactLine;
+                    knownExactPixelCount++;
+                }
 
                 if (logCaptureSamples)
                 {
@@ -2612,9 +5830,16 @@ void SoftRenderer::DrawScanline_BGOBJ(u32 line)
                     }
                 }
             }
+
         }
         else
         {
+            const size_t structuredScreenIndex = StructuredVulkan2DCurrentLineTargetsTop ? 0u : 1u;
+            const size_t structuredScreenBase = structuredScreenIndex * kStructuredPlaneCount * kStructuredPixelCount;
+            const size_t structuredLineIndex =
+                (structuredScreenIndex * kStructuredScreenHeight) + static_cast<size_t>(line);
+            const size_t structuredRowBase = static_cast<size_t>(line) * kStructuredScreenWidth;
+
             for (int i = 0; i < 256; i++)
             {
                 const u32 originalVal1 = BGOBJLine[i];
@@ -2624,23 +5849,71 @@ void SoftRenderer::DrawScanline_BGOBJ(u32 line)
                 u32 val1 = originalVal1;
                 u32 val2 = originalVal2;
 
+                const u32 flag2 = originalVal2 >> 24;
                 const u32 flag3 = originalVal3 >> 24;
-                const bool overlayOver3d = useStructuredVulkan2D && (flag3 & 0x40u) != 0;
+                const bool overlayOver3d = useStructuredVulkan2D
+                    && (((flag2 & 0xC0u) == 0x40u)
+                        || ((flag3 & 0xC0u) == 0x40u));
+
+                u32 overlayBlend = 0u;
+                if (overlayOver3d)
+                {
+                    const u32 flag1 = originalVal1 >> 24;
+                    u32 target1Mask = flag1;
+                    if      (target1Mask & 0x80u) target1Mask = 0x10u;
+                    else if (target1Mask & 0x40u) target1Mask = 0x01u;
+                    const bool spriteBlend = (flag1 & 0x80u) != 0u;
+                    const bool effect1 = ((CurUnit->BlendCnt >> 6u) & 0x3u) == 1u;
+                    const bool targets3dBelow = (CurUnit->BlendCnt & 0x0100u) != 0u;
+                    if (targets3dBelow
+                        && (spriteBlend
+                            || (effect1
+                                && (CurUnit->BlendCnt & target1Mask)
+                                && (WindowMask[i] & 0x20u))))
+                    {
+                        u32 eva, evb;
+                        if ((flag1 & 0xC0u) == 0xC0u)
+                        {
+                            eva = flag1 & 0x1Fu;
+                            evb = 16u - eva;
+                        }
+                        else
+                        {
+                            eva = CurUnit->EVA;
+                            evb = CurUnit->EVB;
+                        }
+                        overlayBlend = (evb << 16u) | (eva << 8u);
+                    }
+                }
 
                 BGOBJLine[i]     = ColorComposite(i, val1, val2);
                 BGOBJLine[256+i] = 0;
-                BGOBJLine[512+i] = overlayOver3d ? 0x87000000u : 0x07000000u;
+                BGOBJLine[512+i] = (overlayOver3d ? 0x87000000u : 0x07000000u) | overlayBlend;
 
-                StoreStructuredVulkan2DPixel(
-                    line,
-                    static_cast<u32>(i),
-                    originalVal1,
-                    originalVal2,
-                    originalVal3,
-                    BGOBJLine[i],
-                    BGOBJLine[256+i],
-                    BGOBJLine[512+i],
-                    captureBacked3DSourceClass);
+                if (useStructuredVulkan2D)
+                {
+                    knownExactLine = StoreStructuredVulkan2DPixel(
+                        structuredRowBase + static_cast<size_t>(i),
+                        structuredScreenBase,
+                        structuredLineIndex,
+                        originalVal1,
+                        originalVal2,
+                        originalVal3,
+                        BGOBJLine[i],
+                        BGOBJLine[256+i],
+                        BGOBJLine[512+i],
+                        captureBacked3DSourceClass,
+                        captureBackedNoDominantReplay,
+                        knownExactLine)
+                        && knownExactLine;
+                    ObserveFinalStructuredVulkan2DObjCaptureIdentity(
+                        structuredRowBase + static_cast<size_t>(i),
+                        structuredScreenBase,
+                        originalVal1,
+                        originalVal2,
+                        originalVal3);
+                    knownExactPixelCount++;
+                }
 
                 if (logCaptureSamples)
                 {
@@ -2667,6 +5940,22 @@ void SoftRenderer::DrawScanline_BGOBJ(u32 line)
                     }
                 }
             }
+
+        }
+        if (useStructuredVulkan2D && line < kStructuredScreenHeight)
+        {
+            StructuredVulkan2DLineKnownExact[knownExactLineIndex] =
+                knownExactLine && knownExactPixelCount == kStructuredScreenWidth ? 1u : 0u;
+        }
+        TrackComposedObjCaptureIdentity = false;
+        if (measureStructuredBgObj)
+        {
+            const u64 structuredBgObjEndNs = PerfNowNs();
+            RecordStructuredBGObjPerf(
+                structuredBgObjBgStartNs - structuredBgObjStartNs,
+                structuredBgObjAfterBgNs - structuredBgObjBgStartNs,
+                structuredBgObjAfterClassifyNs - structuredBgObjAfterBgNs,
+                structuredBgObjEndNs - structuredBgObjAfterClassifyNs);
         }
     }
 
@@ -2688,8 +5977,9 @@ void SoftRenderer::DrawScanline_BGOBJ(u32 line)
 }
 
 
-void SoftRenderer::DrawPixel_Normal(u32* dst, u16 color, u32 flag)
+void SoftRenderer::DrawPixel_Normal(SoftRenderer& renderer, u32* dst, u16 color, u32 flag)
 {
+    (void)renderer;
     u8 r = (color & 0x001F) << 1;
     u8 g = (color & 0x03E0) >> 4;
     u8 b = (color & 0x7C00) >> 9;
@@ -2699,8 +5989,9 @@ void SoftRenderer::DrawPixel_Normal(u32* dst, u16 color, u32 flag)
     *dst = r | (g << 8) | (b << 16) | flag;
 }
 
-void SoftRenderer::DrawPixel_Accel(u32* dst, u16 color, u32 flag)
+void SoftRenderer::DrawPixel_Accel(SoftRenderer& renderer, u32* dst, u16 color, u32 flag)
 {
+    (void)renderer;
     u8 r = (color & 0x001F) << 1;
     u8 g = (color & 0x03E0) >> 4;
     u8 b = (color & 0x7C00) >> 9;
@@ -2710,8 +6001,22 @@ void SoftRenderer::DrawPixel_Accel(u32* dst, u16 color, u32 flag)
     *dst = r | (g << 8) | (b << 16) | flag;
 }
 
+void SoftRenderer::DrawPixel_AccelTracked(SoftRenderer& renderer, u32* dst, u16 color, u32 flag)
+{
+    u8 r = (color & 0x001F) << 1;
+    u8 g = (color & 0x03E0) >> 4;
+    u8 b = (color & 0x7C00) >> 9;
+
+    renderer.ShiftComposedObjCaptureIdentity(dst);
+    *(dst+512) = *(dst+256);
+    *(dst+256) = *dst;
+    *dst = r | (g << 8) | (b << 16) | flag;
+}
+
 void SoftRenderer::PushRawPixel_Accel(u32* dst, u32 value)
 {
+    if (TrackComposedObjCaptureIdentity)
+        ShiftComposedObjCaptureIdentity(dst);
     *(dst+512) = *(dst+256);
     *(dst+256) = *dst;
     *dst = value;
@@ -2732,14 +6037,43 @@ bool SoftRenderer::TryDrawStructuredVulkan2DCapturePixel(u32* dst, u32 flatByteA
         ? GPU.VRAMMap_BBG[(maskedByteAddress >> 14u) & 0x7u]
         : GPU.VRAMMap_ABG[(maskedByteAddress >> 14u) & 0x1Fu];
 
-    for (u32 vramBank = 0; vramBank < 4u; vramBank++)
-    {
-        if ((mapMask & (1u << vramBank)) == 0u)
-            continue;
+    const u32 captureAddress = (maskedByteAddress & 0x1FFFFu) >> 1u;
+    if (captureAddress >= kStructuredPixelCount)
+        return false;
 
-        const u32 captureAddress = (maskedByteAddress & 0x1FFFFu) >> 1u;
-        if (captureAddress >= kStructuredPixelCount)
-            continue;
+    struct StructuredCaptureCandidate
+    {
+        bool Valid = false;
+        bool Slot = false;
+        bool Above = false;
+        u32 BelowPlane = 0u;
+        u32 AbovePlane = 0u;
+    };
+    StructuredCaptureCandidate fallbackSlot;
+    StructuredCaptureCandidate fallback2D;
+
+    auto emitCandidate =
+        [&](const StructuredCaptureCandidate& candidate) {
+            if (candidate.Slot)
+            {
+                if (candidate.BelowPlane != 0u)
+                    PushRawPixel_Accel(dst, candidate.BelowPlane);
+                PushRawPixel_Accel(dst, 0x40000000u);
+                if (candidate.Above)
+                    PushRawPixel_Accel(dst, candidate.AbovePlane);
+                CurrentLineRegularCaptureUses3d = true;
+            }
+            else
+            {
+                PushRawPixel_Accel(dst, candidate.BelowPlane);
+            }
+        };
+
+    u32 mappedBanks = mapMask & 0xFu;
+    while (mappedBanks != 0u)
+    {
+        const u32 vramBank = static_cast<u32>(__builtin_ctz(mappedBanks));
+        mappedBanks &= mappedBanks - 1u;
 
         const size_t lineValidIndex =
             (static_cast<size_t>(vramBank) * kStructuredScreenHeight)
@@ -2762,20 +6096,47 @@ bool SoftRenderer::TryDrawStructuredVulkan2DCapturePixel(u32* dst, u32 flatByteA
         const bool structuredSlot = (controlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u;
         if (structuredSlot)
         {
-            if (belowPlane != 0u)
-                PushRawPixel_Accel(dst, belowPlane);
-            PushRawPixel_Accel(dst, 0x40000000u);
-            if ((controlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u && abovePlane != 0u)
-                PushRawPixel_Accel(dst, abovePlane);
-            CurrentLineRegularCaptureUses3d = true;
-            return true;
+            StructuredCaptureCandidate candidate;
+            candidate.Valid = true;
+            candidate.Slot = true;
+            candidate.Above =
+                (controlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
+                && abovePlane != 0u
+                && StructuredVulkan2DCanPreserveCaptureOverlay(abovePlane);
+            candidate.BelowPlane = belowPlane;
+            candidate.AbovePlane = abovePlane;
+            if (candidate.Above)
+            {
+                emitCandidate(candidate);
+                return true;
+            }
+            if (!fallbackSlot.Valid)
+                fallbackSlot = candidate;
+            continue;
         }
 
-        if ((controlAlpha & kStructuredVulkan2DOnlyFlag) != 0u && belowPlane != 0u)
+        if ((controlAlpha & kStructuredVulkan2DOnlyFlag) != 0u
+            && belowPlane != 0u
+            && StructuredVulkan2DCanPreserveCaptureOverlay(belowPlane))
         {
-            PushRawPixel_Accel(dst, belowPlane);
-            return true;
+            if (!fallback2D.Valid)
+            {
+                fallback2D.Valid = true;
+                fallback2D.BelowPlane = belowPlane;
+            }
+            continue;
         }
+    }
+
+    if (fallback2D.Valid)
+    {
+        emitCandidate(fallback2D);
+        return true;
+    }
+    if (fallbackSlot.Valid)
+    {
+        emitCandidate(fallbackSlot);
+        return true;
     }
 
     return false;
@@ -2790,13 +6151,26 @@ void SoftRenderer::DrawBG_3D()
 
     if (GPU.GPU3D.IsRendererAccelerated())
     {
-        for (i = 0; i < 256; i++)
+        if (TrackComposedObjCaptureIdentity)
         {
-            if (!(WindowMask[i] & 0x01)) continue;
-
-            BGOBJLine[i+512] = BGOBJLine[i+256];
-            BGOBJLine[i+256] = BGOBJLine[i];
-            BGOBJLine[i] = 0x40000000; // 3D-layer placeholder
+            for (i = 0; i < 256; i++)
+            {
+                if (!(WindowMask[i] & 0x01)) continue;
+                ShiftComposedObjCaptureIdentity(&BGOBJLine[i]);
+                BGOBJLine[i+512] = BGOBJLine[i+256];
+                BGOBJLine[i+256] = BGOBJLine[i];
+                BGOBJLine[i] = 0x40000000; // 3D-layer placeholder
+            }
+        }
+        else
+        {
+            for (i = 0; i < 256; i++)
+            {
+                if (!(WindowMask[i] & 0x01)) continue;
+                BGOBJLine[i+512] = BGOBJLine[i+256];
+                BGOBJLine[i+256] = BGOBJLine[i];
+                BGOBJLine[i] = 0x40000000; // 3D-layer placeholder
+            }
         }
     }
     else
@@ -2920,7 +6294,7 @@ void SoftRenderer::DrawBG_Text(u32 line, u32 bgnum)
                 color = bgvram[(pixelsaddr + tilexoff) & bgvrammask];
 
                 if (color)
-                    drawPixel(&BGOBJLine[i], curpal[color], 0x01000000<<bgnum);
+                    drawPixel(*this, &BGOBJLine[i], curpal[color], 0x01000000<<bgnum);
             }
 
             xoff++;
@@ -2973,7 +6347,7 @@ void SoftRenderer::DrawBG_Text(u32 line, u32 bgnum)
                 }
 
                 if (color)
-                    drawPixel(&BGOBJLine[i], curpal[color], 0x01000000<<bgnum);
+                    drawPixel(*this, &BGOBJLine[i], curpal[color], 0x01000000<<bgnum);
             }
 
             xoff++;
@@ -3070,7 +6444,7 @@ void SoftRenderer::DrawBG_Affine(u32 line, u32 bgnum)
                 color = bgvram[(tilesetaddr + (curtile << 6) + (tileyoff << 3) + tilexoff) & bgvrammask];
 
                 if (color)
-                    drawPixel(&BGOBJLine[i], pal[color], 0x01000000<<bgnum);
+                    drawPixel(*this, &BGOBJLine[i], pal[color], 0x01000000<<bgnum);
             }
         }
 
@@ -3147,43 +6521,165 @@ void SoftRenderer::DrawBG_Extended(u32 line, u32 bgnum)
 
             u16 color;
 
-            for (int i = 0; i < 256; i++)
-            {
-                if (WindowMask[i] & (1<<bgnum))
-                {
-                    s32 finalX, finalY;
-                    if (mosaic)
+            auto tryDrawStructuredCaptureLineView =
+                [&](u32* lineDst, bool& lineUses3d) -> bool {
+                    if (mosaic
+                        || !UseStructuredVulkan2D()
+                        || !GPU.GPU3D.IsRendererAccelerated()
+                        || CurUnit->Num != 1u
+                        || bgnum != 2u
+                        || ((CurUnit->DispCnt >> 16u) & 0x1u) != 1u
+                        || (CurUnit->DispCnt & 0xE000u) != 0u
+                        || (bgcnt & 0x0040u) != 0u
+                        || (bgcnt & 0x2000u) != 0u
+                        || rotA != 0x100
+                        || rotC != 0)
                     {
-                        int im = CurBGXMosaicTable[i];
-                        finalX = rotX - (im * rotA);
-                        finalY = rotY - (im * rotC);
-                    }
-                    else
-                    {
-                        finalX = rotX;
-                        finalY = rotY;
+                        return false;
                     }
 
-                    if (!(finalX & ofxmask) && !(finalY & ofymask))
+                    const s64 firstXWide = static_cast<s64>(rotX);
+                    const s64 lastXWide = firstXWide
+                        + (255 * static_cast<s64>(rotA));
+                    const s64 yWide = static_cast<s64>(rotY);
+                    if (firstXWide < 0
+                        || lastXWide > static_cast<s64>(xmask)
+                        || yWide < 0
+                        || yWide > static_cast<s64>(ymask))
                     {
-                        const u32 pixelByteAddress =
-                            (tilemapaddr + (((((finalY & ymask) >> 8) << yshift) + ((finalX & xmask) >> 8)) << 1)) & bgvrammask;
-                        if (TryDrawStructuredVulkan2DCapturePixel(&BGOBJLine[i], pixelByteAddress))
+                        return false;
+                    }
+
+                    const u32 firstByteAddress =
+                        (tilemapaddr
+                            + (((((rotY & ymask) >> 8) << yshift)
+                                + ((rotX & xmask) >> 8)) << 1))
+                        & bgvrammask;
+                    constexpr u32 kLineByteSpan = (kStructuredScreenWidth - 1u) * 2u;
+                    if (bgvrammask < kLineByteSpan
+                        || firstByteAddress > bgvrammask - kLineByteSpan
+                        || (firstByteAddress >> 14u)
+                            != ((firstByteAddress + kLineByteSpan) >> 14u))
+                    {
+                        return false;
+                    }
+
+                    const u32 mapMask =
+                        GPU.VRAMMap_BBG[(firstByteAddress >> 14u) & 0x7u] & 0xFu;
+                    if (__builtin_popcount(mapMask) != 1)
+                        return false;
+                    const u32 vramBank = static_cast<u32>(__builtin_ctz(mapMask));
+                    const u32 captureAddress = (firstByteAddress & 0x1FFFFu) >> 1u;
+                    if ((captureAddress % kStructuredScreenWidth) != 0u
+                        || captureAddress + (kStructuredScreenWidth - 1u) >= kStructuredPixelCount)
+                    {
+                        return false;
+                    }
+
+                    const size_t lineValidIndex =
+                        (static_cast<size_t>(vramBank) * kStructuredScreenHeight)
+                        + (captureAddress / kStructuredScreenWidth);
+                    if (StructuredVulkan2DCaptureLineValid[lineValidIndex] == 0u)
+                        return false;
+
+                    const size_t captureBase =
+                        static_cast<size_t>(vramBank) * kStructuredPlaneCount * kStructuredPixelCount;
+                    const u32* const belowLine =
+                        StructuredVulkan2DCapturePlanes.data() + captureBase + captureAddress;
+                    const u32* const aboveLine =
+                        StructuredVulkan2DCapturePlanes.data()
+                        + captureBase + kStructuredPixelCount + captureAddress;
+                    const u32* const controlLine =
+                        StructuredVulkan2DCapturePlanes.data()
+                        + captureBase + (kStructuredPixelCount * 2u) + captureAddress;
+
+                    for (u32 x = 0u; x < kStructuredScreenWidth; x++)
+                    {
+                        const u32 belowPlane = belowLine[x];
+                        const u32 abovePlane = aboveLine[x];
+                        const u32 controlAlpha = controlLine[x] >> 24u;
+                        const bool structuredSlot =
+                            (controlAlpha & kStructuredVulkan2DSlot3DFlag) != 0u;
+                        if (structuredSlot)
                         {
-                            rotX += rotA;
-                            rotY += rotC;
+                            if (belowPlane != 0u)
+                                PushRawPixel_Accel(lineDst + x, belowPlane);
+                            PushRawPixel_Accel(lineDst + x, 0x40000000u);
+                            if ((controlAlpha & kStructuredVulkan2DAbove3DFlag) != 0u
+                                && abovePlane != 0u
+                                && StructuredVulkan2DCanPreserveCaptureOverlay(abovePlane))
+                            {
+                                PushRawPixel_Accel(lineDst + x, abovePlane);
+                            }
+                            lineUses3d = true;
                             continue;
                         }
 
-                        color = *(u16*)&bgvram[pixelByteAddress];
+                        if ((controlAlpha & kStructuredVulkan2DOnlyFlag) != 0u
+                            && belowPlane != 0u
+                            && StructuredVulkan2DCanPreserveCaptureOverlay(belowPlane))
+                        {
+                            PushRawPixel_Accel(lineDst + x, belowPlane);
+                            continue;
+                        }
 
-                        if (color & 0x8000)
-                            drawPixel(&BGOBJLine[i], color, 0x01000000<<bgnum);
+                        u16 rawColor = 0u;
+                        std::memcpy(
+                            &rawColor,
+                            bgvram + firstByteAddress + (x * 2u),
+                            sizeof(rawColor));
+                        if ((rawColor & 0x8000u) != 0u)
+                            drawPixel(*this, lineDst + x, rawColor, 0x01000000u << bgnum);
                     }
-                }
+                    return true;
+                };
 
-                rotX += rotA;
-                rotY += rotC;
+            bool fastLineSaw3d = false;
+            if (tryDrawStructuredCaptureLineView(BGOBJLine, fastLineSaw3d))
+            {
+                CurrentLineRegularCaptureUses3d =
+                    CurrentLineRegularCaptureUses3d || fastLineSaw3d;
+            }
+            else
+            {
+                for (int i = 0; i < 256; i++)
+                {
+                    if (WindowMask[i] & (1<<bgnum))
+                    {
+                        s32 finalX, finalY;
+                        if (mosaic)
+                        {
+                            int im = CurBGXMosaicTable[i];
+                            finalX = rotX - (im * rotA);
+                            finalY = rotY - (im * rotC);
+                        }
+                        else
+                        {
+                            finalX = rotX;
+                            finalY = rotY;
+                        }
+
+                        if (!(finalX & ofxmask) && !(finalY & ofymask))
+                        {
+                            const u32 pixelByteAddress =
+                                (tilemapaddr + (((((finalY & ymask) >> 8) << yshift) + ((finalX & xmask) >> 8)) << 1)) & bgvrammask;
+                            if (TryDrawStructuredVulkan2DCapturePixel(&BGOBJLine[i], pixelByteAddress))
+                            {
+                                rotX += rotA;
+                                rotY += rotC;
+                                continue;
+                            }
+
+                            color = *(u16*)&bgvram[pixelByteAddress];
+
+                            if (color & 0x8000)
+                                drawPixel(*this, &BGOBJLine[i], color, 0x01000000<<bgnum);
+                        }
+                    }
+
+                    rotX += rotA;
+                    rotY += rotC;
+                }
             }
         }
         else
@@ -3217,7 +6713,7 @@ void SoftRenderer::DrawBG_Extended(u32 line, u32 bgnum)
                         color = bgvram[(tilemapaddr + (((finalY & ymask) >> 8) << yshift) + ((finalX & xmask) >> 8)) & bgvrammask];
 
                         if (color)
-                            drawPixel(&BGOBJLine[i], pal[color], 0x01000000<<bgnum);
+                            drawPixel(*this, &BGOBJLine[i], pal[color], 0x01000000<<bgnum);
                     }
                 }
 
@@ -3299,7 +6795,7 @@ void SoftRenderer::DrawBG_Extended(u32 line, u32 bgnum)
                     color = bgvram[(tilesetaddr + ((curtile & 0x03FF) << 6) + (tileyoff << 3) + tilexoff) & bgvrammask];
 
                     if (color)
-                        drawPixel(&BGOBJLine[i], curpal[color], 0x01000000<<bgnum);
+                        drawPixel(*this, &BGOBJLine[i], curpal[color], 0x01000000<<bgnum);
                 }
             }
 
@@ -3394,7 +6890,7 @@ void SoftRenderer::DrawBG_Large(u32 line) // BG is always BG2
                 color = bgvram[((((finalY & ymask) >> 8) << yshift) + ((finalX & xmask) >> 8)) & bgvrammask];
 
                 if (color)
-                    drawPixel(&BGOBJLine[i], pal[color], 0x01000000<<2);
+                    drawPixel(*this, &BGOBJLine[i], pal[color], 0x01000000<<2);
             }
         }
 
@@ -3421,19 +6917,32 @@ void SoftRenderer::ApplySpriteMosaicX()
     if (CurUnit->OBJMosaicSize[0] == 0) return;
 
     u32* objLine = OBJLine[CurUnit->Num];
+    ObjCaptureIdentityTag* objIdentity = TrackSpriteObjCaptureIdentity
+        ? OBJLineCaptureIdentity.data() + (CurUnit->Num * kStructuredScreenWidth)
+        : nullptr;
 
     u8* curOBJXMosaicTable = MosaicTable[CurUnit->OBJMosaicSize[0]].data();
 
     u32 lastcolor = objLine[0];
+    ObjCaptureIdentityTag lastIdentity =
+        objIdentity != nullptr ? objIdentity[0] : ObjCaptureIdentityTag{};
 
     for (u32 i = 1; i < 256; i++)
     {
         u32 currentcolor = objLine[i];
 
         if (!(lastcolor & currentcolor & 0x100000) || curOBJXMosaicTable[i] == 0)
+        {
             lastcolor = currentcolor;
+            if (objIdentity != nullptr)
+                lastIdentity = objIdentity[i];
+        }
         else
+        {
             objLine[i] = lastcolor;
+            if (objIdentity != nullptr)
+                objIdentity[i] = lastIdentity;
+        }
     }
 }
 
@@ -3441,6 +6950,8 @@ template <SoftRenderer::DrawPixel drawPixel>
 void SoftRenderer::InterleaveSprites(u32 prio)
 {
     u32* objLine = OBJLine[CurUnit->Num];
+    const ObjCaptureIdentityTag* objIdentity =
+        OBJLineCaptureIdentity.data() + (CurUnit->Num * kStructuredScreenWidth);
     u16* pal = (u16*)&GPU.Palette[CurUnit->Num ? 0x600 : 0x200];
 
     if (CurUnit->DispCnt & 0x80000000)
@@ -3462,7 +6973,9 @@ void SoftRenderer::InterleaveSprites(u32 prio)
             else
                 color = extpal[pixel & 0xFFF];
 
-            drawPixel(&BGOBJLine[i], color, pixel & 0xFF000000);
+            drawPixel(*this, &BGOBJLine[i], color, pixel & 0xFF000000);
+            if (TrackComposedObjCaptureIdentity)
+                ComposedObjCaptureIdentity[i] = objIdentity[i];
         }
     }
     else
@@ -3482,7 +6995,9 @@ void SoftRenderer::InterleaveSprites(u32 prio)
             else
                 color = pal[pixel & 0xFF];
 
-            drawPixel(&BGOBJLine[i], color, pixel & 0xFF000000);
+            drawPixel(*this, &BGOBJLine[i], color, pixel & 0xFF000000);
+            if (TrackComposedObjCaptureIdentity)
+                ComposedObjCaptureIdentity[i] = objIdentity[i];
         }
     }
 }
@@ -3497,9 +7012,16 @@ void SoftRenderer::InterleaveSprites(u32 prio)
         DrawSprite_##type<false>(__VA_ARGS__); \
     }
 
-void SoftRenderer::DrawSprites(u32 line, Unit* unit)
+void SoftRenderer::DrawSpritesActivePipeline(u32 line, Unit* unit)
 {
     CurUnit = unit;
+    CurrentSpriteRenderLine = line;
+    OBJLineCaptureIdentityAvailable[CurUnit->Num] = false;
+    TrackSpriteObjCaptureIdentity =
+        UseStructuredVulkan2D()
+        && GPU.GPU3D.IsRendererAccelerated()
+        && CurUnit->Num == 1u
+        && line < kStructuredScreenHeight;
 
     if (line == 0)
     {
@@ -3513,6 +7035,24 @@ void SoftRenderer::DrawSprites(u32 line, Unit* unit)
         CurUnit->OBJMosaicYCount = 0;
     }
 
+    NumSprites[CurUnit->Num] = 0;
+    memset(OBJLine[CurUnit->Num], 0, 256*4);
+    memset(OBJWindow[CurUnit->Num], 0, 256);
+    if (TrackSpriteObjCaptureIdentity)
+    {
+        std::fill_n(
+            OBJLineCaptureIdentity.data() + (CurUnit->Num * kStructuredScreenWidth),
+            kStructuredScreenWidth,
+            ObjCaptureIdentityTag{});
+    }
+    const bool renderer2dDebugControlsActive = MelonDSAndroid::areRenderer2DDebugControlsActive();
+    if (renderer2dDebugControlsActive)
+    {
+        if (!MelonDSAndroid::areRenderer2DDebugObjectsEnabled(CurUnit->Num)) return;
+        if (!Renderer2DDebugShouldDrawObjectLine(line)) return;
+    }
+    if (!(CurUnit->DispCnt & 0x1000)) return;
+
     if (CurUnit->Num == 0)
     {
         auto objDirty = GPU.VRAMDirty_AOBJ.DeriveState(GPU.VRAMMap_AOBJ, GPU);
@@ -3523,13 +7063,6 @@ void SoftRenderer::DrawSprites(u32 line, Unit* unit)
         auto objDirty = GPU.VRAMDirty_BOBJ.DeriveState(GPU.VRAMMap_BOBJ, GPU);
         GPU.MakeVRAMFlat_BOBJCoherent(objDirty);
     }
-
-    NumSprites[CurUnit->Num] = 0;
-    memset(OBJLine[CurUnit->Num], 0, 256*4);
-    memset(OBJWindow[CurUnit->Num], 0, 256);
-    if (!MelonDSAndroid::areRenderer2DDebugObjectsEnabled(CurUnit->Num)) return;
-    if (!Renderer2DDebugShouldDrawObjectLine(line)) return;
-    if (!(CurUnit->DispCnt & 0x1000)) return;
 
     u16* oam = (u16*)&GPU.OAM[CurUnit->Num ? 0x400 : 0];
 
@@ -3550,7 +7083,8 @@ void SoftRenderer::DrawSprites(u32 line, Unit* unit)
 
     for (int bgnum = 0x0C00; bgnum >= 0x0000; bgnum -= 0x0400)
     {
-        if (!MelonDSAndroid::isRenderer2DDebugObjectPriorityEnabled(CurUnit->Num, static_cast<u32>(bgnum) >> 10u))
+        if (renderer2dDebugControlsActive
+            && !MelonDSAndroid::isRenderer2DDebugObjectPriorityEnabled(CurUnit->Num, static_cast<u32>(bgnum) >> 10u))
             continue;
 
         for (int sprnum = 127; sprnum >= 0; sprnum--)
@@ -3559,7 +7093,8 @@ void SoftRenderer::DrawSprites(u32 line, Unit* unit)
 
             if ((attrib[2] & 0x0C00) != bgnum)
                 continue;
-            if (!Renderer2DDebugShouldDrawObject(CurUnit->Num, static_cast<u32>(sprnum), attrib))
+            if (renderer2dDebugControlsActive
+                && !Renderer2DDebugShouldDrawObject(CurUnit->Num, static_cast<u32>(sprnum), attrib))
                 continue;
 
             bool iswin = (((attrib[0] >> 10) & 0x3) == 2);
@@ -3595,8 +7130,6 @@ void SoftRenderer::DrawSprites(u32 line, Unit* unit)
                 s32 xpos = (s32)(attrib[1] << 23) >> 23;
                 if (xpos <= -boundwidth)
                     continue;
-
-                u32 rotparamgroup = (attrib[1] >> 9) & 0x1F;
 
                 DoDrawSprite(Rotscale, sprnum, boundwidth, boundheight, width, height, xpos, ypos);
 
@@ -3647,6 +7180,9 @@ void SoftRenderer::DrawSprite_Rotscale(u32 num, u32 boundwidth, u32 boundheight,
 
     u32* objLine = OBJLine[CurUnit->Num];
     u8* objWindow = OBJWindow[CurUnit->Num];
+    ObjCaptureIdentityTag* objIdentity = TrackSpriteObjCaptureIdentity
+        ? OBJLineCaptureIdentity.data() + (CurUnit->Num * kStructuredScreenWidth)
+        : nullptr;
 
     s32 centerX = boundwidth >> 1;
     s32 centerY = boundheight >> 1;
@@ -3758,12 +7294,21 @@ void SoftRenderer::DrawSprite_Rotscale(u32 num, u32 boundwidth, u32 boundheight,
                 if (color & 0x8000)
                 {
                     if (window) objWindow[xpos] = 1;
-                    else        objLine[xpos] = color | pixelattr;
+                    else
+                    {
+                        objLine[xpos] = color | pixelattr;
+                        if (objIdentity != nullptr)
+                            objIdentity[xpos] = {};
+                    }
                 }
                 else if (!window)
                 {
                     if (objLine[xpos] == 0)
+                    {
                         objLine[xpos] = pixelattr & 0x180000;
+                        if (objIdentity != nullptr)
+                            objIdentity[xpos] = {};
+                    }
                 }
             }
 
@@ -3813,12 +7358,21 @@ void SoftRenderer::DrawSprite_Rotscale(u32 num, u32 boundwidth, u32 boundheight,
                     if (color)
                     {
                         if (window) objWindow[xpos] = 1;
-                        else        objLine[xpos] = color | pixelattr;
+                        else
+                        {
+                            objLine[xpos] = color | pixelattr;
+                            if (objIdentity != nullptr)
+                                objIdentity[xpos] = {};
+                        }
                     }
                     else if (!window)
                     {
                         if (objLine[xpos] == 0)
+                        {
                             objLine[xpos] = pixelattr & 0x180000;
+                            if (objIdentity != nullptr)
+                                objIdentity[xpos] = {};
+                        }
                     }
                 }
 
@@ -3850,12 +7404,21 @@ void SoftRenderer::DrawSprite_Rotscale(u32 num, u32 boundwidth, u32 boundheight,
                     if (color)
                     {
                         if (window) objWindow[xpos] = 1;
-                        else        objLine[xpos] = color | pixelattr;
+                        else
+                        {
+                            objLine[xpos] = color | pixelattr;
+                            if (objIdentity != nullptr)
+                                objIdentity[xpos] = {};
+                        }
                     }
                     else if (!window)
                     {
                         if (objLine[xpos] == 0)
+                        {
                             objLine[xpos] = pixelattr & 0x180000;
+                            if (objIdentity != nullptr)
+                                objIdentity[xpos] = {};
+                        }
                     }
                 }
 
@@ -3892,6 +7455,9 @@ void SoftRenderer::DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos, s
 
     u32* objLine = OBJLine[CurUnit->Num];
     u8* objWindow = OBJWindow[CurUnit->Num];
+    ObjCaptureIdentityTag* objIdentity = TrackSpriteObjCaptureIdentity
+        ? OBJLineCaptureIdentity.data() + (CurUnit->Num * kStructuredScreenWidth)
+        : nullptr;
 
     // yflip
     if (attrib[1] & 0x2000)
@@ -3916,6 +7482,13 @@ void SoftRenderer::DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos, s
     if (spritemode == 3)
     {
         // bitmap sprite
+
+        const bool directIdentityEligible =
+            objIdentity != nullptr
+            && !window
+            && CurUnit->Num == 1u
+            && (attrib[0] & 0x1000u) == 0u
+            && (attrib[1] & 0x3000u) == 0u;
 
         u32 alpha = attrib[2] >> 12;
         if (!alpha) return;
@@ -4004,12 +7577,33 @@ void SoftRenderer::DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos, s
             if (color & 0x8000)
             {
                 if (window) objWindow[xpos] = 1;
-                else        objLine[xpos] = color | pixelattr;
+                else
+                {
+                    CaptureSourceIdentity sourceIdentity {};
+                    objLine[xpos] = color | pixelattr;
+                    if (objIdentity != nullptr)
+                        objIdentity[xpos] = {};
+                    if (directIdentityEligible
+                        && TryGetEngineBDirectBitmapObjCaptureIdentity(
+                            sampleAddr,
+                            color,
+                            static_cast<u32>(xpos),
+                            sourceIdentity))
+                    {
+                        objIdentity[xpos].Source = sourceIdentity;
+                        objIdentity[xpos].DirectXY = true;
+                        OBJLineCaptureIdentityAvailable[CurUnit->Num] = true;
+                    }
+                }
             }
             else if (!window)
             {
                 if (objLine[xpos] == 0)
+                {
                     objLine[xpos] = pixelattr & 0x180000;
+                    if (objIdentity != nullptr)
+                        objIdentity[xpos] = {};
+                }
             }
 
             xoff++;
@@ -4071,12 +7665,21 @@ void SoftRenderer::DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos, s
                 if (color)
                 {
                     if (window) objWindow[xpos] = 1;
-                    else        objLine[xpos] = color | pixelattr;
+                    else
+                    {
+                        objLine[xpos] = color | pixelattr;
+                        if (objIdentity != nullptr)
+                            objIdentity[xpos] = {};
+                    }
                 }
                 else if (!window)
                 {
                     if (objLine[xpos] == 0)
+                    {
                         objLine[xpos] = pixelattr & 0x180000;
+                        if (objIdentity != nullptr)
+                            objIdentity[xpos] = {};
+                    }
                 }
 
                 xoff++;
@@ -4131,12 +7734,21 @@ void SoftRenderer::DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos, s
                 if (color)
                 {
                     if (window) objWindow[xpos] = 1;
-                    else        objLine[xpos] = color | pixelattr;
+                    else
+                    {
+                        objLine[xpos] = color | pixelattr;
+                        if (objIdentity != nullptr)
+                            objIdentity[xpos] = {};
+                    }
                 }
                 else if (!window)
                 {
                     if (objLine[xpos] == 0)
+                    {
                         objLine[xpos] = pixelattr & 0x180000;
+                        if (objIdentity != nullptr)
+                            objIdentity[xpos] = {};
+                    }
                 }
 
                 xoff++;

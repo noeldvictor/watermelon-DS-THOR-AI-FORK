@@ -24,6 +24,13 @@
 
 #include "GPU2D_Soft.h"
 #include "GPU3D.h"
+#include "VulkanPerfStats.h"
+
+namespace MelonDSAndroid
+{
+bool areRendererDebugToolsEnabled();
+bool isVulkanGpu2DPerfLoggingEnabled();
+}
 
 namespace melonDS
 {
@@ -40,6 +47,66 @@ enum
     LCD_StartScanline,
     LCD_FinishFrame,
 };
+
+namespace
+{
+PerfSampleWindow<120> gStructured2DDrawWindow;
+PerfSampleWindow<120> gStructured2DSpriteWindow;
+PerfSampleWindow<120> gStructured2DDrawAWindow;
+PerfSampleWindow<120> gStructured2DDrawBWindow;
+PerfSampleWindow<120> gStructured2DSpriteAWindow;
+PerfSampleWindow<120> gStructured2DSpriteBWindow;
+u64 gStructured2DFrameDrawNs = 0;
+u64 gStructured2DFrameSpriteNs = 0;
+u64 gStructured2DFrameDrawANs = 0;
+u64 gStructured2DFrameDrawBNs = 0;
+u64 gStructured2DFrameSpriteANs = 0;
+u64 gStructured2DFrameSpriteBNs = 0;
+
+bool ShouldMeasureStructured2D(const GPU& gpu)
+{
+    return MelonDSAndroid::isVulkanGpu2DPerfLoggingEnabled()
+        && gpu.GPU3D.GetCurrentRenderer().UsesStructured2DMetadata();
+}
+
+void LogStructured2DPerfIfReady()
+{
+    if (!gStructured2DDrawWindow.Ready()
+        || !gStructured2DSpriteWindow.Ready()
+        || !gStructured2DDrawAWindow.Ready()
+        || !gStructured2DDrawBWindow.Ready()
+        || !gStructured2DSpriteAWindow.Ready()
+        || !gStructured2DSpriteBWindow.Ready())
+    {
+        return;
+    }
+
+    const auto drawSummary = gStructured2DDrawWindow.SummarizeAndReset();
+    const auto spriteSummary = gStructured2DSpriteWindow.SummarizeAndReset();
+    const auto drawASummary = gStructured2DDrawAWindow.SummarizeAndReset();
+    const auto drawBSummary = gStructured2DDrawBWindow.SummarizeAndReset();
+    const auto spriteASummary = gStructured2DSpriteAWindow.SummarizeAndReset();
+    const auto spriteBSummary = gStructured2DSpriteBWindow.SummarizeAndReset();
+    Platform::Log(
+        Platform::LogLevel::Warn,
+        "VulkanPerf[GPU2D]: draw cpu avg=%.3fms p95=%.3fms max=%.3fms a=%.3f/%.3fms b=%.3f/%.3fms sprites cpu avg=%.3fms p95=%.3fms max=%.3fms a=%.3f/%.3fms b=%.3f/%.3fms",
+        PerfNsToMs(drawSummary.MeanNs),
+        PerfNsToMs(drawSummary.P95Ns),
+        PerfNsToMs(drawSummary.MaxNs),
+        PerfNsToMs(drawASummary.MeanNs),
+        PerfNsToMs(drawASummary.P95Ns),
+        PerfNsToMs(drawBSummary.MeanNs),
+        PerfNsToMs(drawBSummary.P95Ns),
+        PerfNsToMs(spriteSummary.MeanNs),
+        PerfNsToMs(spriteSummary.P95Ns),
+        PerfNsToMs(spriteSummary.MaxNs),
+        PerfNsToMs(spriteASummary.MeanNs),
+        PerfNsToMs(spriteASummary.P95Ns),
+        PerfNsToMs(spriteBSummary.MeanNs),
+        PerfNsToMs(spriteBSummary.P95Ns)
+    );
+}
+}
 
 
 /*
@@ -886,15 +953,55 @@ void GPU::StartHBlank(u32 line) noexcept
         // note: this should start 48 cycles after the scanline start
         if (line < 192)
         {
+            const bool measureStructured2D = ShouldMeasureStructured2D(*this);
+            const u64 drawAStartNs = measureStructured2D ? PerfNowNs() : 0;
             GPU2D_Renderer->DrawScanline(line, &GPU2D_A);
+            const u64 drawBStartNs = measureStructured2D ? PerfNowNs() : 0;
             GPU2D_Renderer->DrawScanline(line, &GPU2D_B);
+            if (measureStructured2D)
+            {
+                const u64 drawEndNs = PerfNowNs();
+                gStructured2DFrameDrawANs += drawBStartNs - drawAStartNs;
+                gStructured2DFrameDrawBNs += drawEndNs - drawBStartNs;
+                gStructured2DFrameDrawNs += drawEndNs - drawAStartNs;
+            }
         }
 
         // sprites are pre-rendered one scanline in advance
         if (line < 191)
         {
+            const bool measureStructured2D = ShouldMeasureStructured2D(*this);
+            const u64 spriteAStartNs = measureStructured2D ? PerfNowNs() : 0;
             GPU2D_Renderer->DrawSprites(line+1, &GPU2D_A);
+            const u64 spriteBStartNs = measureStructured2D ? PerfNowNs() : 0;
             GPU2D_Renderer->DrawSprites(line+1, &GPU2D_B);
+            if (measureStructured2D)
+            {
+                const u64 spriteEndNs = PerfNowNs();
+                gStructured2DFrameSpriteANs += spriteBStartNs - spriteAStartNs;
+                gStructured2DFrameSpriteBNs += spriteEndNs - spriteBStartNs;
+                gStructured2DFrameSpriteNs += spriteEndNs - spriteAStartNs;
+            }
+        }
+
+        if (line == 191)
+        {
+            if (ShouldMeasureStructured2D(*this))
+            {
+                gStructured2DDrawWindow.Add(gStructured2DFrameDrawNs);
+                gStructured2DSpriteWindow.Add(gStructured2DFrameSpriteNs);
+                gStructured2DDrawAWindow.Add(gStructured2DFrameDrawANs);
+                gStructured2DDrawBWindow.Add(gStructured2DFrameDrawBNs);
+                gStructured2DSpriteAWindow.Add(gStructured2DFrameSpriteANs);
+                gStructured2DSpriteBWindow.Add(gStructured2DFrameSpriteBNs);
+                LogStructured2DPerfIfReady();
+            }
+            gStructured2DFrameDrawNs = 0;
+            gStructured2DFrameSpriteNs = 0;
+            gStructured2DFrameDrawANs = 0;
+            gStructured2DFrameDrawBNs = 0;
+            gStructured2DFrameSpriteANs = 0;
+            gStructured2DFrameSpriteBNs = 0;
         }
 
         NDS.CheckDMAs(0, 0x02);

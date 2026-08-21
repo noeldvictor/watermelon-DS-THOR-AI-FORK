@@ -25,6 +25,7 @@ PFN_vkCmdBindIndexBuffer vkCmdBindIndexBuffer = nullptr;
 PFN_vkCmdBindPipeline vkCmdBindPipeline = nullptr;
 PFN_vkCmdBindVertexBuffers vkCmdBindVertexBuffers = nullptr;
 PFN_vkCmdBlitImage vkCmdBlitImage = nullptr;
+PFN_vkCmdClearAttachments vkCmdClearAttachments = nullptr;
 PFN_vkCmdClearColorImage vkCmdClearColorImage = nullptr;
 PFN_vkCmdCopyBuffer vkCmdCopyBuffer = nullptr;
 PFN_vkCmdCopyBufferToImage vkCmdCopyBufferToImage = nullptr;
@@ -203,6 +204,7 @@ void loadGlobalSymbols()
     loadGlobal(vkCmdBindPipeline, "vkCmdBindPipeline");
     loadGlobal(vkCmdBindVertexBuffers, "vkCmdBindVertexBuffers");
     loadGlobal(vkCmdBlitImage, "vkCmdBlitImage");
+    loadGlobal(vkCmdClearAttachments, "vkCmdClearAttachments");
     loadGlobal(vkCmdClearColorImage, "vkCmdClearColorImage");
     loadGlobal(vkCmdCopyBuffer, "vkCmdCopyBuffer");
     loadGlobal(vkCmdCopyBufferToImage, "vkCmdCopyBufferToImage");
@@ -327,6 +329,7 @@ void loadInstanceSymbols(VkInstance instance)
     loadInstance(instance, vkCmdBindPipeline, "vkCmdBindPipeline");
     loadInstance(instance, vkCmdBindVertexBuffers, "vkCmdBindVertexBuffers");
     loadInstance(instance, vkCmdBlitImage, "vkCmdBlitImage");
+    loadInstance(instance, vkCmdClearAttachments, "vkCmdClearAttachments");
     loadInstance(instance, vkCmdClearColorImage, "vkCmdClearColorImage");
     loadInstance(instance, vkCmdCopyBuffer, "vkCmdCopyBuffer");
     loadInstance(instance, vkCmdCopyBufferToImage, "vkCmdCopyBufferToImage");
@@ -502,6 +505,11 @@ void loadDeviceSymbols(VkDevice device)
         auto resolved = reinterpret_cast<PFN_vkCmdBlitImage>(vkGetDeviceProcAddr(device, "vkCmdBlitImage"));
         if (resolved != nullptr)
             vkCmdBlitImage = resolved;
+    }
+    if (vkGetDeviceProcAddr != nullptr) {
+        auto resolved = reinterpret_cast<PFN_vkCmdClearAttachments>(vkGetDeviceProcAddr(device, "vkCmdClearAttachments"));
+        if (resolved != nullptr)
+            vkCmdClearAttachments = resolved;
     }
     if (vkGetDeviceProcAddr != nullptr) {
         auto resolved = reinterpret_cast<PFN_vkCmdClearColorImage>(vkGetDeviceProcAddr(device, "vkCmdClearColorImage"));

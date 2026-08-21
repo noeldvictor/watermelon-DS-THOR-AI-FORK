@@ -24,6 +24,7 @@
 
 #include "Savestate.h"
 #include "FIFO.h"
+#include "VulkanPipelineProfile.h"
 
 namespace melonDS
 {
@@ -85,6 +86,15 @@ struct Polygon
 class Renderer3D;
 class NDS;
 
+struct CaptureSourceIdentity
+{
+    bool Valid = false;
+    u64 Sequence = 0;
+    u32 PolygonCount = 0;
+    u32 CaptureCnt = 0;
+    bool ScreenSwap = false;
+};
+
 class GPU3D
 {
 public:
@@ -113,6 +123,8 @@ public:
     void SetRenderXPos(u16 xpos) noexcept;
     [[nodiscard]] u16 GetRenderXPos() const noexcept { return RenderXPos; }
     u32* GetLine(int line) noexcept;
+    [[nodiscard]] bool GetLastServedCaptureSourceIdentity(
+        CaptureSourceIdentity& outIdentity) const noexcept;
 
     void WriteToGXFIFO(u32 val) noexcept;
 
@@ -356,8 +368,23 @@ public:
     virtual void SetupAccelFrame() {}
     virtual void PrepareCaptureFrame() {}
     virtual void BeginCaptureFrame() {}
-    virtual void SetCaptureScreenSwapHint(bool screenSwap) { (void)screenSwap; }
+    virtual void SetCaptureScreenSwapHint(bool screenSwap, u32 captureCnt, u32 displayCnt)
+    {
+        (void)screenSwap;
+        (void)captureCnt;
+        (void)displayCnt;
+    }
+    [[nodiscard]] virtual bool GetLastServedCaptureSourceIdentity(
+        CaptureSourceIdentity& outIdentity) const noexcept
+    {
+        outIdentity = {};
+        return false;
+    }
     [[nodiscard]] virtual bool UsesStructured2DMetadata() const noexcept { return false; }
+    [[nodiscard]] virtual VulkanPipelineProfile GetVulkanPipelineProfile() const noexcept
+    {
+        return VulkanPipelineProfile::Compatibility;
+    }
     virtual void SetOutputTexture(int buffer, u32 texture) {}
     virtual void BindOutputTexture(int buffer) {}
 

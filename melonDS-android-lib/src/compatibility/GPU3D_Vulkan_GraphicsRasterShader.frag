@@ -24,25 +24,13 @@
 #define MELONDS_FAST_OPAQUE_FULL_ALPHA 0
 #endif
 
-#ifndef MELONDS_FAST_FLOAT_MODULATE
-#define MELONDS_FAST_FLOAT_MODULATE 0
-#endif
-
-#ifndef MELONDS_COLOR_ONLY
-#define MELONDS_COLOR_ONLY 0
-#endif
-
-const uint MAX_TEXTURE_DESCRIPTORS = 256u;
+const uint MAX_TEXTURE_DESCRIPTORS = 128u;
 
 layout(constant_id = 0) const uint DEPTH_INTERPOLATION_MODE = 0u;
 layout(constant_id = 1) const uint TRANSLUCENT_PASS = 0u;
 layout(constant_id = 2) const uint EDGE_MARK_PASS = 0u;
-// HD texture sampling is opt-in per pipeline so drivers can prune the
-// scaled sampling path entirely while it is unused.
-layout(constant_id = 3) const uint HD_TEXTURE_SAMPLING = 0u;
 
 layout(set = 0, binding = 1) uniform usampler2DArray texArrays[MAX_TEXTURE_DESCRIPTORS];
-layout(set = 0, binding = 6) uniform sampler2DArray normTexArrays[MAX_TEXTURE_DESCRIPTORS];
 
 layout(set = 0, binding = 2, std430) readonly buffer ToonTableBuffer
 {
@@ -78,9 +66,8 @@ layout(location = 4) flat in uvec4 fTriInfo0;
 layout(location = 5) flat in uvec4 fTriInfo1;
 
 layout(location = 0) out vec4 oColor;
-#if MELONDS_COLOR_ONLY == 0
 layout(location = 1) out vec4 oAttr;
-#endif
+layout(location = 2) out float oDepthValue;
 
 const uint TRI_FLAG_TEXTURED = 1u << 1u;
 const uint TRI_FLAG_DECAL = 1u << 2u;
@@ -260,135 +247,7 @@ uvec4 fetchTextureArrayTexel(uint descriptorIndex, ivec3 coord)
         case 125u: return texelFetch(texArrays[125], coord, 0);
         case 126u: return texelFetch(texArrays[126], coord, 0);
         case 127u: return texelFetch(texArrays[127], coord, 0);
-        case 128u: return texelFetch(texArrays[128], coord, 0);
-        case 129u: return texelFetch(texArrays[129], coord, 0);
-        case 130u: return texelFetch(texArrays[130], coord, 0);
-        case 131u: return texelFetch(texArrays[131], coord, 0);
-        case 132u: return texelFetch(texArrays[132], coord, 0);
-        case 133u: return texelFetch(texArrays[133], coord, 0);
-        case 134u: return texelFetch(texArrays[134], coord, 0);
-        case 135u: return texelFetch(texArrays[135], coord, 0);
-        case 136u: return texelFetch(texArrays[136], coord, 0);
-        case 137u: return texelFetch(texArrays[137], coord, 0);
-        case 138u: return texelFetch(texArrays[138], coord, 0);
-        case 139u: return texelFetch(texArrays[139], coord, 0);
-        case 140u: return texelFetch(texArrays[140], coord, 0);
-        case 141u: return texelFetch(texArrays[141], coord, 0);
-        case 142u: return texelFetch(texArrays[142], coord, 0);
-        case 143u: return texelFetch(texArrays[143], coord, 0);
-        case 144u: return texelFetch(texArrays[144], coord, 0);
-        case 145u: return texelFetch(texArrays[145], coord, 0);
-        case 146u: return texelFetch(texArrays[146], coord, 0);
-        case 147u: return texelFetch(texArrays[147], coord, 0);
-        case 148u: return texelFetch(texArrays[148], coord, 0);
-        case 149u: return texelFetch(texArrays[149], coord, 0);
-        case 150u: return texelFetch(texArrays[150], coord, 0);
-        case 151u: return texelFetch(texArrays[151], coord, 0);
-        case 152u: return texelFetch(texArrays[152], coord, 0);
-        case 153u: return texelFetch(texArrays[153], coord, 0);
-        case 154u: return texelFetch(texArrays[154], coord, 0);
-        case 155u: return texelFetch(texArrays[155], coord, 0);
-        case 156u: return texelFetch(texArrays[156], coord, 0);
-        case 157u: return texelFetch(texArrays[157], coord, 0);
-        case 158u: return texelFetch(texArrays[158], coord, 0);
-        case 159u: return texelFetch(texArrays[159], coord, 0);
-        case 160u: return texelFetch(texArrays[160], coord, 0);
-        case 161u: return texelFetch(texArrays[161], coord, 0);
-        case 162u: return texelFetch(texArrays[162], coord, 0);
-        case 163u: return texelFetch(texArrays[163], coord, 0);
-        case 164u: return texelFetch(texArrays[164], coord, 0);
-        case 165u: return texelFetch(texArrays[165], coord, 0);
-        case 166u: return texelFetch(texArrays[166], coord, 0);
-        case 167u: return texelFetch(texArrays[167], coord, 0);
-        case 168u: return texelFetch(texArrays[168], coord, 0);
-        case 169u: return texelFetch(texArrays[169], coord, 0);
-        case 170u: return texelFetch(texArrays[170], coord, 0);
-        case 171u: return texelFetch(texArrays[171], coord, 0);
-        case 172u: return texelFetch(texArrays[172], coord, 0);
-        case 173u: return texelFetch(texArrays[173], coord, 0);
-        case 174u: return texelFetch(texArrays[174], coord, 0);
-        case 175u: return texelFetch(texArrays[175], coord, 0);
-        case 176u: return texelFetch(texArrays[176], coord, 0);
-        case 177u: return texelFetch(texArrays[177], coord, 0);
-        case 178u: return texelFetch(texArrays[178], coord, 0);
-        case 179u: return texelFetch(texArrays[179], coord, 0);
-        case 180u: return texelFetch(texArrays[180], coord, 0);
-        case 181u: return texelFetch(texArrays[181], coord, 0);
-        case 182u: return texelFetch(texArrays[182], coord, 0);
-        case 183u: return texelFetch(texArrays[183], coord, 0);
-        case 184u: return texelFetch(texArrays[184], coord, 0);
-        case 185u: return texelFetch(texArrays[185], coord, 0);
-        case 186u: return texelFetch(texArrays[186], coord, 0);
-        case 187u: return texelFetch(texArrays[187], coord, 0);
-        case 188u: return texelFetch(texArrays[188], coord, 0);
-        case 189u: return texelFetch(texArrays[189], coord, 0);
-        case 190u: return texelFetch(texArrays[190], coord, 0);
-        case 191u: return texelFetch(texArrays[191], coord, 0);
-        case 192u: return texelFetch(texArrays[192], coord, 0);
-        case 193u: return texelFetch(texArrays[193], coord, 0);
-        case 194u: return texelFetch(texArrays[194], coord, 0);
-        case 195u: return texelFetch(texArrays[195], coord, 0);
-        case 196u: return texelFetch(texArrays[196], coord, 0);
-        case 197u: return texelFetch(texArrays[197], coord, 0);
-        case 198u: return texelFetch(texArrays[198], coord, 0);
-        case 199u: return texelFetch(texArrays[199], coord, 0);
-        case 200u: return texelFetch(texArrays[200], coord, 0);
-        case 201u: return texelFetch(texArrays[201], coord, 0);
-        case 202u: return texelFetch(texArrays[202], coord, 0);
-        case 203u: return texelFetch(texArrays[203], coord, 0);
-        case 204u: return texelFetch(texArrays[204], coord, 0);
-        case 205u: return texelFetch(texArrays[205], coord, 0);
-        case 206u: return texelFetch(texArrays[206], coord, 0);
-        case 207u: return texelFetch(texArrays[207], coord, 0);
-        case 208u: return texelFetch(texArrays[208], coord, 0);
-        case 209u: return texelFetch(texArrays[209], coord, 0);
-        case 210u: return texelFetch(texArrays[210], coord, 0);
-        case 211u: return texelFetch(texArrays[211], coord, 0);
-        case 212u: return texelFetch(texArrays[212], coord, 0);
-        case 213u: return texelFetch(texArrays[213], coord, 0);
-        case 214u: return texelFetch(texArrays[214], coord, 0);
-        case 215u: return texelFetch(texArrays[215], coord, 0);
-        case 216u: return texelFetch(texArrays[216], coord, 0);
-        case 217u: return texelFetch(texArrays[217], coord, 0);
-        case 218u: return texelFetch(texArrays[218], coord, 0);
-        case 219u: return texelFetch(texArrays[219], coord, 0);
-        case 220u: return texelFetch(texArrays[220], coord, 0);
-        case 221u: return texelFetch(texArrays[221], coord, 0);
-        case 222u: return texelFetch(texArrays[222], coord, 0);
-        case 223u: return texelFetch(texArrays[223], coord, 0);
-        case 224u: return texelFetch(texArrays[224], coord, 0);
-        case 225u: return texelFetch(texArrays[225], coord, 0);
-        case 226u: return texelFetch(texArrays[226], coord, 0);
-        case 227u: return texelFetch(texArrays[227], coord, 0);
-        case 228u: return texelFetch(texArrays[228], coord, 0);
-        case 229u: return texelFetch(texArrays[229], coord, 0);
-        case 230u: return texelFetch(texArrays[230], coord, 0);
-        case 231u: return texelFetch(texArrays[231], coord, 0);
-        case 232u: return texelFetch(texArrays[232], coord, 0);
-        case 233u: return texelFetch(texArrays[233], coord, 0);
-        case 234u: return texelFetch(texArrays[234], coord, 0);
-        case 235u: return texelFetch(texArrays[235], coord, 0);
-        case 236u: return texelFetch(texArrays[236], coord, 0);
-        case 237u: return texelFetch(texArrays[237], coord, 0);
-        case 238u: return texelFetch(texArrays[238], coord, 0);
-        case 239u: return texelFetch(texArrays[239], coord, 0);
-        case 240u: return texelFetch(texArrays[240], coord, 0);
-        case 241u: return texelFetch(texArrays[241], coord, 0);
-        case 242u: return texelFetch(texArrays[242], coord, 0);
-        case 243u: return texelFetch(texArrays[243], coord, 0);
-        case 244u: return texelFetch(texArrays[244], coord, 0);
-        case 245u: return texelFetch(texArrays[245], coord, 0);
-        case 246u: return texelFetch(texArrays[246], coord, 0);
-        case 247u: return texelFetch(texArrays[247], coord, 0);
-        case 248u: return texelFetch(texArrays[248], coord, 0);
-        case 249u: return texelFetch(texArrays[249], coord, 0);
-        case 250u: return texelFetch(texArrays[250], coord, 0);
-        case 251u: return texelFetch(texArrays[251], coord, 0);
-        case 252u: return texelFetch(texArrays[252], coord, 0);
-        case 253u: return texelFetch(texArrays[253], coord, 0);
-        case 254u: return texelFetch(texArrays[254], coord, 0);
-        case 255u: return texelFetch(texArrays[255], coord, 0);
-        default: return texelFetch(texArrays[255], coord, 0);
+        default: return texelFetch(texArrays[127], coord, 0);
     }
 #endif
 }
@@ -418,32 +277,6 @@ int wrapTexelCoord(int coord, int size, bool repeat, bool mirror)
     }
 
     return coord;
-}
-
-// HD texture support: the size fields carry the storage texel scale
-// (texWidth bits 12..14) and the upload filter mode (texHeight bits 12..15).
-// Scaled textures are sampled bilinearly in HD texel space with wrap, mirror
-// and clamp handling that matches the native path.
-int positiveModInt(int value, int modulo)
-{
-    int result = value % modulo;
-    return result < 0 ? result + modulo : result;
-}
-
-int wrapHdTexelCoord(int coord, int size, int scale, bool repeat, bool mirror)
-{
-    int hdSize = size * scale;
-    if (repeat)
-    {
-        if (mirror)
-        {
-            int period = hdSize * 2;
-            int wrapped = positiveModInt(coord, period);
-            return wrapped >= hdSize ? (period - 1) - wrapped : wrapped;
-        }
-        return positiveModInt(coord, hdSize);
-    }
-    return clamp(coord, 0, hdSize - 1);
 }
 
 Color6A5 unpackToonColor(uint shadeIndex)
@@ -624,10 +457,6 @@ Color6A5 sampleTexture(uint polyAttr)
     uint texHeight = fTriInfo1.x;
     uint texParam = fTriInfo1.y;
 #endif
-    uint texelScale = (texWidth >> 12u) & 0xFu;
-    uint hdFilterMode = (texHeight >> 12u) & 0xFu;
-    texWidth &= 0xFFFu;
-    texHeight &= 0xFFFu;
     vec2 texcoord = fTexcoord;
 
 #if MELONDS_FAST_OPAQUE_MODULATE == 0
@@ -669,55 +498,13 @@ Color6A5 sampleTexture(uint polyAttr)
     }
 #endif
 
-    if (HD_TEXTURE_SAMPLING != 0u && texelScale > 1u)
-    {
-        int scale = int(texelScale);
-        vec2 hdCoord = (texcoord * float(scale)) - vec2(0.5);
-        ivec2 hdBase = ivec2(floor(hdCoord));
-        vec2 hdFrac = hdCoord - vec2(hdBase);
-        if (hdFilterMode == 15u)
-            // nearest-expanded native content: pick the nearest HD texel,
-            // which reproduces native nearest sampling exactly
-            hdFrac = step(vec2(0.5), hdFrac);
-        else if (hdFilterMode == 10u)
-            hdFrac = hdFrac * hdFrac * hdFrac * (hdFrac * (hdFrac * 6.0 - 15.0) + 10.0);
-        else if (hdFilterMode == 2u)
-            hdFrac = hdFrac * hdFrac * (vec2(3.0) - (vec2(2.0) * hdFrac));
-
-        int x0 = wrapHdTexelCoord(hdBase.x, int(texWidth), scale, repeatS, mirrorS);
-        int x1 = wrapHdTexelCoord(hdBase.x + 1, int(texWidth), scale, repeatS, mirrorS);
-        int y0 = wrapHdTexelCoord(hdBase.y, int(texHeight), scale, repeatT, mirrorT);
-        int y1 = wrapHdTexelCoord(hdBase.y + 1, int(texHeight), scale, repeatT, mirrorT);
-        int layer = int(texLayer);
-
-        vec4 c00 = vec4(fetchTextureArrayTexel(texArrayIndex, ivec3(x0, y0, layer)));
-        vec4 c10 = vec4(fetchTextureArrayTexel(texArrayIndex, ivec3(x1, y0, layer)));
-        vec4 c01 = vec4(fetchTextureArrayTexel(texArrayIndex, ivec3(x0, y1, layer)));
-        vec4 c11 = vec4(fetchTextureArrayTexel(texArrayIndex, ivec3(x1, y1, layer)));
-        vec4 blended = mix(mix(c00, c10, hdFrac.x), mix(c01, c11, hdFrac.x), hdFrac.y);
-
-        Color6A5 hdColor;
-        hdColor.r = clamp6(int(blended.r + 0.5));
-        hdColor.g = clamp6(int(blended.g + 0.5));
-        hdColor.b = clamp6(int(blended.b + 0.5));
-        hdColor.a = clamp5(int(blended.a + 0.5));
-        return hdColor;
-    }
-
     int sampleS = int(floor(texcoord.x));
     int sampleT = int(floor(texcoord.y));
 
-#if MELONDS_FAST_OPAQUE_MODULATE != 0 && MELONDS_FAST_TEXTURE_PUSH_CONSTANTS != 0
-    vec2 sampledTexelCenter = vec2(float(sampleS) + 0.5, float(sampleT) + 0.5);
-    vec2 sampledUv = sampledTexelCenter / vec2(float(texWidth), float(texHeight));
-    vec4 normalizedTexel = texture(normTexArrays[texArrayIndex], vec3(sampledUv, float(texLayer)));
-    uvec4 texel = uvec4(clamp(floor(normalizedTexel * 255.0 + vec4(0.5)), vec4(0.0), vec4(255.0)));
-#else
     sampleS = wrapTexelCoord(sampleS, int(texWidth), repeatS, mirrorS);
     sampleT = wrapTexelCoord(sampleT, int(texHeight), repeatT, mirrorT);
 
     uvec4 texel = fetchTextureArrayTexel(texArrayIndex, ivec3(sampleS, sampleT, int(texLayer)));
-#endif
 #if MELONDS_FAST_OPAQUE_MODULATE == 0
     if (usesPaletteUiAlphaHoleFill(flags, polyAttr, texParam)
         && (texel.a & 0x1Fu) == 0u)
@@ -747,20 +534,6 @@ Color6A5 sampleTexture(uint polyAttr)
 #endif
 }
 
-#if MELONDS_FAST_FLOAT_MODULATE != 0
-vec3 sampleFastNormalizedTexel()
-{
-    uint texLayer = (pc.variantKey >> 16u) & 0xFFFFu;
-    uint texArrayIndex = pc.variantKey & 0xFFFFu;
-    uint texHeight = (pc.passIndex >> 16u) & 0xFFFFu;
-    uint texWidth = pc.passIndex & 0xFFFFu;
-    vec2 sampledTexelCenter = floor(fTexcoord) + vec2(0.5);
-    vec2 sampledUv = sampledTexelCenter / vec2(float(texWidth), float(texHeight));
-    vec4 normalizedTexel = texture(normTexArrays[texArrayIndex], vec3(sampledUv, float(texLayer)));
-    return clamp(normalizedTexel.rgb * 255.0, vec3(0.0), vec3(63.0));
-}
-#endif
-
 vec4 encodeColor(Color6A5 color)
 {
     return vec4(
@@ -781,24 +554,6 @@ vec4 encodeColorDsTranslucentBlendAlpha(Color6A5 color)
 
 void main()
 {
-#if MELONDS_FAST_FLOAT_MODULATE != 0
-    uint fastPolyAttr = pc.depthBlendMode;
-    uint fastPolyId = (fastPolyAttr >> 24u) & 0x3Fu;
-    float fastFogFlag = ((fastPolyAttr & (1u << 15u)) != 0u) ? 0.5 : 0.0;
-    vec3 tex6 = sampleFastNormalizedTexel();
-    vec3 color6 = clamp(fColor.rgb * 63.0, vec3(0.0), vec3(63.0));
-    vec3 out6 = floor((((tex6 + vec3(1.0)) * (color6 + vec3(1.0))) - vec3(1.0)) * (1.0 / 64.0));
-    oColor = vec4(clamp(out6 * (1.0 / 63.0), vec3(0.0), vec3(1.0)), 1.0);
-#if MELONDS_COLOR_ONLY == 0
-    oAttr = vec4(float(fastPolyId) * (1.0 / 63.0), fastFogFlag, 0.0, 1.0);
-#endif
-#if MELONDS_NO_FRAG_DEPTH == 0
-    float fastDepth = DEPTH_INTERPOLATION_MODE != 0u ? fDepthPerspective : fDepthLinear;
-    gl_FragDepth = fastDepth;
-#endif
-    return;
-#endif
-
 #if MELONDS_FAST_OPAQUE_MODULATE == 0
     uint flags = fTriInfo0.x;
 #endif
@@ -911,11 +666,10 @@ void main()
             discard;
 
         oColor = vec4(0.0);
-#if MELONDS_COLOR_ONLY == 0
         oAttr = vec4(0.0, 1.0, 0.0, 1.0);
-#endif
 
         float edgeDepth = DEPTH_INTERPOLATION_MODE != 0u ? fDepthPerspective : fDepthLinear;
+        oDepthValue = edgeDepth;
 #if MELONDS_NO_FRAG_DEPTH == 0
         gl_FragDepth = edgeDepth;
 #endif
@@ -931,13 +685,11 @@ void main()
         if (usesPaletteUiAlphaHoleFill(flags, polyAttr, fTriInfo1.y))
             oColor = encodeColorDsTranslucentBlendAlpha(sourceColor);
         else
-            oColor = encodeColorDsTranslucentBlendAlpha(sourceColor);
+            oColor = encodeColor(sourceColor);
 #else
-        oColor = encodeColorDsTranslucentBlendAlpha(sourceColor);
+        oColor = encodeColor(sourceColor);
 #endif
-#if MELONDS_COLOR_ONLY == 0
         oAttr = vec4(0.0, 0.0, 0.0, 1.0);
-#endif
     }
     else
     {
@@ -947,14 +699,13 @@ void main()
 #endif
 
         uint polyId = (polyAttr >> 24u) & 0x3Fu;
-        float fogFlag = ((polyAttr & (1u << 15u)) != 0u) ? 0.5 : 0.0;
+        float fogFlag = ((polyAttr & (1u << 15u)) != 0u) ? 1.0 : 0.0;
         oColor = encodeColor(sourceColor);
-#if MELONDS_COLOR_ONLY == 0
-        oAttr = vec4(float(polyId) * (1.0 / 63.0), fogFlag, 0.0, 1.0);
-#endif
+        oAttr = vec4(float(polyId) * (1.0 / 63.0), 0.0, fogFlag, 1.0);
     }
 
     float depth = DEPTH_INTERPOLATION_MODE != 0u ? fDepthPerspective : fDepthLinear;
+    oDepthValue = depth;
 #if MELONDS_NO_FRAG_DEPTH == 0
     gl_FragDepth = depth;
 #endif

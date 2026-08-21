@@ -54,17 +54,68 @@ vec3 edgeColorForPolyId(int polyid)
     return unpackEdgeColor(pc.edgeColorPacked[uint(polyid) >> 3u]);
 }
 
+float unpackFogDensity(uint index)
+{
+    uint clampedIndex = min(index, 33u);
+    uint packedWord = pc.fogDensityPacked[clampedIndex / 4u];
+    uint packedShift = (clampedIndex % 4u) * 8u;
+    return float((packedWord >> packedShift) & 0xFFu);
+}
+
+float calculateFogDensity(float depth)
+{
+    int idepth = int(depth * 16777216.0);
+    int densityid;
+    int densityfrac;
+
+    if (idepth < int(pc.fogOffset))
+    {
+        densityid = 0;
+        densityfrac = 0;
+    }
+    else
+    {
+        uint udepth = uint(idepth) - pc.fogOffset;
+        udepth = (udepth >> 2u) << pc.fogShift;
+
+        densityid = int(udepth >> 17u);
+        if (densityid >= 32)
+        {
+            densityid = 32;
+            densityfrac = 0;
+        }
+        else
+        {
+            densityfrac = int(udepth & 0x1FFFFu);
+        }
+    }
+
+    float density0 = unpackFogDensity(uint(densityid));
+    float density1 = unpackFogDensity(uint(densityid + 1));
+    return mix(density0, density1, float(densityfrac) / 131072.0) * (1.0 / 128.0);
+}
+
+vec3 unpackFogColor()
+{
+    return vec3(
+        float(pc.fogColor & 0x1Fu),
+        float((pc.fogColor >> 5u) & 0x1Fu),
+        float((pc.fogColor >> 10u) & 0x1Fu)) * (1.0 / 31.0);
+}
+
 void main()
 {
     ivec2 coord = ivec2(gl_FragCoord.xy);
     int scale = 1;
 
-    vec4 ret = vec4(0.0);
     vec4 depth = texelFetch(DepthBuffer, coord, 0);
     vec4 attr = texelFetch(AttrBuffer, coord, 0);
+
+    float edgeAlpha = 0.0;
+    vec3 edgeColor = vec3(0.0);
     int polyid = int(attr.r * 63.0);
 
-    if (attr.g > 0.75)
+    if (attr.g != 0.0)
     {
         vec4 depthU = texelFetch(DepthBuffer, coord + ivec2(0, -scale), 0);
         vec4 attrU = texelFetch(AttrBuffer, coord + ivec2(0, -scale), 0);
@@ -80,10 +131,15 @@ void main()
             || isgood(attrL, depthL.r, polyid, depth.r)
             || isgood(attrR, depthR.r, polyid, depth.r))
         {
-            ret.rgb = edgeColorForPolyId(polyid);
-            ret.a = ((pc.dispCnt & (1u << 4u)) != 0u) ? 0.5 : 1.0;
+            edgeColor = edgeColorForPolyId(polyid);
+            edgeAlpha = ((pc.dispCnt & (1u << 4u)) != 0u) ? 0.5 : 1.0;
         }
     }
 
-    oColor = ret;
+    float fogDensity = attr.b != 0.0 ? calculateFogDensity(depth.r) : 0.0;
+    vec3 premultiplied =
+        edgeColor * edgeAlpha * (1.0 - fogDensity)
+        + unpackFogColor() * fogDensity;
+    float alpha = edgeAlpha + fogDensity - (edgeAlpha * fogDensity);
+    oColor = vec4(premultiplied, alpha);
 }

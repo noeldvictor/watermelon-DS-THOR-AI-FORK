@@ -1153,6 +1153,11 @@ void GPU3D::SubmitPolygon() noexcept
             vtx->HiresPosition[0] = posX & 0x1FFF;
             vtx->HiresPosition[1] = posY & 0xFFF;
         }
+        else
+        {
+            vtx->HiresPosition[0] = 0;
+            vtx->HiresPosition[1] = 0;
+        }
     }
 
     // zero-dot W check:
@@ -2489,6 +2494,7 @@ void GPU3D::VBlank() noexcept
 
                 RenderNumPolygons = NumPolygons;
                 RenderFrameIdentical = false;
+
             }
             else
             {
@@ -2582,6 +2588,17 @@ u32* GPU3D::GetLine(int line) noexcept
     }
 
     return ScrolledLine;
+}
+
+bool GPU3D::GetLastServedCaptureSourceIdentity(
+    CaptureSourceIdentity& outIdentity) const noexcept
+{
+    if (AbortFrame || CurrentRenderer == nullptr || RenderXPos != 0u)
+    {
+        outIdentity = {};
+        return false;
+    }
+    return CurrentRenderer->GetLastServedCaptureSourceIdentity(outIdentity);
 }
 
 bool GPU3D::IsRendererAccelerated() const noexcept
@@ -3009,4 +3026,3 @@ Renderer3D::Renderer3D(bool Accelerated)
 { }
 
 }
-
