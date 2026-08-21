@@ -18,6 +18,8 @@ data class LibrashaderAbiTarget(
 )
 
 android {
+    testBuildType = "release"
+
     signingConfigs {
         create("release") {
             val props = gradleLocalProperties(rootDir, providers)
@@ -134,7 +136,7 @@ android {
 androidComponents {
     onVariants(selector().withName("gitHubProdDebug")) { variant ->
         // Keep prod-debug distinct from other debug/release variants.
-        variant.manifestPlaceholders.put("appName", "debug melonDualDS")
+        variant.manifestPlaceholders.put("appName", "debug WatermelonDS")
         variant.sources.res?.addStaticSourceDirectory("src/nightly/res")
     }
 }
@@ -159,12 +161,15 @@ val vulkanShaderSources = listOf(
     rootProject.file("melonDS-android-lib/src/GPU3D_Vulkan_GraphicsEdgeFogShader.frag"),
     rootProject.file("melonDS-android-lib/src/GPU3D_Vulkan_GraphicsFogShader.frag"),
     rootProject.file("app/src/main/cpp/renderer/VulkanCompositorShader.comp"),
+    rootProject.file("app/src/main/cpp/renderer/VulkanCompositorCompatibilityShader.comp"),
     rootProject.file("app/src/main/cpp/renderer/VulkanAccumulate3dShader.comp"),
     rootProject.file("app/src/main/cpp/renderer/VulkanPlaneFilterShader.comp"),
     rootProject.file("app/src/main/cpp/renderer/VulkanScaleFXShader.comp"),
     rootProject.file("app/src/main/cpp/renderer/VulkanPlaneOverlayShader.comp"),
+    rootProject.file("app/src/main/cpp/renderer/VulkanAccumulate3dCompatibilityShader.comp"),
     rootProject.file("app/src/main/cpp/renderer/VulkanSurfacePresenter.vert"),
     rootProject.file("app/src/main/cpp/renderer/VulkanSurfacePresenter.frag"),
+    rootProject.file("app/src/main/cpp/renderer/VulkanSurfacePresenterCompatibility.frag"),
 )
 
 val vulkanShaderHeaders = listOf(
@@ -194,6 +199,7 @@ val vulkanShaderHeaders = listOf(
     rootProject.file("melonDS-android-lib/src/GPU3D_Vulkan_GraphicsEdgeFogShaderData.h"),
     rootProject.file("melonDS-android-lib/src/GPU3D_Vulkan_GraphicsFogShaderData.h"),
     rootProject.file("app/src/main/cpp/renderer/VulkanCompositorShaderData.h"),
+    rootProject.file("app/src/main/cpp/renderer/VulkanCompositorCompatibilityShaderData.h"),
     rootProject.file("app/src/main/cpp/renderer/VulkanAccumulate3dShaderData.h"),
     rootProject.file("app/src/main/cpp/renderer/VulkanPlaneFilterMode1ShaderData.h"),
     rootProject.file("app/src/main/cpp/renderer/VulkanPlaneFilterMode2ShaderData.h"),
@@ -213,8 +219,10 @@ val vulkanShaderHeaders = listOf(
     rootProject.file("app/src/main/cpp/renderer/VulkanScaleFXPass3ShaderData.h"),
     rootProject.file("app/src/main/cpp/renderer/VulkanScaleFXPass4ShaderData.h"),
     rootProject.file("app/src/main/cpp/renderer/VulkanPlaneOverlayShaderData.h"),
+    rootProject.file("app/src/main/cpp/renderer/VulkanAccumulate3dCompatibilityShaderData.h"),
     rootProject.file("app/src/main/cpp/renderer/VulkanSurfacePresenterVertexShaderData.h"),
     rootProject.file("app/src/main/cpp/renderer/VulkanSurfacePresenterFragmentShaderData.h"),
+    rootProject.file("app/src/main/cpp/renderer/VulkanSurfacePresenterCompatibilityFragmentShaderData.h"),
 )
 
 fun resolveBashExecutable(): String {
@@ -256,6 +264,8 @@ val checkVulkanSpirv by tasks.registering(Exec::class) {
 
 val librashaderRepoUrl = "https://github.com/SnowflakePowered/librashader.git"
 val librashaderPinnedRevision = "76462c030b75c4f2d56e5386c3d4d7d1128318b8"
+val librashaderCargoFeatures = "runtime-opengl,runtime-vulkan,stable"
+val librashaderPatchDir = layout.projectDirectory.dir("librashader-patches")
 val librashaderSourceDir = layout.buildDirectory.dir("librashader/src")
 val librashaderOutputDir = layout.buildDirectory.dir("generated/librashader")
 val librashaderSourceRevisionFile = librashaderSourceDir.map { it.file(".melonds-librashader-revision") }
@@ -313,8 +323,13 @@ fun resolveBuildTool(tool: String): String {
         return envOverride.absolutePath
     }
 
+    val toolCandidates = if (System.getProperty("os.name").lowercase().contains("windows")) {
+        listOf("$tool.exe", "$tool.cmd", "$tool.bat", tool)
+    } else {
+        listOf(tool)
+    }
     val executable = librashaderToolSearchDirs()
-        .map { it.resolve(tool) }
+        .flatMap { dir -> toolCandidates.map { dir.resolve(it) } }
         .firstOrNull { it.isFile && it.canExecute() }
 
     check(executable != null) {
@@ -381,6 +396,8 @@ fun androidNdkHostTag(): String {
     }
 }
 
+val isWindowsHost = System.getProperty("os.name").lowercase().contains("windows")
+
 fun rustTargetEnvKey(rustTarget: String): String {
     return rustTarget.uppercase().replace("-", "_")
 }
@@ -391,6 +408,7 @@ val prepareLibrashaderSource by tasks.registering {
 
     inputs.property("librashaderRepoUrl", librashaderRepoUrl)
     inputs.property("librashaderPinnedRevision", librashaderPinnedRevision)
+    inputs.dir(librashaderPatchDir)
     outputs.file(librashaderSourceRevisionFile)
 
     doLast {
@@ -405,7 +423,16 @@ val prepareLibrashaderSource by tasks.registering {
         }
 
         runBuildCommand(listOf(git, "-C", sourceDir.absolutePath, "fetch", "--depth=1", "origin", librashaderPinnedRevision))
-        runBuildCommand(listOf(git, "-C", sourceDir.absolutePath, "checkout", "--detach", librashaderPinnedRevision))
+        runBuildCommand(listOf(git, "-C", sourceDir.absolutePath, "checkout", "--force", "--detach", librashaderPinnedRevision))
+
+        val patches = librashaderPatchDir.asFile
+            .listFiles { file -> file.isFile && file.name.endsWith(".patch") }
+            ?.sortedBy { it.name }
+            .orEmpty()
+        patches.forEach { patch ->
+            logger.lifecycle("Applying librashader patch ${patch.name}")
+            runBuildCommand(listOf(git, "-C", sourceDir.absolutePath, "apply", patch.absolutePath))
+        }
 
         librashaderSourceRevisionFile.get().asFile.writeText("${librashaderPinnedRevision}\n")
     }
@@ -454,12 +481,18 @@ val copyLibrashaderAbiArtifacts = librashaderAbiTargets.map { abiTarget ->
         val targetEnvKey = rustTargetEnvKey(abiTarget.rustTarget)
         val ndkHome = resolveAndroidNdkHome()
         val toolchain = ndkHome.resolve("toolchains/llvm/prebuilt/${hostTag}/bin")
-        val isWindowsHost = hostTag == "windows-x86_64"
-        val clang = toolchain.resolve("${abiTarget.clangPrefix}${AppConfig.minSdkVersion}-clang" + if (isWindowsHost) ".cmd" else "")
-        val clangCpp = toolchain.resolve("${abiTarget.clangPrefix}${AppConfig.minSdkVersion}-clang++" + if (isWindowsHost) ".cmd" else "")
-        val llvmAr = toolchain.resolve("llvm-ar" + if (isWindowsHost) ".exe" else "")
+        // derive the host from the NDK host tag rather than the JVM os.name:
+        // the toolchain layout is what decides the suffixes
+        val isWindowsNdkHost = hostTag == "windows-x86_64"
+        val clangSuffix = if (isWindowsNdkHost) ".cmd" else ""
+        val exeSuffix = if (isWindowsNdkHost) ".exe" else ""
+        val clang = toolchain.resolve("${abiTarget.clangPrefix}${AppConfig.minSdkVersion}-clang${clangSuffix}")
+        val clangCpp = toolchain.resolve("${abiTarget.clangPrefix}${AppConfig.minSdkVersion}-clang++${clangSuffix}")
+        val llvmAr = toolchain.resolve("llvm-ar${exeSuffix}")
 
         inputs.property("librashaderPinnedRevision", librashaderPinnedRevision)
+        inputs.property("librashaderCargoFeatures", librashaderCargoFeatures)
+        inputs.dir(librashaderPatchDir)
         outputs.file(librashaderSourceDir.map {
             it.file("target/${abiTarget.rustTarget}/optimized/liblibrashader_capi.so")
         })
@@ -477,7 +510,7 @@ val copyLibrashaderAbiArtifacts = librashaderAbiTargets.map { abiTarget ->
             abiTarget.rustTarget,
             "--no-default-features",
             "--features",
-            "runtime-vulkan,stable",
+            librashaderCargoFeatures,
         )
         environment("CC_${abiTarget.rustTarget.replace("-", "_")}", clang.absolutePath)
         environment("CXX_${abiTarget.rustTarget.replace("-", "_")}", clangCpp.absolutePath)

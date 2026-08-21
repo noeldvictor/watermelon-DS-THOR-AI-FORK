@@ -2,6 +2,7 @@
 #define VULKANSURFACEPRESENTER_H
 
 #include <android/native_window.h>
+#include <array>
 #include <memory>
 #include <string>
 #include <utility>
@@ -11,6 +12,7 @@
 #include <vulkan/vulkan.h>
 
 #include "VulkanPerfStats.h"
+#include "VulkanPipelineProfile.h"
 #include "renderer/FrameQueue.h"
 #include "renderer/VulkanRetroArchFilterChain.h"
 #include "renderer/VulkanFilterMode.h"
@@ -18,7 +20,6 @@
 
 namespace MelonDSAndroid
 {
-
 struct VulkanPresenterRect
 {
     bool enabled = false;
@@ -101,6 +102,7 @@ struct VulkanPresenterPacingStats
 
 class VulkanOutput;
 struct VulkanCompositionInputs;
+struct VulkanVisibleCompositorRegion;
 
 class VulkanSurfacePresenter
 {
@@ -179,12 +181,24 @@ private:
         VkCommandPool commandPool = VK_NULL_HANDLE;
         VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
         VkFence fence = VK_NULL_HANDLE;
+        VkSemaphore filterFinishedSemaphore = VK_NULL_HANDLE;
+        bool filterSignalPending = false;
         VulkanRetroArchFilterChain topChain;
         VulkanRetroArchFilterChain bottomChain;
         std::string failedConfigKey;
         std::string lastSizingLogKey;
         u64 frameCount = 0;
+        bool pendingClearHistory = false;
+        melonDS::VulkanPipelineProfile pipelineProfile =
+            melonDS::VulkanPipelineProfile::Compatibility;
         bool initialized = false;
+    };
+
+    struct VisibleCompositeResources
+    {
+        std::array<RetroArchImageResource, 2> images;
+        u32 currentIndex = 0;
+        bool valid[2] = {false, false};
     };
 
     struct RetroArchSizing
@@ -192,8 +206,8 @@ private:
         bool nativeDisplayMode = false;
         bool clamped = false;
         u32 inputScale = 1;
-        u32 outputScale = 1;
-        u32 requestedOutputScale = 1;
+        u32 requestedOutputWidth = 0;
+        u32 requestedOutputHeight = 0;
         u32 maxLayoutWidth = 0;
         u32 maxLayoutHeight = 0;
         u32 sourceScreenWidth = 0;
@@ -215,8 +229,12 @@ private:
         VkImageLayout sampledImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         VkSampler sampledSampler = VK_NULL_HANDLE;
         VkImageView rendererImageView = VK_NULL_HANDLE;
+        VkImageView exactObjSourceImageView = VK_NULL_HANDLE;
         VkImageView previousTopRendererImageView = VK_NULL_HANDLE;
         VkImageView previousBottomRendererImageView = VK_NULL_HANDLE;
+        VkImageView topComposedCarryImageView = VK_NULL_HANDLE;
+        VkImageView bottomComposedCarryImageView = VK_NULL_HANDLE;
+        VkImageView bottomComp2OneShotCarryImageView = VK_NULL_HANDLE;
         VkBuffer topPackedBuffer = VK_NULL_HANDLE;
         VkBuffer bottomPackedBuffer = VK_NULL_HANDLE;
         VkBuffer capture3dBuffer = VK_NULL_HANDLE;
@@ -245,6 +263,7 @@ private:
 
         VkRenderPass renderPass = VK_NULL_HANDLE;
         VkPipeline pipeline = VK_NULL_HANDLE;
+        VkPipeline compatibilityPipeline = VK_NULL_HANDLE;
         VkCommandPool commandPool = VK_NULL_HANDLE;
         VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
         VkFence inFlightFence = VK_NULL_HANDLE;
@@ -271,6 +290,27 @@ private:
         DescriptorSetCacheState backgroundDescriptorCache{};
         bool cachedDirectPresent = false;
         bool cachedRetroArchApplied = false;
+        bool cachedVisibleCompositePresent = false;
+        bool cachedFastHighresOnlyTop = false;
+        bool cachedFastHighresOnlyBottom = false;
+        bool cachedFastHighresOverlay2DTop = false;
+        bool cachedFastHighresOverlay2DBottom = false;
+        bool cachedFastPacked2DOnlyTop = false;
+        bool cachedFastPacked2DOnlyBottom = false;
+        u32 cachedFastPacked2DOnlyLayerTop = 2u;
+        u32 cachedFastPacked2DOnlyLayerBottom = 2u;
+        u32 cachedTopOverlay2DMinX = 0;
+        u32 cachedTopOverlay2DMinY = 0;
+        u32 cachedTopOverlay2DMaxX = 0;
+        u32 cachedTopOverlay2DMaxY = 0;
+        u32 cachedBottomOverlay2DMinX = 0;
+        u32 cachedBottomOverlay2DMinY = 0;
+        u32 cachedBottomOverlay2DMaxX = 0;
+        u32 cachedBottomOverlay2DMaxY = 0;
+        bool cachedDirectTopCarryRequired = false;
+        bool cachedDirectBottomCarryRequired = false;
+        bool cachedDirectTopComposedCarryRequired = false;
+        bool cachedDirectBottomComposedCarryRequired = false;
         std::vector<DrawCall> cachedDrawCalls;
         VkQueryPool timestampQueryPool = VK_NULL_HANDLE;
         bool timestampPending = false;
@@ -280,6 +320,25 @@ private:
 
         BackgroundResource background{};
         RetroArchResources retroArch{};
+        VisibleCompositeResources visibleComposite{};
+        RetroArchImageResource topComposedCarry{};
+        RetroArchImageResource bottomComposedCarry{};
+        RetroArchImageResource bottomComp2OneShotCarry{};
+        bool topComposedCarryValid = false;
+        bool bottomComposedCarryValid = false;
+        bool bottomComp2OneShotCarryValid = false;
+        bool bottomComp2OneShotCarryClass4Valid = false;
+        u8 bottomComp2OneShotCarryClass4Phase = 0;
+        u64 bottomComp2OneShotCarryGeneration = 0;
+        u64 presentedGeneration = 0;
+        u64 topComposedCarryWriterGeneration = 0;
+        u8 topComposedCarryWriterPhase = 0;
+        bool pendingTopComposedCarryWritten = false;
+        u8 pendingTopComposedCarryWriterPhase = 0;
+        u64 bottomComposedCarryWriterGeneration = 0;
+        u8 bottomComposedCarryWriterPhase = 0;
+        bool pendingBottomComposedCarryWritten = false;
+        u8 pendingBottomComposedCarryWriterPhase = 0;
     };
 
 private:
@@ -290,11 +349,28 @@ private:
 
     bool createSurfaceStateResources(SurfaceState& surfaceState);
     void destroySurfaceStateResources(SurfaceState& surfaceState);
-    bool ensureSwapchain(SurfaceState& surfaceState);
+    bool ensureDirectCarryResources(
+        SurfaceState& surfaceState,
+        u32 scale,
+        bool ensureBottomComp2OneShot);
+    void destroyDirectCarryResources(SurfaceState& surfaceState);
+    bool directCarryReadyForInputs(const SurfaceState& surfaceState, const VulkanCompositionInputs& inputs) const;
+    bool ensureVisibleCompositeResources(SurfaceState& surfaceState);
+    void destroyVisibleCompositeResources(SurfaceState& surfaceState);
+    bool canUseVisibleComposite(const SurfaceState& surfaceState, const VulkanCompositionInputs& inputs) const;
+    u32 buildVisibleCompositeRegions(
+        const SurfaceState& surfaceState,
+        const VulkanCompositionInputs& inputs,
+        VulkanVisibleCompositorRegion* regions,
+        u32 maxRegionCount) const;
+    bool ensureSwapchain(SurfaceState& surfaceState, bool fastPathProfile);
     void destroySwapchain(SurfaceState& surfaceState);
     void recoverSwapchain(SurfaceState& surfaceState, const char* reason);
     bool createInFlightFence(SurfaceState& surfaceState, bool signaled);
     void destroyInFlightFence(SurfaceState& surfaceState);
+    void ensureSurfacePipelineCache();
+    void saveSurfacePipelineCache();
+    void destroySurfacePipelineCache();
     VkResult waitForSurfaceIdle(SurfaceState& surfaceState, u64 timeoutNs = UINT64_MAX);
     bool resetSurfaceInFlightFence(SurfaceState& surfaceState);
     bool createTimestampQueryPool(VkQueryPool& queryPool);
@@ -317,8 +393,10 @@ private:
         SurfaceState& surfaceState,
         const VulkanSurfaceConfig& config,
         const BackgroundResource* backgroundResource,
+        const VulkanCompositionInputs& inputs,
         bool directPresent,
         bool retroArchApplied,
+        bool visibleCompositePresent,
         std::vector<DrawCall>& drawCalls
     );
     bool recordSurfaceCommands(
@@ -327,9 +405,22 @@ private:
         const VulkanCompositionInputs& inputs,
         VkImage sampledImage,
         bool directPresent,
-        const std::vector<DrawCall>& drawCalls
+        const std::vector<DrawCall>& drawCalls,
+        bool bottomComp2OneShotStore,
+        bool bottomComp2OneShotConsume,
+        bool bottomClass4OneShotOverlaySource,
+        bool bottomClass4OneShotOverlayBridge,
+        bool bottomClass4OneShotOverlayMerge,
+        bool bottomClass4OneShotCarryWriter,
+        bool bottomClass4OneShotCarryConsumer
     );
-    bool submitSurfaceCommands(SurfaceState& surfaceState, u32 imageIndex, u64& presentCpuNs, u64& presentTimelineValueOut);
+    bool submitSurfaceCommands(
+        SurfaceState& surfaceState,
+        u32 imageIndex,
+        u64& presentCpuNs,
+        u64& presentTimelineValueOut,
+        bool& queueSubmitSucceededOut,
+        bool& presentAcceptedOut);
     bool ensureRetroArchResources(
         SurfaceState& surfaceState,
         u32 sourceScreenWidth,
@@ -337,9 +428,14 @@ private:
         u32 outputScreenWidth,
         u32 outputScreenHeight,
         u32 outputAtlasWidth,
-        u32 outputAtlasHeight);
+        u32 outputAtlasHeight,
+        melonDS::VulkanPipelineProfile pipelineProfile);
     void destroyRetroArchResources(SurfaceState& surfaceState);
-    bool createRetroArchImage(RetroArchImageResource& resource, u32 width, u32 height);
+    bool createRetroArchImage(
+        RetroArchImageResource& resource,
+        u32 width,
+        u32 height,
+        melonDS::VulkanPipelineProfile pipelineProfile);
     void destroyRetroArchImage(RetroArchImageResource& resource);
     RetroArchSizing calculateRetroArchSizing(const SurfaceState& surfaceState, u32 atlasWidth, u32 atlasHeight) const;
     void logRetroArchSizingIfNeeded(SurfaceState& surfaceState, const RetroArchSizing& sizing, u32 atlasWidth, u32 atlasHeight);
@@ -349,6 +445,7 @@ private:
         VkImageView sourceAtlasImageView,
         u32 atlasWidth,
         u32 atlasHeight,
+        melonDS::VulkanPipelineProfile pipelineProfile,
         VkImage& outputImage,
         VkImageView& outputImageView);
 
@@ -372,8 +469,11 @@ private:
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipelineCache surfacePipelineCache = VK_NULL_HANDLE;
+    std::string surfacePipelineCacheFile;
     VkShaderModule vertexShaderModule = VK_NULL_HANDLE;
     VkShaderModule fragmentShaderModule = VK_NULL_HANDLE;
+    VkShaderModule compatibilityFragmentShaderModule = VK_NULL_HANDLE;
     VkSampler nearestSampler = VK_NULL_HANDLE;
     VkSampler linearSampler = VK_NULL_HANDLE;
     PFN_vkResetQueryPoolEXT resetQueryPool = nullptr;
@@ -410,6 +510,8 @@ private:
     u64 presentedFrames = 0;
     u64 directPresentedFrames = 0;
     u64 fallbackPresentedFrames = 0;
+    std::array<u64, 21> presenterDrawModeCounts{};
+    u32 drawDebugLogsRemaining = 600;
     u64 fallbackReasonNeedsReadback = 0;
     u64 fallbackReasonValidationMode = 0;
     u64 fallbackReasonMissingHandles = 0;
@@ -417,6 +519,15 @@ private:
     int lastLoggedPresentPath = -1;
     u64 lastPresentPathLogNs = 0;
     u32 suppressedPresentPathTransitions = 0;
+    u64 fallbackReasonPostProcessFilter = 0;
+    u64 fallbackReasonSurfaceMultiplicity = 0;
+    u64 fallbackReasonDualHistory = 0;
+    u64 fallbackReasonUnsafeCarry = 0;
+    u64 fallbackReasonComposedReplay = 0;
+    u64 fallbackReasonDeferredHistory = 0;
+    u64 fallbackReasonCarryUnsupported = 0;
+    u64 fallbackReasonPackedFallback = 0;
+    u64 fallbackReasonComposedFallback = 0;
     std::unordered_set<u64> failedSwapchainConfigs;
     std::unordered_set<u64> loggedFailedSwapchainConfigs;
     bool lastPresentedDirect = true;

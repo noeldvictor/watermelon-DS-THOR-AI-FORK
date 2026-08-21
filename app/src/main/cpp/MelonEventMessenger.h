@@ -2,6 +2,7 @@
 #define MELONEVENTMESSENGER_H
 
 #include <Platform.h>
+#include <cstdint>
 #include "renderer/Renderer.h"
 
 namespace MelonDSAndroid
@@ -21,16 +22,64 @@ public:
     virtual void onAchievementUnprimed(long achievementId) = 0;
     virtual void onAchievementProgressUpdated(long achievementId, unsigned int current, unsigned int target, std::string progress) = 0;
     virtual void onAchievementProgressHidden(long achievementId) {}
-    virtual void onLeaderboardAttemptStarted(long leaderboardId) = 0;
-    virtual void onLeaderboardAttemptUpdated(long leaderboardId, std::string formattedValue) = 0;
-    virtual void onLeaderboardAttemptCanceled(long leaderboardId) = 0;
-    virtual void onLeaderboardTrackerHidden(long leaderboardId) {}
+    virtual void onLeaderboardAttemptStarted(long leaderboardId, uint64_t attemptId, uint64_t eventSequence) = 0;
+    virtual void onLeaderboardAttemptUpdated(
+        long leaderboardId,
+        uint64_t attemptId,
+        uint64_t eventSequence,
+        bool trackerShown,
+        std::string formattedValue
+    ) = 0;
+    virtual void onLeaderboardAttemptCanceled(long leaderboardId, uint64_t attemptId, uint64_t eventSequence) = 0;
+    virtual void onLeaderboardTrackerHidden(long leaderboardId, uint64_t attemptId, uint64_t eventSequence) {}
+    virtual void onLeaderboardAttemptSubmitted(long leaderboardId, uint64_t attemptId, uint64_t eventSequence, std::string trackerDisplay) = 0;
+    virtual void onLeaderboardScoreboard(
+        long leaderboardId,
+        uint64_t attemptId,
+        uint64_t eventSequence,
+        std::string submittedScore,
+        std::string bestScore,
+        uint32_t newRank,
+        uint32_t numEntries
+    ) = 0;
+    virtual void onLeaderboardSubmissionFailed(
+        long leaderboardId,
+        uint64_t attemptId,
+        uint64_t eventSequence,
+        int result,
+        std::string message
+    ) = 0;
+    virtual void onLeaderboardRuntimeReset(uint64_t attemptFloor) = 0;
     virtual void onLeaderboardAttemptCompleted(long leaderboardId, int value, std::string formattedValue) = 0;
     virtual void onAchievementGameCompleted(long subsetId) = 0;
     virtual void onAchievementSubsetCompleted(long subsetId) = 0;
     virtual void onRetroAchievementsServerError(std::string api, long relatedId, int result, std::string message) = 0;
     virtual void onRetroAchievementsDisconnected() = 0;
     virtual void onRetroAchievementsReconnected() = 0;
+    virtual void onRetroAchievementsPendingSubmissionAdded(
+        uint64_t submissionSessionId,
+        uint64_t submissionId,
+        uint64_t sequence,
+        int64_t createdAtEpochMs,
+        int submissionType,
+        long achievementId,
+        long leaderboardId,
+        uint64_t attemptId,
+        int32_t rawScore,
+        bool hardcore,
+        std::string formattedScore
+    ) = 0;
+    virtual void onRetroAchievementsPendingSubmissionResolved(
+        uint64_t submissionSessionId,
+        uint64_t submissionId,
+        int submissionType,
+        int resolution,
+        int result
+    ) = 0;
+    virtual void onRetroAchievementsPendingSubmissionBarrier(
+        uint64_t submissionSessionId,
+        uint64_t barrierId
+    ) = 0;
 };
 
 }

@@ -28,6 +28,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
 import kotlinx.serialization.json.encodeToStream
 import me.magnum.melonds.common.retroarch.RetroArchShaderPreset
+import me.magnum.melonds.common.retroarch.RetroArchShaderRootResolver
+import me.magnum.melonds.domain.model.RetroArchShaderSource
 import me.magnum.melonds.common.uridelegates.UriHandler
 import me.magnum.melonds.domain.model.AudioBitrate
 import me.magnum.melonds.domain.model.AudioInterpolation
@@ -54,6 +56,8 @@ import me.magnum.melonds.domain.model.SortingMode
 import me.magnum.melonds.domain.model.SortingOrder
 import me.magnum.melonds.domain.model.VideoFiltering
 import me.magnum.melonds.domain.model.VideoRenderer
+import me.magnum.melonds.domain.model.VulkanPipelineProfile
+import me.magnum.melonds.domain.model.resolveThreadedRendering
 import me.magnum.melonds.domain.model.VulkanDriverConfiguration
 import me.magnum.melonds.domain.model.VulkanDriverInfo
 import me.magnum.melonds.domain.model.VulkanDriverMode
@@ -62,6 +66,7 @@ import me.magnum.melonds.domain.model.input.SoftInputBehaviour
 import me.magnum.melonds.domain.model.layout.LayoutConfiguration
 import me.magnum.melonds.domain.model.rom.Rom
 import me.magnum.melonds.domain.model.rom.config.RomConfig
+import me.magnum.melonds.domain.model.retroachievements.RetroAchievementsOfflineBackend
 import me.magnum.melonds.domain.repositories.SettingsRepository
 import me.magnum.melonds.impl.dtos.input.ControllerConfigurationDto
 import me.magnum.melonds.impl.input.ControllerConfigurationFactory
@@ -82,7 +87,13 @@ class SharedPreferencesSettingsRepository(
     private val uriHandler: UriHandler,
     preferencesCoroutineScope: CoroutineScope,
     private val settingsBackupManager: SettingsBackupManager,
+    private val retroArchShaderLibraryManager: RetroArchShaderLibraryManager,
 ) : SettingsRepository, OnSharedPreferenceChangeListener {
+
+    private sealed interface ResolvedShaderRoot {
+        data class Saf(val uri: Uri) : ResolvedShaderRoot
+        data class Local(val dir: File) : ResolvedShaderRoot
+    }
 
     companion object {
         private const val TAG = "SPSettingsRepository"
@@ -101,6 +112,7 @@ class SharedPreferencesSettingsRepository(
             presetPath = null,
             sourceResolution = RetroArchShaderSourceResolution.VULKAN_IR,
             passCount = 0,
+            sourceBytes = 0,
             parameterOverrides = emptyMap(),
             clearHistory = false,
         )
@@ -160,6 +172,7 @@ class SharedPreferencesSettingsRepository(
         val filtering: VideoFiltering,
         val threadedRenderingEnabled: Boolean,
         val resolutionScaling: Int,
+        val vulkanPipelineProfile: VulkanPipelineProfile,
         val rendererDebugToolsEnabled: Boolean,
         val rendererDebugBgObjEnabled: Boolean,
         val rendererDebugLatchTraceEnabled: Boolean,
@@ -198,12 +211,14 @@ class SharedPreferencesSettingsRepository(
                 getVideoFiltering(),
                 isThreadedRenderingEnabled(),
                 getVideoInternalResolutionScaling(),
-            ) { renderer, filtering, threadedRenderingEnabled, resolutionScaling ->
+                isVulkanFastPathEnabled(),
+            ) { renderer, filtering, threadedRenderingEnabled, resolutionScaling, vulkanFastPathEnabled ->
                 CoreRenderConfigurationInputs(
                     renderer,
                     filtering,
                     threadedRenderingEnabled,
                     resolutionScaling,
+                    VulkanPipelineProfile.fromFastPathPreference(vulkanFastPathEnabled),
                     rendererDebugToolsEnabled = false,
                     rendererDebugBgObjEnabled = false,
                     rendererDebugLatchTraceEnabled = false,
@@ -289,19 +304,25 @@ class SharedPreferencesSettingsRepository(
         ) { renderInputs, retroArchShader ->
             val effectiveFiltering = when {
                 renderInputs.core.renderer == VideoRenderer.VULKAN && !renderInputs.core.filtering.isSupportedByVulkan() -> VideoFiltering.NONE
-                renderInputs.core.renderer == VideoRenderer.VULKAN &&
-                    renderInputs.core.filtering == VideoFiltering.RETROARCH &&
-                    retroArchShader.presetPath.isNullOrBlank() -> VideoFiltering.NONE
                 renderInputs.core.renderer != VideoRenderer.VULKAN && !renderInputs.core.filtering.isSupportedByOpenGlSurface() -> VideoFiltering.NONE
+                renderInputs.core.filtering == VideoFiltering.RETROARCH &&
+                    retroArchShader.presetPath.isNullOrBlank() -> VideoFiltering.NONE
                 else -> renderInputs.core.filtering
             }
-            val effectiveThreadedRendering = renderInputs.core.threadedRenderingEnabled &&
-                (renderInputs.core.renderer == VideoRenderer.SOFTWARE || renderInputs.core.renderer == VideoRenderer.VULKAN)
+            val effectiveThreadedRendering = resolveThreadedRendering(
+                renderInputs.core.renderer,
+                renderInputs.core.threadedRenderingEnabled,
+            )
             val coverageFixEnabled = renderInputs.core.renderer == VideoRenderer.OPENGL && renderInputs.coverageFix.enabled
             RendererConfiguration(
                 renderInputs.core.renderer,
                 effectiveFiltering,
                 effectiveThreadedRendering,
+                if (renderInputs.core.renderer == VideoRenderer.VULKAN) {
+                    renderInputs.core.vulkanPipelineProfile
+                } else {
+                    VulkanPipelineProfile.COMPATIBILITY
+                },
                 renderInputs.core.resolutionScaling,
                 renderInputs.core.rendererDebugToolsEnabled,
                 renderInputs.core.rendererDebugBgObjEnabled,
@@ -401,7 +422,7 @@ class SharedPreferencesSettingsRepository(
             rendererConfiguration = buildRomRendererConfiguration(
                 baseConfiguration = globalConfiguration.rendererConfiguration,
                 romConfig = romConfig,
-                rootUri = observeRetroArchShaderRoot().first(),
+                root = observeRetroArchShaderRootLocation().first(),
                 globalPresetRelativePath = observeRetroArchShaderPreset().first(),
                 globalParameterText = observeRetroArchShaderParameterText().first(),
             ),
@@ -810,18 +831,54 @@ class SharedPreferencesSettingsRepository(
 
     private fun observeRetroArchShaderConfiguration(): Flow<RetroArchShaderConfiguration> {
         return combine(
-            observeRetroArchShaderRoot(),
+            observeRetroArchShaderRootLocation(),
             observeRetroArchShaderPreset(),
             observeRetroArchShaderParameters(),
             observeRetroArchShaderClearHistory(),
-        ) { rootUri, presetRelativePath, parameters, clearHistory ->
-            importRetroArchShader(rootUri, presetRelativePath, parameters, clearHistory)
+        ) { root, presetRelativePath, parameters, clearHistory ->
+            importRetroArchShader(root, presetRelativePath, parameters, clearHistory)
         }
     }
 
     private fun observeRetroArchShaderRoot(): Flow<Uri?> {
         return getOrCreatePreferenceSharedFlow("video_retroarch_shader_root") {
             preferences.getStringSet("video_retroarch_shader_root", null)?.firstOrNull()?.toUri()
+        }
+    }
+
+    private fun observeRetroArchShaderSourcePreference(): Flow<String?> {
+        return getOrCreatePreferenceSharedFlow("video_retroarch_shader_source") {
+            preferences.getString("video_retroarch_shader_source", null)
+        }
+    }
+
+    private fun observeRetroArchShaderLibraryVersion(): Flow<Long> {
+        return getOrCreatePreferenceSharedFlow(RetroArchShaderLibraryManager.KEY_LIBRARY_VERSION) {
+            preferences.getLong(RetroArchShaderLibraryManager.KEY_LIBRARY_VERSION, 0L)
+        }
+    }
+
+    private fun observeRetroArchShaderRootLocation(): Flow<ResolvedShaderRoot?> {
+        return combine(
+            observeRetroArchShaderSourcePreference(),
+            observeRetroArchShaderRoot(),
+            observeRetroArchShaderLibraryVersion(),
+        ) { sourcePreference, rootUri, _ ->
+            resolveRetroArchShaderRoot(sourcePreference, rootUri)
+        }
+    }
+
+    private fun resolveRetroArchShaderRoot(sourcePreference: String?, rootUri: Uri?): ResolvedShaderRoot? {
+        val libraryRoot = retroArchShaderLibraryManager.libraryRoot
+        val source = RetroArchShaderRootResolver.resolveSource(
+            rawSourcePreference = sourcePreference,
+            hasPickedFolder = rootUri != null,
+            hasInternalInstall = libraryRoot != null,
+        ) ?: return null
+
+        return when (source) {
+            RetroArchShaderSource.INTERNAL -> libraryRoot?.let { ResolvedShaderRoot.Local(it) }
+            RetroArchShaderSource.FOLDER -> rootUri?.let { ResolvedShaderRoot.Saf(it) }
         }
     }
 
@@ -878,14 +935,62 @@ class SharedPreferencesSettingsRepository(
     }
 
     private fun importRetroArchShader(
-        rootUri: Uri?,
+        root: ResolvedShaderRoot?,
         presetRelativePath: String?,
         parameterOverrides: Map<String, Float>,
         clearHistory: Boolean,
     ): RetroArchShaderConfiguration {
         val relativePath = normalizeRetroArchPresetPath(presetRelativePath) ?: return EmptyRetroArchShaderConfiguration
-        rootUri ?: return EmptyRetroArchShaderConfiguration
 
+        return when (root) {
+            null -> EmptyRetroArchShaderConfiguration
+            is ResolvedShaderRoot.Local -> useLocalRetroArchShader(root.dir, relativePath, parameterOverrides, clearHistory)
+            is ResolvedShaderRoot.Saf -> importRetroArchShaderFromSaf(root.uri, relativePath, parameterOverrides, clearHistory)
+        }
+    }
+
+    private fun useLocalRetroArchShader(
+        rootDir: File,
+        relativePath: String,
+        parameterOverrides: Map<String, Float>,
+        clearHistory: Boolean,
+    ): RetroArchShaderConfiguration {
+        if (cachedRetroArchShaderRoot != null || cachedRetroArchShaderImportKey != null) {
+            cachedRetroArchShaderRoot = null
+            cachedRetroArchShaderImportKey = null
+            File(context.filesDir, "retroarch-shaders/current").deleteRecursively()
+        }
+
+        val presetFile = File(rootDir, relativePath)
+        if (!presetFile.exists() || !presetFile.isFile) {
+            Log.w(TAG, "RetroArch shader preset not found in installed library: $relativePath")
+            return EmptyRetroArchShaderConfiguration
+        }
+
+        val escapedReference = findRetroArchPresetReferenceOutsideRoot(presetFile, rootDir)
+        if (escapedReference != null) {
+            Log.w(
+                TAG,
+                "RetroArch shader preset references files outside the shader library: " +
+                    "$relativePath -> $escapedReference",
+            )
+            return EmptyRetroArchShaderConfiguration
+        }
+
+        return buildImportedRetroArchShaderConfiguration(
+            importRoot = rootDir,
+            relativePath = relativePath,
+            parameterOverrides = parameterOverrides,
+            clearHistory = clearHistory,
+        )
+    }
+
+    private fun importRetroArchShaderFromSaf(
+        rootUri: Uri,
+        relativePath: String,
+        parameterOverrides: Map<String, Float>,
+        clearHistory: Boolean,
+    ): RetroArchShaderConfiguration {
         val importRoot = File(context.filesDir, "retroarch-shaders/current")
         val rootDocument = DocumentFile.fromTreeUri(context, rootUri)
         if (rootDocument == null || !rootDocument.exists() || !rootDocument.isDirectory) {
@@ -944,9 +1049,15 @@ class SharedPreferencesSettingsRepository(
         )
     }
 
-    private fun isRetroArchShaderRootValid(rootUri: Uri?): Boolean {
-        val rootDocument = rootUri?.let { DocumentFile.fromTreeUri(context, it) } ?: return false
-        return rootDocument.exists() && rootDocument.isDirectory
+    private fun isRetroArchShaderRootValid(root: ResolvedShaderRoot?): Boolean {
+        return when (root) {
+            null -> false
+            is ResolvedShaderRoot.Local -> root.dir.isDirectory && root.dir.list()?.isNotEmpty() == true
+            is ResolvedShaderRoot.Saf -> {
+                val rootDocument = DocumentFile.fromTreeUri(context, root.uri) ?: return false
+                rootDocument.exists() && rootDocument.isDirectory
+            }
+        }
     }
 
     private fun buildImportedRetroArchShaderConfiguration(
@@ -961,21 +1072,24 @@ class SharedPreferencesSettingsRepository(
             return EmptyRetroArchShaderConfiguration
         }
 
+        val readShaderText = { shaderRelativePath: String ->
+            File(importRoot, shaderRelativePath).takeIf { it.isFile }?.readText()
+        }
         val presetAssignments = RetroArchShaderPreset.parseAssignments(presetFile.readText())
-        val passCount = RetroArchShaderPreset.passCount(presetAssignments)
-        val sourceResolution = if (RetroArchShaderPreset.requiresNativeDsSource(relativePath) { shaderRelativePath ->
-                File(importRoot, shaderRelativePath).takeIf { it.isFile }?.readText()
-            }) {
+        val weight = RetroArchShaderPreset.weigh(relativePath, readShaderText)
+        val passCount = weight.passCount.takeIf { it > 0 } ?: RetroArchShaderPreset.passCount(presetAssignments)
+        val sourceResolution = if (RetroArchShaderPreset.requiresNativeDsSource(relativePath, readShaderText)) {
             RetroArchShaderSourceResolution.NATIVE
         } else {
             RetroArchShaderSourceResolution.VULKAN_IR
         }
-        logRetroArchShaderImportDiagnostics(importRoot, relativePath, presetAssignments, passCount, sourceResolution)
+        logRetroArchShaderImportDiagnostics(importRoot, relativePath, presetAssignments, passCount, sourceResolution, weight)
 
         return RetroArchShaderConfiguration(
             presetPath = presetFile.absolutePath,
             sourceResolution = sourceResolution,
             passCount = passCount,
+            sourceBytes = weight.sourceBytes,
             parameterOverrides = parameterOverrides,
             clearHistory = clearHistory,
         )
@@ -987,6 +1101,7 @@ class SharedPreferencesSettingsRepository(
         assignments: Map<String, String>,
         passCount: Int,
         sourceResolution: RetroArchShaderSourceResolution,
+        weight: RetroArchShaderPreset.Weight,
     ) {
         val references = RetroArchPresetReferences(
             shaders = RetroArchShaderPreset.shaderReferences(assignments),
@@ -996,7 +1111,8 @@ class SharedPreferencesSettingsRepository(
             TAG,
             "RetroArchShaderImport: preset=$presetRelativePath " +
                 "passes=$passCount source=${sourceResolution.name.lowercase()} " +
-                "shaders=${references.shaders.size} textures=${references.textures.size}",
+                "shaders=${references.shaders.size} textures=${references.textures.size} " +
+                "sourceBytes=${weight.sourceBytes} estimatedCompileMs=${weight.estimatedCompileMillis}",
         )
         references.textures.forEachIndexed { index, rawReference ->
             val resolvedPath = RetroArchShaderPreset.resolveRelativePath(presetRelativePath, rawReference)
@@ -1127,6 +1243,12 @@ class SharedPreferencesSettingsRepository(
         }
     }
 
+    override fun isVulkanFastPathEnabled(): Flow<Boolean> {
+        return getOrCreatePreferenceSharedFlow("video_vulkan_fastpath_enabled") {
+            preferences.getBoolean("video_vulkan_fastpath_enabled", false)
+        }
+    }
+
     override fun isRendererDebugToolsEnabled(): Flow<Boolean> {
         return getOrCreatePreferenceSharedFlow("video_renderer_debug_tools_enabled") {
             preferences.getBoolean("video_renderer_debug_tools_enabled", false)
@@ -1152,7 +1274,7 @@ class SharedPreferencesSettingsRepository(
     }
 
     override fun observeRetroArchShaderRootValid(): Flow<Boolean> {
-        return observeRetroArchShaderRoot().map { isRetroArchShaderRootValid(it) }
+        return observeRetroArchShaderRootLocation().map { isRetroArchShaderRootValid(it) }
     }
 
     override fun observeRetroArchShaderPresetPath(): Flow<String?> {
@@ -1540,6 +1662,18 @@ class SharedPreferencesSettingsRepository(
         return preferences.getBoolean("ra_offline_softcore_enabled", true)
     }
 
+    override fun getRetroAchievementsOfflineBackend(): RetroAchievementsOfflineBackend {
+        return RetroAchievementsOfflineBackend.fromPreference(
+            preferences.getString("ra_offline_backend", RetroAchievementsOfflineBackend.BUILT_IN.preferenceValue),
+        )
+    }
+
+    override fun observeRetroAchievementsOfflineBackend(): Flow<RetroAchievementsOfflineBackend> {
+        return getOrCreatePreferenceSharedFlow("ra_offline_backend") {
+            getRetroAchievementsOfflineBackend()
+        }
+    }
+
     override fun areRetroAchievementsUnofficialAchievementsEnabled(): Boolean {
         return preferences.getBoolean("ra_unofficial_enabled", false)
     }
@@ -1738,14 +1872,14 @@ class SharedPreferencesSettingsRepository(
     override fun observeRenderConfiguration(romConfig: RomConfig): Flow<RendererConfiguration> {
         return combine(
             renderConfigurationFlow,
-            observeRetroArchShaderRoot(),
+            observeRetroArchShaderRootLocation(),
             observeRetroArchShaderPreset(),
             observeRetroArchShaderParameterText(),
-        ) { baseConfiguration, rootUri, globalPresetRelativePath, globalParameterText ->
+        ) { baseConfiguration, root, globalPresetRelativePath, globalParameterText ->
             buildRomRendererConfiguration(
                 baseConfiguration = baseConfiguration,
                 romConfig = romConfig,
-                rootUri = rootUri,
+                root = root,
                 globalPresetRelativePath = globalPresetRelativePath,
                 globalParameterText = globalParameterText,
             )
@@ -1755,18 +1889,18 @@ class SharedPreferencesSettingsRepository(
     private fun buildRomRendererConfiguration(
         baseConfiguration: RendererConfiguration,
         romConfig: RomConfig,
-        rootUri: Uri?,
+        root: ResolvedShaderRoot?,
         globalPresetRelativePath: String?,
         globalParameterText: String?,
     ): RendererConfiguration {
         val renderer = sanitizeVideoRenderer(romConfig.videoRenderer, fallback = baseConfiguration.renderer)
         val requestedFiltering = romConfig.videoFiltering ?: baseConfiguration.videoFiltering
-        val retroArchShader = if (renderer == VideoRenderer.VULKAN && requestedFiltering == VideoFiltering.RETROARCH) {
+        val retroArchShader = if (requestedFiltering == VideoFiltering.RETROARCH) {
             if (romConfig.retroArchShaderPresetPath == null && romConfig.retroArchShaderParameters == null) {
                 baseConfiguration.retroArchShader
             } else {
                 importRetroArchShader(
-                    rootUri = rootUri,
+                    root = root,
                     presetRelativePath = romConfig.retroArchShaderPresetPath ?: globalPresetRelativePath,
                     parameterOverrides = parseRetroArchShaderParameters(romConfig.retroArchShaderParameters ?: globalParameterText),
                     clearHistory = false,
@@ -1777,14 +1911,15 @@ class SharedPreferencesSettingsRepository(
         }
         val effectiveFiltering = when {
             renderer == VideoRenderer.VULKAN && !requestedFiltering.isSupportedByVulkan() -> VideoFiltering.NONE
-            renderer == VideoRenderer.VULKAN &&
-                requestedFiltering == VideoFiltering.RETROARCH &&
-                retroArchShader.presetPath.isNullOrBlank() -> VideoFiltering.NONE
             renderer != VideoRenderer.VULKAN && !requestedFiltering.isSupportedByOpenGlSurface() -> VideoFiltering.NONE
+            requestedFiltering == VideoFiltering.RETROARCH &&
+                retroArchShader.presetPath.isNullOrBlank() -> VideoFiltering.NONE
             else -> requestedFiltering
         }
-        val threadedRendering = (romConfig.threadedRendering ?: baseConfiguration.threadedRendering) &&
-            (renderer == VideoRenderer.SOFTWARE || renderer == VideoRenderer.VULKAN)
+        val threadedRendering = resolveThreadedRendering(
+            renderer,
+            romConfig.threadedRendering ?: baseConfiguration.threadedRendering,
+        )
 
         return baseConfiguration.copy(
             renderer = renderer,

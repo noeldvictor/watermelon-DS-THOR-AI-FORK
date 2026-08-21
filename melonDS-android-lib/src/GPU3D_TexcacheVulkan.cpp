@@ -642,7 +642,7 @@ void TexcacheVulkanLoader::UploadLayer(TextureArray& textureArray, u32 layer, co
     const size_t layerPixelCount = static_cast<size_t>(uploadWidth) * static_cast<size_t>(uploadHeight);
 
     bool layerOpaque = true;
-    const u32* sourcePixels = static_cast<const u32*>(data);
+    const u32* sourcePixels = texels;
     if (!textureArray.LayerPixels.empty())
     {
         const size_t layerPixelOffset = static_cast<size_t>(layer) * layerPixelCount;
@@ -769,7 +769,7 @@ void TexcacheVulkanLoader::UploadLayer(TextureArray& textureArray, u32 layer, co
     void* mappedMemory = nullptr;
     if (vkMapMemory(State->Device, uploadSlot->StagingMemory, 0, requiredStagingSize, 0, &mappedMemory) != VK_SUCCESS)
         return;
-    std::memcpy(mappedMemory, data, requiredStagingSize);
+    std::memcpy(mappedMemory, texels, requiredStagingSize);
     vkUnmapMemory(State->Device, uploadSlot->StagingMemory);
 
     if (vkResetFences(State->Device, 1, &uploadSlot->Fence) != VK_SUCCESS

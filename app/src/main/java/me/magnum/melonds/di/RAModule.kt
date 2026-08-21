@@ -11,9 +11,12 @@ import kotlinx.serialization.json.Json
 import me.magnum.melonds.common.network.MelonOkHttpInterceptor
 import me.magnum.melonds.common.retroachievements.AndroidRASignatureProvider
 import me.magnum.melonds.common.retroachievements.AndroidRAUserAuthStore
+import me.magnum.melonds.common.retroachievements.AndroidRAUserProfileStore
+import me.magnum.melonds.common.retroachievements.RetroAchievementsEndpointProvider
 import me.magnum.rcheevosapi.RASignatureProvider
 import me.magnum.rcheevosapi.RAApi
 import me.magnum.rcheevosapi.RAUserAuthStore
+import me.magnum.rcheevosapi.RAUserProfileStore
 import okhttp3.OkHttpClient
 import javax.inject.Named
 import javax.inject.Singleton
@@ -32,7 +35,17 @@ object RAModule {
     fun provideRAApiOkHttpClient(melonOkHttpInterceptor: MelonOkHttpInterceptor): OkHttpClient {
         return OkHttpClient.Builder()
             .addInterceptor(melonOkHttpInterceptor)
+            .followRedirects(false)
+            .followSslRedirects(false)
             .build()
+    }
+
+    @Provides
+    @Singleton
+    fun provideRetroAchievementsEndpointProvider(
+        sharedPreferences: SharedPreferences,
+    ): RetroAchievementsEndpointProvider {
+        return RetroAchievementsEndpointProvider(sharedPreferences)
     }
 
     @Provides
@@ -43,18 +56,33 @@ object RAModule {
 
     @Provides
     @Singleton
+    fun provideRAUserProfileStore(sharedPreferences: SharedPreferences): RAUserProfileStore {
+        return AndroidRAUserProfileStore(sharedPreferences)
+    }
+
+    @Provides
+    @Singleton
     fun provideRAAchievementSignatureProvider(): RASignatureProvider {
         return AndroidRASignatureProvider()
     }
 
     @Provides
     @Singleton
-    fun provideRAApi(@Named("ra-api-client") client: OkHttpClient, json: Json, userAuthStore: RAUserAuthStore, achievementSignatureProvider: RASignatureProvider): RAApi {
+    fun provideRAApi(
+        @Named("ra-api-client") client: OkHttpClient,
+        json: Json,
+        userAuthStore: RAUserAuthStore,
+        userProfileStore: RAUserProfileStore,
+        achievementSignatureProvider: RASignatureProvider,
+        endpointProvider: RetroAchievementsEndpointProvider,
+    ): RAApi {
         return RAApi(
             okHttpClient = client,
             json = json,
             userAuthStore = userAuthStore,
+            userProfileStore = userProfileStore,
             signatureProvider = achievementSignatureProvider,
+            hostUrlProvider = endpointProvider,
         )
     }
 }

@@ -2,6 +2,10 @@
 <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
         xmlns:app="http://schemas.android.com/apk/res-auto">
 
+    <me.magnum.melonds.ui.settings.preferences.RetroAchievementsProfilePreference
+        android:key="ra_profile"
+        app:iconSpaceReserved="false" />
+
     <Preference
         android:key="ra_login"
         android:title="@string/login_with_retro_achievements"
@@ -44,6 +48,16 @@
         app:iconSpaceReserved="false"
         app:dependency="ra_login"
         android:defaultValue="false" />
+
+    <ListPreference
+        android:key="ra_offline_backend"
+        android:title="@string/ra_offline_backend_title"
+        android:summary="@string/ra_offline_backend_summary"
+        android:entries="@array/ra_offline_backend_options"
+        android:entryValues="@array/ra_offline_backend_values"
+        android:defaultValue="built_in"
+        app:iconSpaceReserved="false"
+        app:dependency="ra_login" />
 
     <SwitchPreference
         android:key="ra_offline_softcore_enabled"

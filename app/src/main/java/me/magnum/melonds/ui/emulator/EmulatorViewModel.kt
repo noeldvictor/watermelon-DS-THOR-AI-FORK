@@ -10,17 +10,24 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,11 +35,14 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onCompletion
@@ -42,6 +52,8 @@ import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import me.magnum.melonds.MelonDSAndroidInterface
@@ -49,6 +61,10 @@ import me.magnum.melonds.MelonEmulator
 import me.magnum.melonds.R
 import me.magnum.melonds.common.romprocessors.RomFileProcessorFactory
 import me.magnum.melonds.common.runtime.ScreenshotFrameBufferProvider
+import me.magnum.melonds.common.network.RETROACHIEVEMENTS_USER_AGENT
+import me.magnum.melonds.common.retroachievements.RetroAchievementsEndpointProvider
+import me.magnum.melonds.common.retroachievements.RetroAchievementsEndpointSnapshot
+import me.magnum.melonds.common.retroachievements.RetroAchievementsEndpointStorage
 import me.magnum.melonds.database.daos.RetroAchievementsDao
 import me.magnum.melonds.database.entities.retroachievements.RAUserAchievementEntity
 import me.magnum.melonds.debug.DebugCommandStateStore
@@ -65,6 +81,7 @@ import me.magnum.melonds.domain.model.SCREEN_WIDTH
 import me.magnum.melonds.domain.model.ScreenAlignment
 import me.magnum.melonds.domain.model.VideoFiltering
 import me.magnum.melonds.domain.model.VideoRenderer
+import me.magnum.melonds.domain.model.VulkanPipelineProfile
 import me.magnum.melonds.domain.model.defaultExternalAlignment
 import me.magnum.melonds.domain.model.defaultInternalAlignment
 import me.magnum.melonds.domain.model.emulator.EmulatorEvent
@@ -81,14 +98,24 @@ import me.magnum.melonds.domain.model.layout.ScreenLayout
 import me.magnum.melonds.domain.model.layout.UILayout
 import me.magnum.melonds.domain.model.layout.UILayoutVariant
 import me.magnum.melonds.domain.model.retroachievements.GameAchievementData
+import me.magnum.melonds.domain.model.retroachievements.PendingRaSubmission
+import me.magnum.melonds.domain.model.retroachievements.PendingRaSubmissionSnapshot
 import me.magnum.melonds.domain.model.retroachievements.RAEvent
 import me.magnum.melonds.domain.model.retroachievements.RARuntimeBridgeConfig
 import me.magnum.melonds.domain.model.retroachievements.RARuntimeBridgeMode
+import me.magnum.melonds.domain.model.retroachievements.RetroAchievementsOfflineBackend
+import me.magnum.melonds.domain.model.retroachievements.RaNativePendingSubmissionResolution
+import me.magnum.melonds.domain.model.retroachievements.RaNativePendingSubmissionType
+import me.magnum.melonds.domain.model.retroachievements.RaPendingCounts
+import me.magnum.melonds.domain.model.retroachievements.RaPendingSubmissionType
+import me.magnum.melonds.domain.model.retroachievements.RaSubmissionContext
+import me.magnum.melonds.domain.model.retroachievements.RaSubmissionSessionIdGenerator
 import me.magnum.melonds.domain.model.retroachievements.RASimpleAchievement
 import me.magnum.melonds.domain.model.input.SoftInputBehaviour
 import me.magnum.melonds.domain.model.retroachievements.RASimpleLeaderboard
 import me.magnum.melonds.domain.model.retroachievements.exception.RAGameNotExist
 import me.magnum.melonds.domain.model.rom.Rom
+import me.magnum.melonds.domain.model.rom.config.RomConfig
 import me.magnum.melonds.domain.model.rom.config.RuntimeMicSource
 import me.magnum.melonds.domain.model.ui.Orientation
 import me.magnum.melonds.domain.repositories.BackgroundRepository
@@ -99,8 +126,11 @@ import me.magnum.melonds.domain.repositories.RomsRepository
 import me.magnum.melonds.domain.repositories.SaveStatesRepository
 import me.magnum.melonds.domain.repositories.SettingsRepository
 import me.magnum.melonds.domain.services.EmulatorManager
+import me.magnum.melonds.impl.ShaderCompileTimeStore
 import me.magnum.melonds.impl.emulator.EmulatorSession
+import me.magnum.melonds.impl.emulator.LeaderboardTrackerUpdateLogLimiter
 import me.magnum.melonds.impl.emulator.debug.RendererDebugCaptureLogger
+import me.magnum.melonds.impl.network.NetworkConnectivityObserver
 import me.magnum.melonds.impl.retroachievements.offline.OfflineLedgerIntegrity
 import me.magnum.melonds.impl.retroachievements.offline.OfflineLedgerExpiredException
 import me.magnum.melonds.impl.retroachievements.offline.OfflineLedgerRepository
@@ -112,6 +142,36 @@ import me.magnum.melonds.impl.retroachievements.offline.OfflineUnlockMode
 import me.magnum.melonds.impl.retroachievements.offline.OfflineUnlockType
 import me.magnum.melonds.impl.retroachievements.offline.HardcoreOfflineLossTracker
 import me.magnum.melonds.ui.emulator.component.HardcoreSubmissionQueue
+import me.magnum.melonds.ui.emulator.component.AchievementSubmissionOwnership
+import me.magnum.melonds.ui.emulator.component.LeaderboardAttemptCoordinator
+import me.magnum.melonds.ui.emulator.component.LeaderboardAttemptKey
+import me.magnum.melonds.ui.emulator.component.LeaderboardScoreboardUiMapper
+import me.magnum.melonds.ui.emulator.component.LeaderboardSubmissionOwnership
+import me.magnum.melonds.ui.emulator.component.PendingRaSubmissionStore
+import me.magnum.melonds.ui.emulator.component.RaHardcoreContinuityEvent
+import me.magnum.melonds.ui.emulator.component.RaHardcoreContinuityState
+import me.magnum.melonds.ui.emulator.component.RaHardcoreContinuityStateMachine
+import me.magnum.melonds.ui.emulator.component.RaHardcoreLaunchPolicy
+import me.magnum.melonds.ui.emulator.component.RaInGameLogoutCoordinator
+import me.magnum.melonds.ui.emulator.component.RaInGameLogoutFailureStage
+import me.magnum.melonds.ui.emulator.component.RaInGameLogoutResult
+import me.magnum.melonds.ui.emulator.component.RaPendingReconnectGate
+import me.magnum.melonds.ui.emulator.component.RaPendingRuntimeDisableGate
+import me.magnum.melonds.ui.emulator.component.RaPendingSubmissionSyncCoordinator
+import me.magnum.melonds.ui.emulator.component.RaPendingSubmissionUiPolicy
+import me.magnum.melonds.ui.emulator.component.RaPendingExitFollowUp
+import me.magnum.melonds.ui.emulator.component.RaPendingExitContext
+import me.magnum.melonds.ui.emulator.component.RaPendingManualSyncAction
+import me.magnum.melonds.ui.emulator.component.RaPendingModalController
+import me.magnum.melonds.ui.emulator.component.RaPendingRuntimeOwner
+import me.magnum.melonds.ui.emulator.component.RaPendingSyncMenuContext
+import me.magnum.melonds.ui.emulator.component.RaPendingSyncResult
+import me.magnum.melonds.ui.emulator.component.RaPendingSyncSource
+import me.magnum.melonds.ui.emulator.component.RaActiveSubmissionContext
+import me.magnum.melonds.ui.emulator.component.RaNativeRetryResultMapper
+import me.magnum.melonds.ui.emulator.component.RaSubmissionContextValidator
+import me.magnum.melonds.ui.emulator.component.RaSessionStopGate
+import me.magnum.melonds.ui.emulator.component.RaRuntimeAuthenticationPolicy
 import me.magnum.melonds.impl.retroachievements.offline.RetroAchievementsImageCacheWarmer
 import me.magnum.melonds.impl.retroachievements.offline.SmartSyncSkipReason
 import me.magnum.melonds.impl.retroachievements.offline.SmartSyncEngine
@@ -123,6 +183,7 @@ import me.magnum.melonds.ui.emulator.model.RumbleEvent
 import me.magnum.melonds.ui.emulator.model.EmulatorState
 import me.magnum.melonds.ui.emulator.model.EmulatorUiEvent
 import me.magnum.melonds.ui.emulator.model.HardcorePendingExitChoice
+import me.magnum.melonds.ui.emulator.model.RaPendingSyncResultAction
 import me.magnum.melonds.ui.emulator.model.InGameRomSettingsOverrides
 import me.magnum.melonds.ui.emulator.model.InGameRomSettingsMenuState
 import me.magnum.melonds.ui.emulator.model.OfflineAchievementsSyncChoice
@@ -141,10 +202,14 @@ import me.magnum.melonds.utils.EventSharedFlow
 import me.magnum.rcheevosapi.exception.UserTokenExpiredException
 import me.magnum.rcheevosapi.model.RAAchievement
 import me.magnum.rcheevosapi.model.RAAchievementSet
+import me.magnum.rcheevosapi.model.RALeaderboard
 import me.magnum.rcheevosapi.model.RASetId
 import me.magnum.rcheevosapi.model.RAUserAuth
 import java.io.FileInputStream
+import java.net.URL
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
@@ -163,12 +228,14 @@ private const val SAVESTATE_MAJOR = 13
 private const val SAVESTATE_MINOR = 0
 
 private const val RETROACHIEVEMENTS_REFRESH_TIMEOUT_MS = 12_000L
+private const val RA_PENDING_BARRIER_TIMEOUT_MS = 3_000L
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class EmulatorViewModel @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val settingsRepository: SettingsRepository,
+    private val retroAchievementsEndpointProvider: RetroAchievementsEndpointProvider,
     private val romsRepository: RomsRepository,
     private val cheatsRepository: CheatsRepository,
     private val retroAchievementsRepository: RetroAchievementsRepository,
@@ -178,6 +245,7 @@ class EmulatorViewModel @Inject constructor(
     private val retroAchievementsImageCacheWarmer: RetroAchievementsImageCacheWarmer,
     private val smartSyncEngine: SmartSyncEngine,
     private val hardcoreOfflineLossTracker: HardcoreOfflineLossTracker,
+    private val networkConnectivityObserver: NetworkConnectivityObserver,
     private val networkStatusProvider: NetworkStatusProvider,
     private val romFileProcessorFactory: RomFileProcessorFactory,
     private val layoutsRepository: LayoutsRepository,
@@ -188,15 +256,33 @@ class EmulatorViewModel @Inject constructor(
     private val emulatorManager: EmulatorManager,
     private val emulatorSession: EmulatorSession,
     private val retroAchievementsSubmissionHandler: RetroAchievementsSubmissionHandler,
+    private val shaderCompileTimeStore: ShaderCompileTimeStore,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
     private val sessionCoroutineScope = EmulatorSessionCoroutineScope()
+
+    data class HeavyShaderCompileRequest(
+        val presetName: String,
+        val estimatedMillis: Long,
+        val isMeasured: Boolean,
+        val response: CompletableDeferred<Boolean>,
+    )
+
+    private val heavyShaderCompileThresholdMs = 60_000L
+
+    private val _heavyShaderCompileRequest = MutableSharedFlow<HeavyShaderCompileRequest>(extraBufferCapacity = 1)
+    val heavyShaderCompileRequest = _heavyShaderCompileRequest.asSharedFlow()
+
+    private val isRetroArchShaderDeclinedForSession = MutableStateFlow(false)
+
+    private var raBootstrapJob: Job? = null
     private var raSessionJob: Job? = null
 
     private enum class RetroAchievementsNetworkMode {
         ONLINE_LIVE,
         OFFLINE_ACCUMULATING,
+        RECONCILING_RA_SUBMISSIONS,
     }
 
     private enum class RetroAchievementsSessionMode {
@@ -206,6 +292,7 @@ class EmulatorViewModel @Inject constructor(
 
     private enum class RetroAchievementsRuntimePath(val traceValue: String) {
         DISABLED("disabled"),
+        LEGACY("legacy"),
         RC_CLIENT("rc_client"),
         RC_CLIENT_OFFLINE("rc_client_offline"),
     }
@@ -217,6 +304,9 @@ class EmulatorViewModel @Inject constructor(
         val isHardcoreEligibleAfterOnlineStart: Boolean,
         val offlineDueToNoInternetAtStart: Boolean,
         val hardcoreOfflineDisabled: Boolean,
+        val usesProxyBackend: Boolean = false,
+        val nativeClientHost: String = RetroAchievementsEndpointStorage.OFFICIAL_CLIENT_HOST,
+        val endpointGeneration: Long = 0L,
     )
 
     private data class OfflineRetroAchievementsSession(
@@ -240,6 +330,11 @@ class EmulatorViewModel @Inject constructor(
         val source: OnlineRetroAchievementsBootstrapSource,
     )
 
+    private data class LeaderboardUiContext(
+        val leaderboard: RALeaderboard,
+        val gameIcon: URL,
+    )
+
     private var retroAchievementsNetworkMode: RetroAchievementsNetworkMode = RetroAchievementsNetworkMode.ONLINE_LIVE
     private var retroAchievementsSessionMode: RetroAchievementsSessionMode = RetroAchievementsSessionMode.SOFTCORE
     private var isHardcoreEligibleAfterOnlineStart = false
@@ -249,15 +344,89 @@ class EmulatorViewModel @Inject constructor(
     private var offlineRetroAchievementsSession: OfflineRetroAchievementsSession? = null
     private var activeRuntimeBridgeConfig: RARuntimeBridgeConfig? = null
     private var activeRuntimePath: RetroAchievementsRuntimePath = RetroAchievementsRuntimePath.DISABLED
+    private val runtimeAuthenticationLeaseMonitor = Any()
+    private var activeRuntimeAuthenticationLeaseId: String? = null
+    private var activeHardcoreSubmissionSessionId: String? = null
+    private var hardcoreSubmissionQueueTeardown: CompletableDeferred<Unit>? = null
+    private var leaderboardDiagnosticsEnabled = false
     private var didReceiveRendererInitFailure = false
+    private val raSessionStopGate = RaSessionStopGate()
     private val announcedMasteryKeys = mutableSetOf<Pair<Long, Boolean>>()
     private val pendingRuntimeAchievementTriggers = mutableMapOf<Long, Long>()
     private val pendingRuntimeLeaderboardCompletions = mutableMapOf<Long, Long>()
+    private val leaderboardAttemptCoordinator = LeaderboardAttemptCoordinator()
+    private val leaderboardTrackerUpdateLogLimiter = LeaderboardTrackerUpdateLogLimiter()
+    private var pendingRaSubmissionStore: PendingRaSubmissionStore? = null
+    private var pendingRaSyncCoordinator: RaPendingSubmissionSyncCoordinator? = null
+    private var pendingRaSessionJob: Job? = null
+    private var pendingRaReconnectRequests: Channel<Unit>? = null
+    private val pendingRaReconnectGate = RaPendingReconnectGate()
+    private val pendingRaRuntimeDisableGate = RaPendingRuntimeDisableGate()
+    private val pendingRaModalController = RaPendingModalController()
+    private val pendingRaSubmissionBarrier = MutableStateFlow<PendingRaSubmissionBarrier?>(null)
+    private val settingsReconciliationsInFlight = AtomicInteger(0)
+    private val settingsReconciliationMutex = Mutex()
+    private val resumeAfterSettingsReconciliation = AtomicBoolean(false)
 
     private var offlineSyncChoiceDeferred: CompletableDeferred<OfflineAchievementsSyncChoice>? = null
-    private var hardcoreExitChoiceDeferred: CompletableDeferred<HardcorePendingExitChoice>? = null
+    private var hardcoreExitChoiceWaiter: HardcoreExitChoiceWaiter? = null
 
-    private val hardcoreSubmissionQueue = HardcoreSubmissionQueue(retroAchievementsRepository)
+    private data class HardcoreExitChoiceWaiter(
+        val requestId: Long,
+        val deferred: CompletableDeferred<HardcorePendingExitChoice>,
+    )
+
+    private data class HardcoreExitChoiceResponse(
+        val requestId: Long,
+        val choice: HardcorePendingExitChoice,
+    )
+
+    private data class PendingRaSubmissionBarrier(
+        val submissionSessionId: Long,
+        val barrierId: Long,
+    )
+
+    private val hardcoreSubmissionQueue = HardcoreSubmissionQueue(
+        submitAchievement = { achievement, authentication ->
+            retroAchievementsRepository.awardAchievementForAuthentication(
+                achievement = achievement,
+                forHardcoreMode = true,
+                expectedAuthentication = authentication,
+            )
+        },
+        canSubmitForActiveIdentity = { authentication ->
+            runtimeAuthenticationSnapshot() == authentication &&
+                activeRuntimeAuthenticationMatches()
+        },
+    )
+
+    private suspend fun addHardcoreSubmission(
+        achievement: RAAchievement,
+        authentication: RAUserAuth.Authenticated,
+    ): Boolean {
+        val sessionId = currentHardcoreSubmissionSessionId() ?: return false
+        return hardcoreSubmissionQueue.add(sessionId, achievement, authentication)
+    }
+
+    private suspend fun drainHardcoreSubmissions(): HardcoreSubmissionQueue.DrainResult {
+        val sessionId = currentHardcoreSubmissionSessionId()
+            ?: return HardcoreSubmissionQueue.DrainResult(
+                submittedCount = 0,
+                remainingCount = hardcoreSubmissionQueue.pendingCount(),
+            )
+        return hardcoreSubmissionQueue.drain(sessionId)
+    }
+
+    private suspend fun discardHardcoreSubmissions(): Int {
+        val sessionId = currentHardcoreSubmissionSessionId() ?: return 0
+        return hardcoreSubmissionQueue.discardAll(sessionId)
+    }
+
+    private fun currentHardcoreSubmissionSessionId(): String? {
+        return synchronized(runtimeAuthenticationLeaseMonitor) {
+            activeHardcoreSubmissionSessionId
+        }
+    }
 
     private val _emulatorState = MutableStateFlow<EmulatorState>(EmulatorState.Uninitialized)
     val emulatorState = _emulatorState.asStateFlow()
@@ -309,14 +478,17 @@ class EmulatorViewModel @Inject constructor(
         }.getOrNull().orEmpty().ifBlank { "unknown" }
     }
 
-    private val retroAchievementsUserAgent: String by lazy {
-        "melonDualDS-android/$retroAchievementsVersionName"
-    }
+    private val retroAchievementsUserAgent = RETROACHIEVEMENTS_USER_AGENT
 
     private val _raIntegrationEvent = EventSharedFlow<RAIntegrationEvent>()
     val integrationEvent = _raIntegrationEvent.asSharedFlow()
 
     val pendingSubmissionsSummary = retroAchievementsSubmissionHandler.getPendingSubmissionsSummaryFlow()
+    private val _pendingRaSubmissionSnapshot = MutableStateFlow<PendingRaSubmissionSnapshot?>(null)
+    val pendingRaSubmissionSnapshot = _pendingRaSubmissionSnapshot.asStateFlow()
+    val pendingRaModalState = pendingRaModalController.state
+    private val _raHardcoreContinuityState = MutableStateFlow(RaHardcoreContinuityState.ONLINE_LIVE)
+    val raHardcoreContinuityState = _raHardcoreContinuityState.asStateFlow()
 
     private val _uiEvent = EventSharedFlow<EmulatorUiEvent>()
     val uiEvent = _uiEvent.asSharedFlow()
@@ -349,7 +521,23 @@ class EmulatorViewModel @Inject constructor(
     val dualScreenExternalVerticalAlignmentOverride = _dualScreenExternalVerticalAlignmentOverride.asStateFlow()
 
     private var currentRom: Rom? = null
+    private var lastEndpointRestartNoticeGeneration: Long? = null
     init {
+        viewModelScope.launch {
+            retroAchievementsEndpointProvider.snapshot.collect { updated ->
+                val frozen = retroAchievementsEndpointProvider.routingSnapshot()
+                if (
+                    currentRom != null &&
+                    frozen.generation != updated.generation &&
+                    lastEndpointRestartNoticeGeneration != updated.generation
+                ) {
+                    lastEndpointRestartNoticeGeneration = updated.generation
+                    _toastEvent.tryEmit(ToastEvent.RetroAchievementsProviderChangedRestartRequired)
+                    RetroAchievementsEndpointStorage.logSnapshot(updated, "restart_required")
+                }
+            }
+        }
+
         viewModelScope.launch {
             _layout.filterNotNull().collect {
                 uiLayoutProvider.setCurrentLayoutConfiguration(it)
@@ -418,7 +606,29 @@ class EmulatorViewModel @Inject constructor(
 
         sessionCoroutineScope.launch {
             val runningRom = _emulatorState.value as? EmulatorState.RunningRom
+            val exitContext = effectivePendingExitContext()
             if (runningRom != null) {
+                emulatorManager.pauseEmulator()
+                if (!refreshPendingRaSubmissionMirror()) {
+                    _toastEvent.tryEmit(ToastEvent.PendingRaStateVerificationFailed)
+                    if (exitContext == RaPendingExitContext.RESUMABLE_SESSION) {
+                        resumeEmulatorIfSessionCanRun()
+                    }
+                    return@launch
+                }
+                if ((pendingRaSubmissionStore?.snapshot?.value?.counts?.total ?: 0) > 0) {
+                    when (handleRcClientPendingBeforeExit(exitContext)) {
+                        RaPendingExitFollowUp.EXIT -> Unit
+                        RaPendingExitFollowUp.RESUME_SESSION -> {
+                            if (exitContext == RaPendingExitContext.RESUMABLE_SESSION) {
+                                resumeEmulatorIfSessionCanRun()
+                            }
+                            return@launch
+                        }
+                        RaPendingExitFollowUp.KEEP_SESSION_PAUSED -> return@launch
+                    }
+                }
+
                 val userAuth = retroAchievementsRepository.getUserAuthentication()
                 if (userAuth != null) {
                     val userId = userAuth.username
@@ -428,9 +638,15 @@ class EmulatorViewModel @Inject constructor(
                     }
 
                     if (hardcoreSubmissionQueue.pendingCount() > 0) {
-                        val shouldExit = handleHardcorePendingBeforeExit(userId, contentId)
+                        val shouldExit = handleHardcorePendingBeforeExit(
+                            userId = userId,
+                            contentId = contentId,
+                            exitContext = exitContext,
+                        )
                         if (!shouldExit) {
-                            emulatorManager.resumeEmulator()
+                            if (exitContext == RaPendingExitContext.RESUMABLE_SESSION) {
+                                resumeEmulatorIfSessionCanRun()
+                            }
                             return@launch
                         }
                     } else if (ledgerStatus.integrity == OfflineLedgerIntegrity.OK) {
@@ -450,6 +666,7 @@ class EmulatorViewModel @Inject constructor(
             runningRom?.let {
                 maybeAutoSaveStateOnExit(it.rom)
             }
+            discardHardcoreSubmissions()
             stopEmulator()
             launchEmulator(args)
         }
@@ -523,9 +740,15 @@ class EmulatorViewModel @Inject constructor(
             currentRom = rom
             activeRomConfig.value = rom
             val isRetroAchievementsEnabledForLaunch = isRetroAchievementsEnabledForLaunch(rom)
-            val launchDecision = if (isRetroAchievementsEnabledForLaunch) {
+            val endpointSnapshot = if (isRetroAchievementsEnabledForLaunch) {
+                retroAchievementsEndpointProvider.beginSession()
+            } else {
+                retroAchievementsEndpointProvider.endSession()
+                retroAchievementsEndpointProvider.currentSnapshot()
+            }
+            val launchDecision = (if (isRetroAchievementsEnabledForLaunch) {
                 runCatching {
-                    decideRetroAchievementsLaunchDecision(rom)
+                    decideRetroAchievementsLaunchDecision(rom, endpointSnapshot)
                 }.getOrElse { throwable ->
                     Log.e("EmulatorViewModel", "RetroAchievements launch decision failed for '${rom.name}'", throwable)
                     RetroAchievementsLaunchDecision(
@@ -546,7 +769,10 @@ class EmulatorViewModel @Inject constructor(
                     offlineDueToNoInternetAtStart = false,
                     hardcoreOfflineDisabled = false,
                 )
-            }
+            }).copy(
+                nativeClientHost = endpointSnapshot.nativeClientHost.orEmpty(),
+                endpointGeneration = endpointSnapshot.generation,
+            )
 
             retroAchievementsNetworkMode = launchDecision.networkMode
             retroAchievementsSessionMode = launchDecision.sessionMode
@@ -577,12 +803,14 @@ class EmulatorViewModel @Inject constructor(
             }
 
             val cheats = getRomInfo(rom)?.let { getRomEnabledCheats(it) } ?: emptyList()
+            confirmRetroArchShaderCompile(rom.config)
             val result = emulatorManager.loadRom(rom, cheats)
             when (result) {
                 is RomLaunchResult.LaunchFailedRomNotFound,
                 is RomLaunchResult.LaunchFailedRomNotSupported,
                 is RomLaunchResult.LaunchFailedSramProblem,
                 is RomLaunchResult.LaunchFailed -> {
+                    disableRetroAchievementsRuntime(reason = "rom_load_failed")
                     _emulatorState.value = EmulatorState.RomLoadError
                 }
                 is RomLaunchResult.LaunchSuccessful -> {
@@ -601,6 +829,7 @@ class EmulatorViewModel @Inject constructor(
                 throw exception
             }
             Log.e("EmulatorViewModel", "Failed to launch ROM '${rom.name}'", exception)
+            disableRetroAchievementsRuntime(reason = "rom_launch_exception")
             _emulatorState.value = EmulatorState.RomLoadError
         }
     }
@@ -622,15 +851,45 @@ class EmulatorViewModel @Inject constructor(
         offlineSyncChoiceDeferred?.complete(choice)
     }
 
-    fun submitHardcorePendingExitChoice(choice: HardcorePendingExitChoice) {
-        hardcoreExitChoiceDeferred?.complete(choice)
+    fun submitHardcorePendingExitChoice(
+        requestId: Long,
+        choice: HardcorePendingExitChoice,
+    ) {
+        val waiter = hardcoreExitChoiceWaiter ?: return
+        if (
+            waiter.requestId == requestId &&
+            pendingRaModalController.isCurrentExitPrompt(requestId)
+        ) {
+            waiter.deferred.complete(choice)
+        }
     }
 
-    private suspend fun decideRetroAchievementsLaunchDecision(rom: Rom): RetroAchievementsLaunchDecision {
+    private suspend fun decideRetroAchievementsLaunchDecision(
+        rom: Rom,
+        endpointSnapshot: RetroAchievementsEndpointSnapshot,
+    ): RetroAchievementsLaunchDecision {
         val startedOnline = networkStatusProvider.isOnline()
         val hardcoreSettingEnabled = settingsRepository.isRetroAchievementsHardcoreEnabled()
         val offlineSoftcoreEnabled = settingsRepository.isRetroAchievementsOfflineSoftcoreEnabled()
         val userAuth = retroAchievementsRepository.getUserAuthentication()
+
+        if (endpointSnapshot.backendEffective == RetroAchievementsOfflineBackend.RA_OFFLINE_PROXY) {
+            RetroAchievementsEndpointStorage.logSnapshot(endpointSnapshot, "session_frozen")
+            if (endpointSnapshot.apiUrl == null || endpointSnapshot.nativeClientHost == null) {
+                _toastEvent.tryEmit(ToastEvent.RAOfflineProxyNotActive)
+            }
+            return RetroAchievementsLaunchDecision(
+                networkMode = RetroAchievementsNetworkMode.ONLINE_LIVE,
+                sessionMode = RetroAchievementsSessionMode.SOFTCORE,
+                initialOfflineType = null,
+                isHardcoreEligibleAfterOnlineStart = false,
+                offlineDueToNoInternetAtStart = false,
+                hardcoreOfflineDisabled = hardcoreSettingEnabled,
+                usesProxyBackend = true,
+                nativeClientHost = endpointSnapshot.nativeClientHost.orEmpty(),
+                endpointGeneration = endpointSnapshot.generation,
+            )
+        }
 
         if (userAuth == null) {
             return RetroAchievementsLaunchDecision(
@@ -668,21 +927,25 @@ class EmulatorViewModel @Inject constructor(
         }
 
         if (ledgerStatus.integrity == OfflineLedgerIntegrity.OK && ledgerStatus.hasPendingHardcoreUnlocks) {
-            withContext(Dispatchers.IO) {
-                offlineLedgerRepository.discardPendingHardcoreUnlocks(userId, contentId)
-            }
-            hardcoreOfflineLossTracker.clearPendingUnlocks(userId, contentId)
-            ledgerStatus = withContext(Dispatchers.IO) {
-                offlineLedgerRepository.getStatus(userId, contentId)
-            }
+            _toastEvent.tryEmit(
+                ToastEvent.HardcoreOfflineUnsyncedWarning(
+                    ledgerStatus.pendingHardcoreUnlockCount,
+                ),
+            )
             logRaTrace(
-                "hardcore_ledger_legacy_discarded",
+                "hardcore_ledger_legacy_preserved",
                 "content_id" to contentId,
+                "pending" to ledgerStatus.pendingHardcoreUnlockCount,
+                "same_session_sync_available" to false,
             )
         }
 
-        if (!startedOnline && offlineSoftcoreEnabled) {
-            if (ledgerStatus.integrity == OfflineLedgerIntegrity.OK && ledgerStatus.pendingSoftcoreUnlockCount > 0) {
+        if (RaHardcoreLaunchPolicy.mustUseOfflinePath(startedOnline)) {
+            if (
+                offlineSoftcoreEnabled &&
+                ledgerStatus.integrity == OfflineLedgerIntegrity.OK &&
+                ledgerStatus.pendingSoftcoreUnlockCount > 0
+            ) {
                 _toastEvent.tryEmit(
                     ToastEvent.OfflineSoftcorePendingNotice(
                         pendingSoftcoreCount = ledgerStatus.pendingSoftcoreUnlockCount,
@@ -794,7 +1057,7 @@ class EmulatorViewModel @Inject constructor(
             "offline_sync_now_failed",
             "pending" to pendingUnlockCount,
             "content_id" to contentId,
-            "error" to (error?.message ?: error?.javaClass?.simpleName ?: "unknown"),
+            "error" to (error?.javaClass?.simpleName ?: "unknown"),
         )
         return false
     }
@@ -820,15 +1083,23 @@ class EmulatorViewModel @Inject constructor(
     }
 
     private suspend fun awaitHardcorePendingExitChoice(
-        pendingHardcoreCount: Int,
-    ): HardcorePendingExitChoice {
-        hardcoreExitChoiceDeferred?.cancel()
+        pending: RaPendingCounts,
+        exitContext: RaPendingExitContext = RaPendingExitContext.RESUMABLE_SESSION,
+    ): HardcoreExitChoiceResponse {
+        val requestId = pendingRaModalController.beginExitPrompt(
+            pending = pending,
+            exitContext = exitContext,
+        ) ?: throw CancellationException("A higher-priority pending submission dialog is active")
+        hardcoreExitChoiceWaiter?.deferred?.cancel()
         val deferred = CompletableDeferred<HardcorePendingExitChoice>()
-        hardcoreExitChoiceDeferred = deferred
-        _uiEvent.emit(EmulatorUiEvent.ShowHardcorePendingExitWarning(pendingHardcoreCount))
-        return deferred.await().also {
-            if (hardcoreExitChoiceDeferred === deferred) {
-                hardcoreExitChoiceDeferred = null
+        val waiter = HardcoreExitChoiceWaiter(requestId, deferred)
+        hardcoreExitChoiceWaiter = waiter
+        return HardcoreExitChoiceResponse(
+            requestId = requestId,
+            choice = deferred.await(),
+        ).also {
+            if (hardcoreExitChoiceWaiter === waiter) {
+                hardcoreExitChoiceWaiter = null
             }
         }
     }
@@ -880,6 +1151,7 @@ class EmulatorViewModel @Inject constructor(
                 startObservingLayoutForFirmware()
                 startObservingEmulatorEvents()
 
+                confirmRetroArchShaderCompile(romConfig = null)
                 val result = emulatorManager.loadFirmware(consoleType)
                 when (result) {
                     is FirmwareLaunchResult.LaunchFailed -> {
@@ -976,34 +1248,321 @@ class EmulatorViewModel @Inject constructor(
         }
     }
 
-    fun onSettingsChanged() {
-        val currentState = _emulatorState.value
-        sessionCoroutineScope.launch {
-            if (settingsRepository.getCurrentVideoRenderer() == VideoRenderer.VULKAN) {
-                val canUseVulkan = MelonDSAndroidInterface.isVulkanRendererSupported() &&
-                    MelonDSAndroidInterface.canInitializeVulkanRenderer()
-                if (!canUseVulkan) {
-                    val activeRenderer = getRuntimeRendererOrNull() ?: VideoRenderer.SOFTWARE
-                    settingsRepository.setCurrentVideoRenderer(activeRenderer)
-                    _toastEvent.tryEmit(ToastEvent.RendererInitFailed(VideoRenderer.VULKAN))
-                    return@launch
+    fun onSettingsChanged(resumeWhenFinished: Boolean = false) {
+        if (resumeWhenFinished) {
+            resumeAfterSettingsReconciliation.set(true)
+        }
+        settingsReconciliationsInFlight.incrementAndGet()
+        sessionCoroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            var completedNormally = false
+            try {
+                settingsReconciliationMutex.withLock {
+                    val currentState = _emulatorState.value
+                    val activeRuntimeAuthenticationMatches = run {
+                        val runtimeConfig = activeRuntimeBridgeConfig
+                        val authenticatedUser =
+                            retroAchievementsRepository.getUserAuthentication() as? RAUserAuth.Authenticated
+                        runtimeConfig == null ||
+                            RaRuntimeAuthenticationPolicy.matches(
+                                runtimeUserId = runtimeConfig.username,
+                                runtimeToken = runtimeConfig.apiToken,
+                                authenticatedUserId = authenticatedUser?.username,
+                                authenticatedToken = authenticatedUser?.token,
+                            )
+                    }
+                    val suspendRcClientSubmissionTransport =
+                        activeRuntimePath == RetroAchievementsRuntimePath.RC_CLIENT &&
+                            !activeRuntimeAuthenticationMatches
+                    emulatorManager.setRetroAchievementsSubmissionTransportSuspended(
+                        suspendRcClientSubmissionTransport,
+                    )
+                    if (settingsRepository.getCurrentVideoRenderer() == VideoRenderer.VULKAN) {
+                        val pipelineProfile = VulkanPipelineProfile.fromFastPathPreference(
+                            settingsRepository.isVulkanFastPathEnabled().first()
+                        )
+                        val canUseVulkan = MelonDSAndroidInterface.isVulkanRendererSupported() &&
+                            MelonDSAndroidInterface.canInitializeVulkanRenderer(pipelineProfile)
+                        if (!canUseVulkan) {
+                            val activeRenderer = getRuntimeRendererOrNull() ?: VideoRenderer.SOFTWARE
+                            settingsRepository.setCurrentVideoRenderer(activeRenderer)
+                            _toastEvent.tryEmit(ToastEvent.RendererInitFailed(VideoRenderer.VULKAN))
+                            return@withLock
+                        }
+                    }
+
+                    val requestedRaEnabled = isRetroAchievementsEnabledForSettingsUpdate(currentState)
+                    if (
+                        activeRuntimePath != RetroAchievementsRuntimePath.DISABLED &&
+                        !activeRuntimeAuthenticationMatches
+                    ) {
+                        logRaSubmission(
+                            "ra_runtime_authentication_changed",
+                            "runtime_path" to activeRuntimePath.traceValue,
+                            "pending_total" to pendingRaSubmissionStore?.snapshot?.value?.counts?.total,
+                        )
+                        _toastEvent.tryEmit(ToastEvent.CannotSwitchRetroAchievementsMode)
+                        when (currentState) {
+                            is EmulatorState.RunningRom ->
+                                emulatorManager.updateRomEmulatorConfiguration(currentState.rom)
+                            is EmulatorState.RunningFirmware ->
+                                emulatorManager.updateFirmwareEmulatorConfiguration(currentState.console)
+                            else -> Unit
+                        }
+                        return@withLock
+                    }
+                    if (
+                        activeRuntimePath == RetroAchievementsRuntimePath.RC_CLIENT &&
+                        pendingRaSubmissionStore != null &&
+                        !refreshPendingRaSubmissionMirror()
+                    ) {
+                        _toastEvent.tryEmit(ToastEvent.PendingRaStateVerificationFailed)
+                        when (currentState) {
+                            is EmulatorState.RunningRom ->
+                                emulatorManager.updateRomEmulatorConfiguration(currentState.rom)
+                            is EmulatorState.RunningFirmware ->
+                                emulatorManager.updateFirmwareEmulatorConfiguration(currentState.console)
+                            else -> Unit
+                        }
+                        return@withLock
+                    }
+                    if (
+                        activeRuntimePath == RetroAchievementsRuntimePath.RC_CLIENT &&
+                        pendingRaSubmissionStore != null &&
+                        networkStatusProvider.isLikelyOnline()
+                    ) {
+                        requestPendingRuntimeReconnect()
+                    }
+                    val pendingStore = pendingRaSubmissionStore
+                    if (
+                        activeRuntimePath == RetroAchievementsRuntimePath.DISABLED &&
+                        (pendingStore?.snapshot?.value?.counts?.total ?: 0) > 0
+                    ) {
+                        _toastEvent.tryEmit(ToastEvent.CannotSwitchRetroAchievementsMode)
+                        return@withLock
+                    }
+                    val pendingContextStillValid =
+                        pendingStore?.let { pendingContextMatchesActiveRuntime(it.context) } ?: true
+                    val preservePendingRcClientRuntime =
+                        RaPendingSubmissionUiPolicy.mustKeepRuntimeForPendingSettingsDisable(
+                            requestedEnabled = requestedRaEnabled,
+                            isHardcore = emulatorSession.isRetroAchievementsHardcoreModeEnabled,
+                            runtimeOwner = if (activeRuntimePath == RetroAchievementsRuntimePath.RC_CLIENT) {
+                                RaPendingRuntimeOwner.RC_CLIENT
+                            } else {
+                                RaPendingRuntimeOwner.NONE
+                            },
+                            pendingCount = pendingStore?.snapshot?.value?.counts?.total ?: 0,
+                            contextStillValid = pendingContextStillValid,
+                        )
+                    pendingRaRuntimeDisableGate.update(preservePendingRcClientRuntime)
+                    if (preservePendingRcClientRuntime) {
+                        _toastEvent.tryEmit(ToastEvent.CannotSwitchRetroAchievementsMode)
+                        logRaSubmission(
+                            "ra_pending_settings_disable_deferred",
+                            "pending_total" to pendingRaSubmissionStore?.snapshot?.value?.counts?.total,
+                            "runtime_path" to "rc_client",
+                            "hardcore" to true,
+                        )
+                    }
+                    val sessionUpdateActions = emulatorSession.updateRetroAchievementsSettings(
+                        requestedRaEnabled || preservePendingRcClientRuntime,
+                        settingsRepository.isRetroAchievementsHardcoreEnabled(),
+                    )
+
+                    when (currentState) {
+                        is EmulatorState.RunningRom -> emulatorManager.updateRomEmulatorConfiguration(currentState.rom)
+                        is EmulatorState.RunningFirmware -> emulatorManager.updateFirmwareEmulatorConfiguration(currentState.console)
+                        else -> Unit
+                    }
+
+                    dispatchSessionUpdateActions(sessionUpdateActions)
+                }
+                completedNormally = true
+            } finally {
+                val shouldResume =
+                    settingsReconciliationsInFlight.decrementAndGet() == 0 &&
+                        resumeAfterSettingsReconciliation.getAndSet(false)
+                if (shouldResume && completedNormally && currentCoroutineContext().isActive) {
+                    resumeEmulatorIfSessionCanRun()
                 }
             }
+        }
+    }
 
-            val sessionUpdateActions = emulatorSession.updateRetroAchievementsSettings(
-                isRetroAchievementsEnabledForSettingsUpdate(currentState),
-                settingsRepository.isRetroAchievementsHardcoreEnabled(),
-            )
+    fun onRetroAchievementsLogoutRequested() {
+        settingsReconciliationsInFlight.incrementAndGet()
+        sessionCoroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            var resumeSession = true
+            var transportSuspended = false
+            var terminalCommitStarted = false
+            try {
+                settingsReconciliationMutex.withLock {
+                    emulatorManager.pauseEmulator()
+                    val runtimeConfig = activeRuntimeBridgeConfig
+                    val expectedUsername = runtimeConfig?.username?.takeIf(String::isNotBlank)
+                    val expectedToken = runtimeConfig?.apiToken?.takeIf(String::isNotBlank)
+                    val expectedStore = pendingRaSubmissionStore
+                    val expectedLeaseId = synchronized(runtimeAuthenticationLeaseMonitor) {
+                        activeRuntimeAuthenticationLeaseId
+                    }
+                    if (
+                        runtimeConfig == null ||
+                        expectedUsername == null ||
+                        expectedToken == null ||
+                        expectedStore == null ||
+                        expectedLeaseId == null ||
+                        !isInGameRetroAchievementsLogoutSupported()
+                    ) {
+                        logRaSubmission(
+                            "ra_logout_rejected",
+                            "reason" to "unsupported_runtime_context",
+                            "runtime_path" to activeRuntimePath.traceValue,
+                            "hardcore" to emulatorSession.isRetroAchievementsHardcoreModeEnabled,
+                        )
+                        _toastEvent.tryEmit(ToastEvent.CannotSwitchRetroAchievementsMode)
+                        return@withLock
+                    }
 
-            when (currentState) {
-                is EmulatorState.RunningRom -> emulatorManager.updateRomEmulatorConfiguration(currentState.rom)
-                is EmulatorState.RunningFirmware -> emulatorManager.updateFirmwareEmulatorConfiguration(currentState.console)
-                else -> {
-                    // Do nothing
+                    var authenticationMatchesRuntime = false
+                    val coordinator = RaInGameLogoutCoordinator(
+                        suspendSubmissionTransport = {
+                            emulatorManager.setRetroAchievementsSubmissionTransportSuspended(true)
+                            transportSuspended = true
+                        },
+                        runtimeIdentityMatches = {
+                            val authenticatedUser =
+                                retroAchievementsRepository.getUserAuthentication() as? RAUserAuth.Authenticated
+                            authenticationMatchesRuntime =
+                                RaRuntimeAuthenticationPolicy.matches(
+                                    runtimeUserId = expectedUsername,
+                                    runtimeToken = expectedToken,
+                                    authenticatedUserId = authenticatedUser?.username,
+                                    authenticatedToken = authenticatedUser?.token,
+                                )
+                            logRaSubmission(
+                                "ra_logout_identity_checked",
+                                "identity_match" to authenticationMatchesRuntime,
+                                "submission_allowed" to false,
+                                "pending_total" to expectedStore.snapshot.value.counts.total,
+                            )
+                            authenticationMatchesRuntime
+                        },
+                        preparePendingSubmissionIds = {
+                            prepareCurrentPendingRaSubmissionsForLogout(
+                                expectedRuntimeConfig = runtimeConfig,
+                                expectedStore = expectedStore,
+                            )
+                        },
+                        beginTerminalCommit = {
+                            terminalCommitStarted = true
+                            resumeSession = false
+                            resumeAfterSettingsReconciliation.set(false)
+                            raSessionStopGate.observeTerminalStop()
+                            pendingRaModalController.reset()
+                        },
+                        discardPendingSubmissions = { expectedSubmissionIds ->
+                            discardPreparedPendingRaSubmissionsForLogout(
+                                expectedStore = expectedStore,
+                                expectedSubmissionIds = expectedSubmissionIds,
+                            )
+                        },
+                        discardKotlinPendingAchievements = {
+                            discardHardcoreSubmissions()
+                        },
+                        terminateRuntime = {
+                            check(
+                                unloadAndHandoffRuntimeAuthenticationLeaseToLogout(
+                                    expectedLeaseId,
+                                ),
+                            )
+                            try {
+                                disableRetroAchievementsRuntime(reason = "logout")
+                            } finally {
+                                stopEmulator()
+                            }
+                            transportSuspended = false
+                        },
+                        clearAuthenticationIfMatches = {
+                            retroAchievementsRepository.completeRuntimeAuthenticationLogout(
+                                leaseId = expectedLeaseId,
+                                expectedUsername = expectedUsername,
+                                expectedToken = expectedToken,
+                            )
+                        },
+                        closeSession = {
+                            _uiEvent.tryEmit(EmulatorUiEvent.CloseEmulator)
+                        },
+                    )
+
+                    when (val result = coordinator.execute()) {
+                        is RaInGameLogoutResult.Committed -> {
+                            logRaSubmission(
+                                "ra_logout_completed",
+                                "identity_match" to authenticationMatchesRuntime,
+                                "native_expected" to result.discarded.expectedNativeSubmissions,
+                                "native_confirmed" to result.discarded.confirmedNativeSubmissions,
+                                "kotlin_achievements_discarded" to
+                                    result.discarded.confirmedKotlinAchievements,
+                                "authentication_cleared" to result.authenticationCleared,
+                                "failure_stages" to result.failures.joinToString(",") {
+                                    it.stage.name.lowercase()
+                                }.ifBlank { "none" },
+                                "runtime_unloaded_before_auth_clear" to true,
+                            )
+                            if (result.failures.isNotEmpty()) {
+                                _toastEvent.tryEmit(ToastEvent.RetroAchievementsLogoutFailed)
+                            }
+                        }
+                        is RaInGameLogoutResult.PreflightFailed -> {
+                            logRaSubmission(
+                                "ra_logout_failed",
+                                "stage" to result.stage.name.lowercase(),
+                                "error" to result.errorType,
+                                "terminal_commit_started" to false,
+                            )
+                            if (
+                                result.stage == RaInGameLogoutFailureStage.IDENTITY_VERIFICATION
+                            ) {
+                                _toastEvent.tryEmit(ToastEvent.RetroAchievementsAccountChangedInGame)
+                            } else {
+                                _toastEvent.tryEmit(ToastEvent.PendingRaStateVerificationFailed)
+                            }
+                        }
+                    }
+                }
+            } finally {
+                val noSettingsReconciliationRemaining =
+                    settingsReconciliationsInFlight.decrementAndGet() == 0
+                if (
+                    transportSuspended &&
+                    !terminalCommitStarted &&
+                    noSettingsReconciliationRemaining &&
+                    currentCoroutineContext().isActive
+                ) {
+                    val runtime = activeRuntimeBridgeConfig
+                    val authenticatedUser =
+                        retroAchievementsRepository.getUserAuthentication() as? RAUserAuth.Authenticated
+                    val canRestoreTransport =
+                        runtime != null &&
+                            RaRuntimeAuthenticationPolicy.matches(
+                                runtimeUserId = runtime.username,
+                                runtimeToken = runtime.apiToken,
+                                authenticatedUserId = authenticatedUser?.username,
+                                authenticatedToken = authenticatedUser?.token,
+                            )
+                    if (canRestoreTransport) {
+                        emulatorManager.setRetroAchievementsSubmissionTransportSuspended(false)
+                    }
+                }
+                if (
+                    resumeSession &&
+                    !terminalCommitStarted &&
+                    noSettingsReconciliationRemaining &&
+                    currentCoroutineContext().isActive
+                ) {
+                    resumeEmulatorIfSessionCanRun()
                 }
             }
-
-            dispatchSessionUpdateActions(sessionUpdateActions)
         }
     }
 
@@ -1090,18 +1649,48 @@ class EmulatorViewModel @Inject constructor(
                 }
 
                 if (pauseOptions != null) {
-                    _uiEvent.emit(EmulatorUiEvent.ShowPauseMenu(PauseMenu(pauseOptions)))
+                    val syncMenuState = buildRaPendingSyncMenuState()
+                    val labelOverrides: Map<PauseMenuOption, String> = if (
+                        syncMenuState.isVisible &&
+                        syncMenuState.label != null &&
+                        RomPauseMenuOption.SYNC_RETRO_ACHIEVEMENTS in pauseOptions
+                    ) {
+                        mapOf<PauseMenuOption, String>(
+                            RomPauseMenuOption.SYNC_RETRO_ACHIEVEMENTS to syncMenuState.label,
+                        )
+                    } else {
+                        emptyMap()
+                    }
+                    _uiEvent.emit(
+                        EmulatorUiEvent.ShowPauseMenu(
+                            PauseMenu(
+                                options = pauseOptions,
+                                labelOverrides = labelOverrides,
+                            ),
+                        ),
+                    )
                 }
             }
         }
     }
 
     fun resumeEmulator() {
-        if (!_emulatorState.value.isRunning()) {
+        if (!_emulatorState.value.isRunning() || !raSessionStopGate.canResume()) {
             return
         }
 
         sessionCoroutineScope.launch {
+            resumeEmulatorIfSessionCanRun()
+        }
+    }
+
+    private suspend fun resumeEmulatorIfSessionCanRun() {
+        if (
+            _emulatorState.value.isRunning() &&
+            settingsReconciliationsInFlight.get() == 0 &&
+            raSessionStopGate.canResume() &&
+            !pendingRaModalController.blocksLifecycleResume()
+        ) {
             emulatorManager.resumeEmulator()
         }
     }
@@ -1115,6 +1704,8 @@ class EmulatorViewModel @Inject constructor(
     fun resetEmulator() {
         if (_emulatorState.value.isRunning()) {
             sessionCoroutineScope.launch {
+                leaderboardAttemptCoordinator.beginRuntimeReset()
+                leaderboardTrackerUpdateLogLimiter.resetAll()
                 emulatorManager.resetEmulator()
                 _achievementsEvent.emit(RAEventUi.Reset)
             }
@@ -1122,15 +1713,28 @@ class EmulatorViewModel @Inject constructor(
     }
 
     fun stopEmulator() {
+        raBootstrapJob?.cancel()
+        raSessionJob?.cancel()
+        raSessionJob = null
+        leaderboardAttemptCoordinator.reset()
+        leaderboardTrackerUpdateLogLimiter.resetAll()
         viewModelScope.launch {
             _achievementsEvent.emit(RAEventUi.Reset)
         }
         finalizeOfflineRetroAchievementsSessionIfNeeded()
+        unloadAndReleaseActiveRuntimeAuthenticationLease("emulator_stopped")
+        activeRuntimeBridgeConfig = null
+        activeRuntimePath = RetroAchievementsRuntimePath.DISABLED
         emulatorManager.stopEmulator()
         screenshotFrameBufferProvider.clearBuffer()
     }
 
     fun exitEmulator(force: Boolean = false) {
+        if ((pendingRaSubmissionStore?.snapshot?.value?.counts?.total ?: 0) > 0) {
+            requestExitRom()
+            return
+        }
+
         if (!force && retroAchievementsSubmissionHandler.hasPendingSubmissions()) {
             _uiEvent.tryEmit(EmulatorUiEvent.ShowPendingSubmissionsDialog)
             retroAchievementsSubmissionHandler.retrySubmissionsImmediately()
@@ -1164,7 +1768,10 @@ class EmulatorViewModel @Inject constructor(
         }
     }
 
-    private fun requestExitRom() {
+    private fun requestExitRom(
+        exitContext: RaPendingExitContext = RaPendingExitContext.RESUMABLE_SESSION,
+    ) {
+        val effectiveExitContext = effectivePendingExitContext(exitContext)
         sessionCoroutineScope.launch {
             val runningRom = _emulatorState.value as? EmulatorState.RunningRom
             if (runningRom == null) {
@@ -1173,9 +1780,31 @@ class EmulatorViewModel @Inject constructor(
                 return@launch
             }
 
+            emulatorManager.pauseEmulator()
+            if (!refreshPendingRaSubmissionMirror()) {
+                _toastEvent.tryEmit(ToastEvent.PendingRaStateVerificationFailed)
+                if (effectiveExitContext == RaPendingExitContext.RESUMABLE_SESSION) {
+                    resumeEmulatorIfSessionCanRun()
+                }
+                return@launch
+            }
+            if ((pendingRaSubmissionStore?.snapshot?.value?.counts?.total ?: 0) > 0) {
+                when (handleRcClientPendingBeforeExit(effectiveExitContext)) {
+                    RaPendingExitFollowUp.EXIT -> Unit
+                    RaPendingExitFollowUp.RESUME_SESSION -> {
+                        if (effectiveExitContext == RaPendingExitContext.RESUMABLE_SESSION) {
+                            resumeEmulatorIfSessionCanRun()
+                        }
+                        return@launch
+                    }
+                    RaPendingExitFollowUp.KEEP_SESSION_PAUSED -> return@launch
+                }
+            }
+
             val userAuth = retroAchievementsRepository.getUserAuthentication()
             if (userAuth == null) {
                 maybeAutoSaveStateOnExit(runningRom.rom)
+                discardHardcoreSubmissions()
                 stopEmulator()
                 _uiEvent.emit(EmulatorUiEvent.CloseEmulator)
                 return@launch
@@ -1189,9 +1818,17 @@ class EmulatorViewModel @Inject constructor(
 
             if (ledgerStatus.integrity == OfflineLedgerIntegrity.OK) {
                 if (hardcoreSubmissionQueue.pendingCount() > 0) {
-                    val shouldExit = handleHardcorePendingBeforeExit(userId, contentId)
+                    val shouldExit = handleHardcorePendingBeforeExit(
+                        userId = userId,
+                        contentId = contentId,
+                        exitContext = effectiveExitContext,
+                    )
                     if (!shouldExit) {
-                        emulatorManager.resumeEmulator()
+                        if (effectiveExitContext == RaPendingExitContext.RESUMABLE_SESSION) {
+                            resumeEmulatorIfSessionCanRun()
+                        } else {
+                            requestExitRom(RaPendingExitContext.TERMINAL_STOP)
+                        }
                         return@launch
                     }
                 } else if (ledgerStatus.integrity == OfflineLedgerIntegrity.OK) {
@@ -1208,43 +1845,176 @@ class EmulatorViewModel @Inject constructor(
             }
 
             maybeAutoSaveStateOnExit(runningRom.rom)
+            discardHardcoreSubmissions()
             stopEmulator()
             _uiEvent.emit(EmulatorUiEvent.CloseEmulator)
         }
     }
 
+    private fun effectivePendingExitContext(
+        requested: RaPendingExitContext = RaPendingExitContext.RESUMABLE_SESSION,
+    ): RaPendingExitContext {
+        return raSessionStopGate.resolve(requested)
+    }
+
     private suspend fun handleHardcorePendingBeforeExit(
         userId: String,
         contentId: String,
+        exitContext: RaPendingExitContext = RaPendingExitContext.RESUMABLE_SESSION,
     ): Boolean {
         val pending = hardcoreSubmissionQueue.pendingCount()
         if (pending == 0) {
             return true
         }
 
-        val choice = awaitHardcorePendingExitChoice(pending)
-        return when (choice) {
-            HardcorePendingExitChoice.TRY_SYNC_NOW -> {
-                val drainResult = hardcoreSubmissionQueue.drain()
+        val counts = RaPendingCounts(
+            total = pending,
+            achievementUnlocks = pending,
+            leaderboardEntries = 0,
+            retryable = pending,
+            permanentFailures = 0,
+        )
+        val response = awaitHardcorePendingExitChoice(counts, exitContext)
+        return when (response.choice) {
+            HardcorePendingExitChoice.SYNC_AND_EXIT -> {
+                val drainResult = drainHardcoreSubmissions()
                 _toastEvent.tryEmit(
                     ToastEvent.HardcoreQueueSyncResult(
                         submittedCount = drainResult.submittedCount,
                         remainingCount = drainResult.remainingCount,
                     )
                 )
+                pendingRaModalController.clear(response.requestId)
+                drainResult.remainingCount == 0
+            }
+            HardcorePendingExitChoice.CONTINUE_PLAYING -> {
+                pendingRaModalController.clear(response.requestId)
                 false
             }
             HardcorePendingExitChoice.DISCARD_AND_EXIT -> {
-                hardcoreSubmissionQueue.discardAll()
+                discardHardcoreSubmissions()
                 hardcoreOfflineLossTracker.clearPendingUnlocks(userId, contentId)
+                pendingRaModalController.clear(response.requestId)
                 true
             }
         }
     }
 
-    private fun stopEmulatorAndExit() {
-        stopEmulator()
-        _uiEvent.tryEmit(EmulatorUiEvent.CloseEmulator)
+    private suspend fun handleRcClientPendingBeforeExit(
+        exitContext: RaPendingExitContext = RaPendingExitContext.RESUMABLE_SESSION,
+    ): RaPendingExitFollowUp {
+        val store = pendingRaSubmissionStore ?: return RaPendingExitFollowUp.EXIT
+        val before = store.snapshot.value.counts
+        if (before.total == 0) return RaPendingExitFollowUp.EXIT
+
+        val response = awaitHardcorePendingExitChoice(before, exitContext)
+        return when (response.choice) {
+            HardcorePendingExitChoice.SYNC_AND_EXIT -> {
+                if (
+                    !pendingRaModalController.transitionExitToSyncing(
+                        requestId = response.requestId,
+                        pending = before,
+                    )
+                ) {
+                    return RaPendingExitFollowUp.KEEP_SESSION_PAUSED
+                }
+                val result = try {
+                    syncPendingRaSubmissions(RaPendingSyncSource.EXIT_DIALOG)
+                } catch (cancellation: CancellationException) {
+                    pendingRaModalController.clear(response.requestId)
+                    throw cancellation
+                }
+                val decision = RaPendingSubmissionUiPolicy.afterSyncAndExit(result)
+                if (decision.shouldExit) {
+                    pendingRaModalController.clear(response.requestId)
+                } else {
+                    pendingRaModalController.showResult(
+                        requestId = response.requestId,
+                        result = result,
+                        action = if (exitContext == RaPendingExitContext.TERMINAL_STOP) {
+                            RaPendingSyncResultAction.REOPEN_TERMINAL_EXIT
+                        } else {
+                            RaPendingSyncResultAction.RESUME_SESSION
+                        },
+                    )
+                }
+                decision.followUp
+            }
+            HardcorePendingExitChoice.CONTINUE_PLAYING -> {
+                pendingRaModalController.clear(response.requestId)
+                RaPendingSubmissionUiPolicy.continuePlaying(before, exitContext).followUp
+            }
+            HardcorePendingExitChoice.DISCARD_AND_EXIT -> {
+                val expectedNativeSubmissionIds = store.snapshot.value.records
+                    .map { it.submission.nativeSubmissionId }
+                val confirmedNativeDiscardCount =
+                    emulatorManager.discardPendingRetroAchievementsSubmissions(
+                        expectedNativeSubmissionIds,
+                    )
+                if (confirmedNativeDiscardCount != expectedNativeSubmissionIds.size) {
+                    logRaSubmission(
+                        "ra_pending_discard_rejected",
+                        "expected" to expectedNativeSubmissionIds.size,
+                        "confirmed" to confirmedNativeDiscardCount,
+                        "session_scope" to "current",
+                        "accepted" to false,
+                    )
+                    val refreshed = refreshPendingRaSubmissionMirror()
+                    pendingRaModalController.clear(response.requestId)
+                    if (refreshed) {
+                        requestExitRom(exitContext)
+                        return RaPendingExitFollowUp.KEEP_SESSION_PAUSED
+                    }
+                    _toastEvent.tryEmit(ToastEvent.PendingRaStateVerificationFailed)
+                    return if (exitContext == RaPendingExitContext.RESUMABLE_SESSION) {
+                        RaPendingExitFollowUp.RESUME_SESSION
+                    } else {
+                        RaPendingExitFollowUp.KEEP_SESSION_PAUSED
+                    }
+                }
+                val discarded = store.discardByNativeSubmissionIds(
+                    nativeSubmissionIds = expectedNativeSubmissionIds.toSet(),
+                    requestedContext = store.context,
+                )
+                if (discarded != confirmedNativeDiscardCount) {
+                    logRaSubmission(
+                        "ra_pending_discard_mirror_mismatch",
+                        "confirmed" to confirmedNativeDiscardCount,
+                        "discarded" to discarded,
+                        "session_scope" to "current",
+                        "accepted" to false,
+                    )
+                    val refreshed = refreshPendingRaSubmissionMirror()
+                    pendingRaModalController.clear(response.requestId)
+                    if (refreshed) {
+                        requestExitRom(exitContext)
+                    } else {
+                        _toastEvent.tryEmit(ToastEvent.PendingRaStateVerificationFailed)
+                    }
+                    return RaPendingExitFollowUp.KEEP_SESSION_PAUSED
+                }
+                val remaining = store.snapshot.value.counts
+                val decision = RaPendingSubmissionUiPolicy.afterDiscardAndExit(before, remaining)
+                logRaSubmission(
+                    "ra_pending_discarded",
+                    "discarded" to discarded,
+                    "remaining" to remaining.total,
+                    "session_scope" to "current",
+                    "accepted" to false,
+                )
+                if (decision.shouldExit) {
+                    hardcoreOfflineLossTracker.clearPendingUnlocks(
+                        store.context.userId,
+                        store.context.contentHash,
+                    )
+                    pendingRaModalController.clear(response.requestId)
+                } else {
+                    pendingRaModalController.clear(response.requestId)
+                    requestExitRom(exitContext)
+                }
+                decision.followUp
+            }
+        }
     }
 
     private fun startTrackingPlayTime(rom: Rom) {
@@ -1265,9 +2035,15 @@ class EmulatorViewModel @Inject constructor(
                 when (option) {
                     RomPauseMenuOption.SETTINGS -> _uiEvent.tryEmit(
                         EmulatorUiEvent.OpenScreen.SettingsScreen(
-                            (_emulatorState.value as? EmulatorState.RunningRom)?.rom?.let {
-                                getInGameRomSettingsOverrides(it)
+                            romSettingsOverrides =
+                                (_emulatorState.value as? EmulatorState.RunningRom)?.rom?.let {
+                                    getInGameRomSettingsOverrides(it)
                             } ?: InGameRomSettingsOverrides(),
+                            retroAchievementsRuntimeIdentityLocked =
+                                activeRuntimePath != RetroAchievementsRuntimePath.DISABLED ||
+                                    emulatorSession.isRetroAchievementsEnabledForSession(),
+                            retroAchievementsInGameLogoutSupported =
+                                isInGameRetroAchievementsLogoutSupported(),
                         ),
                     )
                     RomPauseMenuOption.ROM_SETTINGS -> {
@@ -1287,16 +2063,20 @@ class EmulatorViewModel @Inject constructor(
                     RomPauseMenuOption.SAVE_STATE -> {
                         if (emulatorSession.areSaveStatesAllowed()) {
                             (_emulatorState.value as? EmulatorState.RunningRom)?.let {
-                                val saveStateSlots = getRomSaveStateSlots(it.rom)
-                                _uiEvent.tryEmit(EmulatorUiEvent.ShowRomSaveStates(saveStateSlots, EmulatorUiEvent.ShowRomSaveStates.Reason.SAVING))
+                                sessionCoroutineScope.launch {
+                                    val saveStateSlots = getRomSaveStateSlots(it.rom)
+                                    _uiEvent.emit(EmulatorUiEvent.ShowRomSaveStates(saveStateSlots, EmulatorUiEvent.ShowRomSaveStates.Reason.SAVING))
+                                }
                             }
                         }
                     }
                     RomPauseMenuOption.LOAD_STATE -> {
                         if (emulatorSession.areSaveStateLoadsAllowed()) {
                             (_emulatorState.value as? EmulatorState.RunningRom)?.let {
-                                val saveStateSlots = getRomSaveStateSlots(it.rom)
-                                _uiEvent.tryEmit(EmulatorUiEvent.ShowRomSaveStates(saveStateSlots, EmulatorUiEvent.ShowRomSaveStates.Reason.LOADING))
+                                sessionCoroutineScope.launch {
+                                    val saveStateSlots = getRomSaveStateSlots(it.rom)
+                                    _uiEvent.emit(EmulatorUiEvent.ShowRomSaveStates(saveStateSlots, EmulatorUiEvent.ShowRomSaveStates.Reason.LOADING))
+                                }
                             }
                         } else {
                             _toastEvent.tryEmit(ToastEvent.CannotLoadSaveStatesWhenRAHardcoreIsEnabled)
@@ -1326,6 +2106,7 @@ class EmulatorViewModel @Inject constructor(
                         }
                     }
                     RomPauseMenuOption.VIEW_ACHIEVEMENTS -> _uiEvent.tryEmit(EmulatorUiEvent.ShowAchievementList)
+                    RomPauseMenuOption.SYNC_RETRO_ACHIEVEMENTS -> syncPendingRaSubmissionsFromPauseMenu()
                     RomPauseMenuOption.PRESETS -> _uiEvent.tryEmit(EmulatorUiEvent.ShowDualScreenPresets)
                     RomPauseMenuOption.RENDERER_DEBUG -> _uiEvent.tryEmit(EmulatorUiEvent.ShowRendererDebugMenu)
                     RomPauseMenuOption.RESET -> resetEmulator()
@@ -1408,7 +2189,7 @@ class EmulatorViewModel @Inject constructor(
                         _toastEvent.emit(ToastEvent.StateSaveFailed)
                     }
                 } finally {
-                    emulatorManager.resumeEmulator()
+                    resumeEmulatorIfSessionCanRun()
                 }
             }
         }
@@ -1428,7 +2209,7 @@ class EmulatorViewModel @Inject constructor(
                     if (!loadRomState(it.rom, slot)) {
                         _toastEvent.emit(ToastEvent.StateLoadFailed)
                     }
-                    emulatorManager.resumeEmulator()
+                    resumeEmulatorIfSessionCanRun()
                 }
             }
         }
@@ -1440,11 +2221,11 @@ class EmulatorViewModel @Inject constructor(
             is EmulatorState.RunningRom -> {
                 sessionCoroutineScope.launch {
                     emulatorManager.pauseEmulator()
-                    val quickSlot = saveStatesRepository.getRomQuickSaveStateSlot(currentState.rom)
+                    val quickSlot = getRomQuickSaveStateSlot(currentState.rom)
                     if (saveRomState(currentState.rom, quickSlot)) {
                         _toastEvent.emit(ToastEvent.QuickSaveSuccessful)
                     }
-                    emulatorManager.resumeEmulator()
+                    resumeEmulatorIfSessionCanRun()
                 }
             }
             is EmulatorState.RunningFirmware -> {
@@ -1463,11 +2244,11 @@ class EmulatorViewModel @Inject constructor(
                 if (emulatorSession.areSaveStateLoadsAllowed()) {
                     sessionCoroutineScope.launch {
                         emulatorManager.pauseEmulator()
-                        val quickSlot = saveStatesRepository.getRomQuickSaveStateSlot(currentState.rom)
+                        val quickSlot = getRomQuickSaveStateSlot(currentState.rom)
                         if (loadRomState(currentState.rom, quickSlot)) {
                             _toastEvent.emit(ToastEvent.QuickLoadSuccessful)
                         }
-                        emulatorManager.resumeEmulator()
+                        resumeEmulatorIfSessionCanRun()
                     }
                 } else {
                     _toastEvent.tryEmit(ToastEvent.CannotLoadSaveStatesWhenRAHardcoreIsEnabled)
@@ -1482,15 +2263,20 @@ class EmulatorViewModel @Inject constructor(
         }
     }
 
-    fun deleteSaveStateSlot(slot: SaveStateSlot): List<SaveStateSlot>? {
-        return (_emulatorState.value as? EmulatorState.RunningRom)?.let {
-            saveStatesRepository.deleteRomSaveState(it.rom, slot)
-            getRomSaveStateSlots(it.rom)
+    fun deleteSaveStateSlot(slot: SaveStateSlot, onSlotsUpdated: (List<SaveStateSlot>) -> Unit) {
+        (_emulatorState.value as? EmulatorState.RunningRom)?.let {
+            sessionCoroutineScope.launch {
+                val updatedSlots = withContext(Dispatchers.IO) {
+                    saveStatesRepository.deleteRomSaveState(it.rom, slot)
+                    saveStatesRepository.getRomSaveStates(it.rom)
+                }
+                onSlotsUpdated(updatedSlots)
+            }
         }
     }
 
     private suspend fun saveRomState(rom: Rom, slot: SaveStateSlot): Boolean {
-        val slotUri = saveStatesRepository.getRomSaveStateUri(rom, slot)
+        val slotUri = getRomSaveStateUri(rom, slot)
         if (!emulatorManager.saveState(slotUri)) {
             return false
         }
@@ -1509,7 +2295,7 @@ class EmulatorViewModel @Inject constructor(
             return false
         }
 
-        val slotUri = saveStatesRepository.getRomSaveStateUri(rom, slot)
+        val slotUri = getRomSaveStateUri(rom, slot)
         val success = emulatorManager.loadState(slotUri)
         if (success) {
             _achievementsEvent.emit(RAEventUi.Reset)
@@ -1529,13 +2315,13 @@ class EmulatorViewModel @Inject constructor(
             return
         }
 
-        val quickSlot = saveStatesRepository.getRomQuickSaveStateSlot(rom)
+        val quickSlot = getRomQuickSaveStateSlot(rom)
         if (!quickSlot.exists) {
             Log.i(AUTO_STATE_TAG, "auto-load skipped: quick slot missing")
             return
         }
 
-        val quickSlotUri = runCatching { saveStatesRepository.getRomSaveStateUri(rom, quickSlot) }
+        val quickSlotUri = runCatching { getRomSaveStateUri(rom, quickSlot) }
             .onFailure { Log.w(AUTO_STATE_TAG, "auto-load skipped: failed to resolve quick slot for ${rom.name}", it) }
             .getOrNull()
         if (quickSlotUri == null || !isSavestateHeaderValid(quickSlotUri)) {
@@ -1551,7 +2337,7 @@ class EmulatorViewModel @Inject constructor(
         }.onFailure {
             Log.w(AUTO_STATE_TAG, "auto-load failed with exception: slot=${quickSlot.slot} rom=${rom.name}", it)
         }.getOrDefault(false)
-        emulatorManager.resumeEmulator()
+        resumeEmulatorIfSessionCanRun()
         if (didLoad) {
             _toastEvent.tryEmit(ToastEvent.QuickLoadSuccessful)
             Log.i(AUTO_STATE_TAG, "auto-load success: slot=${quickSlot.slot} rom=${rom.name}")
@@ -1619,7 +2405,7 @@ class EmulatorViewModel @Inject constructor(
         }
 
         emulatorManager.pauseEmulator()
-        val quickSlot = saveStatesRepository.getRomQuickSaveStateSlot(rom)
+        val quickSlot = getRomQuickSaveStateSlot(rom)
         Log.i(AUTO_STATE_TAG, "auto-save start: slot=${quickSlot.slot} rom=${rom.name}")
         val didSave = saveRomState(rom, quickSlot)
         if (didSave) {
@@ -1854,30 +2640,50 @@ class EmulatorViewModel @Inject constructor(
     }
 
     private fun resetEmulatorState(newState: EmulatorState) {
-        finalizeOfflineRetroAchievementsSessionIfNeeded()
-        sessionCoroutineScope.notifyNewSessionStarted()
-        emulatorSession.reset()
+        retroAchievementsEndpointProvider.endSession()
+        raBootstrapJob?.cancel()
+        raSessionJob?.cancel()
         raSessionJob = null
+        finalizeOfflineRetroAchievementsSessionIfNeeded()
+        unloadAndReleaseActiveRuntimeAuthenticationLease("session_reset")
+        val previousPendingStore = detachPendingRaSubmissionSession()
+        if (previousPendingStore != null) {
+            viewModelScope.launch {
+                previousPendingStore.cleanup()
+            }
+        }
+        sessionCoroutineScope.notifyNewSessionStarted()
+        leaderboardAttemptCoordinator.reset()
+        leaderboardTrackerUpdateLogLimiter.resetAll()
+        emulatorSession.reset()
         _currentFps.value = null
         _emulatorState.value = newState
         _mainScreenBackground.value = RuntimeBackground.None
         _secondaryScreenBackground.value = RuntimeBackground.None
         _layout.value = null
         currentRom = null
+        lastEndpointRestartNoticeGeneration = null
         activeRomConfig.value = null
         currentRetroAchievementsGameId = null
         offlineSyncChoiceDeferred?.cancel()
         offlineSyncChoiceDeferred = null
-        hardcoreExitChoiceDeferred?.cancel()
-        hardcoreExitChoiceDeferred = null
+        hardcoreExitChoiceWaiter?.deferred?.cancel()
+        hardcoreExitChoiceWaiter = null
+        pendingRaModalController.reset()
         retroAchievementsNetworkMode = RetroAchievementsNetworkMode.ONLINE_LIVE
         retroAchievementsSessionMode = RetroAchievementsSessionMode.SOFTCORE
+        transitionRaHardcoreContinuity(
+            RaHardcoreContinuityEvent.SessionReset,
+            reason = "session_reset",
+        )
         isHardcoreEligibleAfterOnlineStart = false
         startedSessionOnlineLive = false
         isRetroAchievementsOnlineSessionStarted = false
         activeRuntimeBridgeConfig = null
         activeRuntimePath = RetroAchievementsRuntimePath.DISABLED
+        leaderboardDiagnosticsEnabled = false
         didReceiveRendererInitFailure = false
+        raSessionStopGate.reset()
         announcedMasteryKeys.clear()
         pendingRuntimeAchievementTriggers.clear()
         pendingRuntimeLeaderboardCompletions.clear()
@@ -1922,7 +2728,10 @@ class EmulatorViewModel @Inject constructor(
                                 stopEmulator()
                                 _emulatorState.value = EmulatorState.FirmwareLoadError(MelonEmulator.FirmwareLoadResult.FIRMWARE_BAD)
                             }
-                            else -> stopEmulatorAndExit()
+                            else -> {
+                                raSessionStopGate.observeTerminalStop()
+                                requestExitRom(RaPendingExitContext.TERMINAL_STOP)
+                            }
                         }
                     }
                 }
@@ -1962,12 +2771,19 @@ class EmulatorViewModel @Inject constructor(
                     is RAEvent.OnServerError -> onRuntimeServerError(it)
                     RAEvent.OnDisconnected -> onRuntimeDisconnected()
                     RAEvent.OnReconnected -> onRuntimeReconnected()
-                    is RAEvent.OnLeaderboardAttemptStarted -> onLeaderboardAttemptStarted(it)
-                    is RAEvent.OnLeaderboardAttemptUpdated -> onLeaderboardAttemptUpdated(it)
+                    is RAEvent.OnLeaderboardAttemptStarted,
+                    is RAEvent.OnLeaderboardAttemptUpdated,
+                    is RAEvent.OnLeaderboardAttemptSubmitted,
+                    is RAEvent.OnLeaderboardScoreboard,
+                    is RAEvent.OnLeaderboardSubmissionFailed,
+                    is RAEvent.OnLeaderboardAttemptCancelled,
+                    is RAEvent.OnLeaderboardTrackerHidden,
+                    is RAEvent.OnLeaderboardRuntimeReset -> onRcClientLeaderboardEvent(it)
                     is RAEvent.OnLeaderboardAttemptCompleted -> onLeaderboardAttemptCompleted(it)
-                    is RAEvent.OnLeaderboardAttemptCancelled -> onLeaderboardAttemptCancelled(it)
                     is RAEvent.OnAchievementProgressHidden -> onAchievementProgressHidden(it.achievementId)
-                    is RAEvent.OnLeaderboardTrackerHidden -> onLeaderboardTrackerHidden(it.leaderboardId)
+                    is RAEvent.OnPendingSubmissionAdded -> onPendingRaSubmissionAdded(it)
+                    is RAEvent.OnPendingSubmissionResolved -> onPendingRaSubmissionResolved(it)
+                    is RAEvent.OnPendingSubmissionBarrier -> onPendingRaSubmissionBarrier(it)
                 }
             }
         }
@@ -2029,14 +2845,61 @@ class EmulatorViewModel @Inject constructor(
                 } else {
                     settingsRepository.observeRenderConfiguration(romConfig)
                 }
-            }.collectLatest {
+            }.combine(isRetroArchShaderDeclinedForSession) { configuration, declined ->
+                configuration to declined
+            }.collectLatest { (it, declined) ->
+                val dropShader = declined && it.videoFiltering == VideoFiltering.RETROARCH
                 _runtimeRendererConfiguration.value = RuntimeRendererConfiguration(
                     renderer = it.renderer,
-                    videoFiltering = it.videoFiltering,
+                    videoFiltering = if (dropShader) VideoFiltering.NONE else it.videoFiltering,
                     resolutionScaling = it.resolutionScaling,
-                    retroArchShader = it.retroArchShader,
+                    retroArchShader = if (dropShader) it.retroArchShader.copy(presetPath = null) else it.retroArchShader,
                 )
             }
+        }
+    }
+
+    private suspend fun confirmRetroArchShaderCompile(romConfig: RomConfig?) {
+        if (isRetroArchShaderDeclinedForSession.value) {
+            return
+        }
+
+        val configuration = runCatching {
+            if (romConfig == null) {
+                settingsRepository.observeRenderConfiguration().first()
+            } else {
+                settingsRepository.observeRenderConfiguration(romConfig).first()
+            }
+        }.getOrNull() ?: return
+
+        if (configuration.videoFiltering != VideoFiltering.RETROARCH) {
+            return
+        }
+        val presetPath = configuration.retroArchShader.presetPath?.takeIf { it.isNotBlank() } ?: return
+
+        val backend = if (configuration.renderer == VideoRenderer.VULKAN) {
+            ShaderCompileTimeStore.Backend.VULKAN
+        } else {
+            ShaderCompileTimeStore.Backend.OPEN_GL
+        }
+        val measured = shaderCompileTimeStore.measured(presetPath, backend)
+        val expectedMillis = measured ?: configuration.retroArchShader.estimatedCompileMillis
+        if (expectedMillis < heavyShaderCompileThresholdMs) {
+            return
+        }
+
+        val response = CompletableDeferred<Boolean>()
+        val request = HeavyShaderCompileRequest(
+            presetName = presetPath.substringAfterLast('/'),
+            estimatedMillis = expectedMillis,
+            isMeasured = measured != null,
+            response = response,
+        )
+        if (!_heavyShaderCompileRequest.tryEmit(request)) {
+            return
+        }
+        if (!response.await()) {
+            isRetroArchShaderDeclinedForSession.value = true
         }
     }
 
@@ -2079,8 +2942,16 @@ class EmulatorViewModel @Inject constructor(
         return fileRomProcessor?.getRomInfo(rom)
     }
 
-    private fun getRomSaveStateSlots(rom: Rom): List<SaveStateSlot> {
-        return saveStatesRepository.getRomSaveStates(rom)
+    private suspend fun getRomSaveStateSlots(rom: Rom): List<SaveStateSlot> = withContext(Dispatchers.IO) {
+        saveStatesRepository.getRomSaveStates(rom)
+    }
+
+    private suspend fun getRomQuickSaveStateSlot(rom: Rom): SaveStateSlot = withContext(Dispatchers.IO) {
+        saveStatesRepository.getRomQuickSaveStateSlot(rom)
+    }
+
+    private suspend fun getRomSaveStateUri(rom: Rom, slot: SaveStateSlot): Uri = withContext(Dispatchers.IO) {
+        saveStatesRepository.getRomSaveStateUri(rom, slot)
     }
 
     fun isSustainedPerformanceModeEnabled(): Boolean {
@@ -2261,7 +3132,7 @@ class EmulatorViewModel @Inject constructor(
         }
         Log.i(
             RA_IDENTITY_TAG,
-            "source=bootstrap stage=game_not_found runtime=disabled game_hash=${rom.retroAchievementsHash} rom=${rom.name.replace(' ', '_')}",
+            "source=bootstrap stage=game_not_found runtime=disabled game_hash=redacted",
         )
         return GameAchievementData.withDisabledRetroAchievementsIntegration(
             status = GameAchievementData.IntegrationStatus.DISABLED_GAME_NOT_FOUND,
@@ -2311,10 +3182,13 @@ class EmulatorViewModel @Inject constructor(
                 "source=runtime_config runtime=rc_client user_agent=$retroAchievementsUserAgent " +
                 "package=${context.packageName} version=$retroAchievementsVersionName " +
                 "game_id=${currentRetroAchievementsGameId ?: "none"} " +
-                "game_hash=${rom.retroAchievementsHash} " +
+                "game_hash=redacted " +
                 "hardcore=${launchDecision.sessionMode == RetroAchievementsSessionMode.HARDCORE} " +
                 "unofficial=${settingsRepository.areRetroAchievementsUnofficialAchievementsEnabled()} " +
-                "encore=${settingsRepository.isRetroAchievementsEncoreModeEnabled()}",
+                "encore=${settingsRepository.isRetroAchievementsEncoreModeEnabled()} " +
+                "host_source=${if (launchDecision.usesProxyBackend) "raofflineproxy" else "official"} " +
+                "native_client_host_configured=${launchDecision.nativeClientHost.isNotBlank()} " +
+                "endpoint_generation=${launchDecision.endpointGeneration}",
         )
         return RARuntimeBridgeConfig(
             runtimeMode = RARuntimeBridgeMode.RC_CLIENT_ONLINE,
@@ -2323,9 +3197,13 @@ class EmulatorViewModel @Inject constructor(
             apiToken = userAuth.token,
             gameHash = rom.retroAchievementsHash,
             gameId = currentRetroAchievementsGameId,
+            submissionSessionId = RaSubmissionSessionIdGenerator.next(),
             hardcoreEnabled = launchDecision.sessionMode == RetroAchievementsSessionMode.HARDCORE,
             unofficialEnabled = settingsRepository.areRetroAchievementsUnofficialAchievementsEnabled(),
             encoreEnabled = settingsRepository.isRetroAchievementsEncoreModeEnabled(),
+            apiHost = launchDecision.nativeClientHost,
+            usesProxyHost = launchDecision.usesProxyBackend,
+            endpointGeneration = launchDecision.endpointGeneration,
         )
     }
 
@@ -2341,23 +3219,20 @@ class EmulatorViewModel @Inject constructor(
             append(" stage=").append(stage)
             append(" runtime=").append(runtimePath.traceValue)
             append(" game_id=").append(runtimeConfig?.gameId ?: currentRetroAchievementsGameId ?: "none")
-            append(" game_hash=").append(runtimeConfig?.gameHash ?: currentRom?.retroAchievementsHash ?: "none")
+            append(" game_hash=redacted")
             append(" achievements=").append(achievementData.lockedAchievements.size)
             append(" leaderboards=").append(achievementData.leaderboards.size)
             append(" has_rich_presence=").append(achievementData.richPresencePatch != null)
             append(" status=").append(achievementData.retroAchievementsIntegrationStatus.name)
             throwable?.let {
                 append(" error=").append(it.javaClass.simpleName)
-                it.message?.takeIf { message -> message.isNotBlank() }?.let { errorMessage ->
-                    append(" error_message=").append(errorMessage.replace(' ', '_'))
-                }
             }
         }
 
         if (throwable == null) {
             Log.i(RA_IDENTITY_TAG, message)
         } else {
-            Log.w(RA_IDENTITY_TAG, message, throwable)
+            Log.w(RA_IDENTITY_TAG, message)
         }
     }
 
@@ -2378,6 +3253,24 @@ class EmulatorViewModel @Inject constructor(
             }
         }
         Log.i(RA_SUBMISSION_TAG, message)
+    }
+
+    private fun transitionRaHardcoreContinuity(
+        event: RaHardcoreContinuityEvent,
+        reason: String,
+    ) {
+        val previous = _raHardcoreContinuityState.value
+        val next = RaHardcoreContinuityStateMachine.reduce(previous, event)
+        if (next == previous) return
+
+        _raHardcoreContinuityState.value = next
+        logRaSubmission(
+            "ra_hardcore_continuity_transition",
+            "from" to previous.name.lowercase(),
+            "to" to next.name.lowercase(),
+            "reason" to reason,
+            "hardcore" to emulatorSession.isRetroAchievementsHardcoreModeEnabled,
+        )
     }
 
     private fun buildAchievementDataSignature(achievementData: GameAchievementData): String {
@@ -2470,7 +3363,13 @@ class EmulatorViewModel @Inject constructor(
     }
 
     private fun onAchievementTriggered(achievementId: Long) {
+        val runtimePathAtReceipt = activeRuntimePath
+        val runtimeConfigAtReceipt = activeRuntimeBridgeConfig
         sessionCoroutineScope.launch {
+            if (runtimePathAtReceipt == RetroAchievementsRuntimePath.DISABLED) {
+                completeAchievementSubmissionTrace(achievementId, "runtime_disabled")
+                return@launch
+            }
             logRaTrace(
                 "achievement_trigger_received",
                 "achievement_id" to achievementId,
@@ -2479,6 +3378,13 @@ class EmulatorViewModel @Inject constructor(
                 "online" to networkStatusProvider.isOnline(),
             )
             val achievement = retroAchievementsRepository.getAchievement(achievementId).getOrNull()
+            if (
+                activeRuntimePath != runtimePathAtReceipt ||
+                activeRuntimeBridgeConfig !== runtimeConfigAtReceipt
+            ) {
+                completeAchievementSubmissionTrace(achievementId, "stale_runtime_event")
+                return@launch
+            }
             val encoreEnabled = settingsRepository.isRetroAchievementsEncoreModeEnabled()
             if (!encoreEnabled && achievement != null) {
                 val isHardcoreModeEnabled = emulatorSession.isRetroAchievementsHardcoreModeEnabled
@@ -2498,11 +3404,41 @@ class EmulatorViewModel @Inject constructor(
                     return@launch
                 }
             }
+
+            if (runtimePathAtReceipt == RetroAchievementsRuntimePath.RC_CLIENT) {
+                check(
+                    AchievementSubmissionOwnership.dispatch(
+                        owner = AchievementSubmissionOwnership.Owner.RC_CLIENT,
+                        submitFromKotlin = {
+                            error("rc_client achievement ownership cannot invoke Kotlin submit")
+                        },
+                    ) == AchievementSubmissionOwnership.Action.RUNTIME_OWNS_SUBMIT,
+                )
+                if (achievement != null) {
+                    val isHardcoreModeEnabled = emulatorSession.isRetroAchievementsHardcoreModeEnabled
+                    logRaSubmission(
+                        "achievement_submit_expected",
+                        "achievement_id" to achievementId,
+                        "submit_path" to "rc_client_http",
+                        "expected_api" to "awardachievement",
+                        "game_id" to achievement.gameId.id,
+                        "game_hash" to currentRom?.retroAchievementsHash,
+                        "hardcore" to isHardcoreModeEnabled,
+                    )
+                    _achievementsEvent.emit(RAEventUi.AchievementTriggered(achievement))
+                }
+                completeAchievementSubmissionTrace(achievementId, "owned_by_rc_client")
+                return@launch
+            }
+
             if (retroAchievementsNetworkMode == RetroAchievementsNetworkMode.ONLINE_LIVE && !networkStatusProvider.isLikelyOnline()) {
                 transitionToOfflineAccumulationIfNeeded()
             }
 
-            if (retroAchievementsNetworkMode == RetroAchievementsNetworkMode.OFFLINE_ACCUMULATING) {
+            if (
+                retroAchievementsNetworkMode == RetroAchievementsNetworkMode.OFFLINE_ACCUMULATING ||
+                retroAchievementsNetworkMode == RetroAchievementsNetworkMode.RECONCILING_RA_SUBMISSIONS
+            ) {
                 val hardcorePendingInMemory = isHardcoreEligibleAfterOnlineStart && achievement != null
                 logRaSubmission(
                     "achievement_submit_expected",
@@ -2520,42 +3456,33 @@ class EmulatorViewModel @Inject constructor(
                     "session_mode" to retroAchievementsSessionMode.name,
                 )
                 completeAchievementSubmissionTrace(achievementId, "offline_queued")
-                handleOfflineAchievementTriggered(achievementId, achievement)
+                handleOfflineAchievementTriggered(
+                    achievementId = achievementId,
+                    achievement = achievement,
+                    authentication = runtimeAuthenticationSnapshot(runtimeConfigAtReceipt),
+                )
                 return@launch
             }
 
             if (achievement != null) {
                 val isHardcoreModeEnabled = emulatorSession.isRetroAchievementsHardcoreModeEnabled
 
-                if (activeRuntimePath == RetroAchievementsRuntimePath.RC_CLIENT) {
-                    logRaSubmission(
-                        "achievement_submit_expected",
-                        "achievement_id" to achievementId,
-                        "submit_path" to "rc_client_http",
-                        "expected_api" to "awardachievement",
-                        "game_id" to achievement.gameId.id,
-                        "game_hash" to currentRom?.retroAchievementsHash,
-                        "hardcore" to isHardcoreModeEnabled,
-                    )
-                    logRaTrace(
-                        "achievement_submit_owned_by_rc_client",
-                        "achievement_id" to achievementId,
-                        "hardcore" to isHardcoreModeEnabled,
-                    )
-                    _achievementsEvent.emit(RAEventUi.AchievementTriggered(achievement))
-                    if (isHardcoreModeEnabled) {
-                    }
-                    completeAchievementSubmissionTrace(achievementId, "submitted_by_rc_client")
-                    return@launch
-                }
-
                 if (!ensureAchievementSubmitContext(achievement)) {
                     completeAchievementSubmissionTrace(achievementId, "context_mismatch")
                     return@launch
                 }
 
+                val submissionAuthentication =
+                    runtimeAuthenticationSnapshot(runtimeConfigAtReceipt)
+                        ?: run {
+                            completeAchievementSubmissionTrace(achievementId, "missing_runtime_authentication")
+                            return@launch
+                        }
                 if (isHardcoreModeEnabled) {
-                    handleHardcoreAchievementTriggered(achievement)
+                    handleHardcoreAchievementTriggered(
+                        achievement = achievement,
+                        authentication = submissionAuthentication,
+                    )
                 } else {
                     logRaTrace(
                         "achievement_submit_attempt",
@@ -2563,7 +3490,11 @@ class EmulatorViewModel @Inject constructor(
                         "hardcore" to false,
                         "game_id" to currentRetroAchievementsGameId,
                     )
-                    retroAchievementsSubmissionHandler.addPendingAchievementSubmission(achievement, false)
+                    retroAchievementsSubmissionHandler.addPendingAchievementSubmission(
+                        achievement = achievement,
+                        forHardcoreMode = false,
+                        authentication = submissionAuthentication,
+                    )
                 }
             } else {
                 completeAchievementSubmissionTrace(achievementId, "achievement_missing")
@@ -2572,7 +3503,18 @@ class EmulatorViewModel @Inject constructor(
     }
 
     private suspend fun transitionToOfflineAccumulationIfNeeded() {
-        if (retroAchievementsNetworkMode == RetroAchievementsNetworkMode.OFFLINE_ACCUMULATING) {
+        if (activeRuntimeBridgeConfig?.usesProxyHost == true) {
+            logRaTrace(
+                "network_transition_owned_by_raofflineproxy",
+                "built_in_ledger" to false,
+                "built_in_sync" to false,
+            )
+            return
+        }
+        if (
+            retroAchievementsNetworkMode == RetroAchievementsNetworkMode.OFFLINE_ACCUMULATING ||
+            retroAchievementsNetworkMode == RetroAchievementsNetworkMode.RECONCILING_RA_SUBMISSIONS
+        ) {
             return
         }
 
@@ -2588,7 +3530,18 @@ class EmulatorViewModel @Inject constructor(
 
         retroAchievementsNetworkMode = RetroAchievementsNetworkMode.OFFLINE_ACCUMULATING
         emulatorSession.updateRetroAchievementsOfflineModeEnabled(true)
-        isRetroAchievementsOnlineSessionStarted = false
+        if (
+            isHardcoreEligibleAfterOnlineStart &&
+            startedSessionOnlineLive &&
+            activeRuntimePath == RetroAchievementsRuntimePath.RC_CLIENT
+        ) {
+            transitionRaHardcoreContinuity(
+                RaHardcoreContinuityEvent.NetworkLost(
+                    pendingTotal = pendingRaSubmissionStore?.snapshot?.value?.counts?.total ?: 0,
+                ),
+                reason = "network_lost",
+            )
+        }
         logRaTrace(
             "network_transition_offline",
             "hardcore_eligible" to isHardcoreEligibleAfterOnlineStart,
@@ -2602,8 +3555,11 @@ class EmulatorViewModel @Inject constructor(
                 unlockMode = OfflineUnlockMode.SOFTCORE,
                 offlineType = OfflineUnlockType.OFFLINE_AFTER_START,
             )
-        } else if (hardcoreSubmissionQueue.pendingCount() > 0) {
-            _toastEvent.tryEmit(ToastEvent.HardcoreOfflineUnsyncedWarning(hardcoreSubmissionQueue.pendingCount()))
+        } else {
+            val pending = pendingRaSubmissionStore?.snapshot?.value?.counts?.total ?: 0
+            if (pending > 0) {
+                _toastEvent.tryEmit(ToastEvent.HardcoreOfflineUnsyncedWarning(pending))
+            }
         }
     }
 
@@ -2664,9 +3620,12 @@ class EmulatorViewModel @Inject constructor(
         return created
     }
 
-    private suspend fun handleHardcoreAchievementTriggered(achievement: me.magnum.rcheevosapi.model.RAAchievement) {
+    private suspend fun handleHardcoreAchievementTriggered(
+        achievement: me.magnum.rcheevosapi.model.RAAchievement,
+        authentication: RAUserAuth.Authenticated,
+    ) {
         if (networkStatusProvider.isLikelyOnline()) {
-            hardcoreSubmissionQueue.drain()
+            drainHardcoreSubmissions()
         }
 
         logRaTrace(
@@ -2676,7 +3635,11 @@ class EmulatorViewModel @Inject constructor(
             "online" to networkStatusProvider.isLikelyOnline(),
         )
 
-        val awardResult = retroAchievementsRepository.awardAchievement(achievement, forHardcoreMode = true)
+        val awardResult = retroAchievementsRepository.awardAchievementForAuthentication(
+            achievement = achievement,
+            forHardcoreMode = true,
+            expectedAuthentication = authentication,
+        )
         _achievementsEvent.emit(RAEventUi.AchievementTriggered(achievement))
 
         if (awardResult.isSuccess) {
@@ -2686,27 +3649,40 @@ class EmulatorViewModel @Inject constructor(
                 "awarded" to (awardResult.getOrNull()?.achievementAwarded ?: false),
             )
             completeAchievementSubmissionTrace(achievement.id, "submit_success")
-            hardcoreSubmissionQueue.drain()
+            drainHardcoreSubmissions()
         } else {
             logRaTrace(
                 "hardcore_award_failed",
                 "achievement_id" to achievement.id,
-                "error" to (awardResult.exceptionOrNull()?.message ?: "unknown"),
+                "error" to (awardResult.exceptionOrNull()?.javaClass?.simpleName ?: "unknown"),
             )
-            hardcoreSubmissionQueue.add(achievement)
+            addHardcoreSubmission(achievement, authentication)
             _achievementsEvent.emit(RAEventUi.AchievementTriggerError(achievement))
             completeAchievementSubmissionTrace(achievement.id, "submit_failed_queued")
         }
     }
 
-    private suspend fun handleOfflineAchievementTriggered(achievementId: Long, achievement: me.magnum.rcheevosapi.model.RAAchievement?) {
+    private suspend fun handleOfflineAchievementTriggered(
+        achievementId: Long,
+        achievement: me.magnum.rcheevosapi.model.RAAchievement?,
+        authentication: RAUserAuth.Authenticated?,
+    ) {
         if (isHardcoreEligibleAfterOnlineStart && achievement != null) {
             if (networkStatusProvider.isLikelyOnline()) {
-                handleHardcoreAchievementTriggered(achievement)
+                if (authentication != null) {
+                    handleHardcoreAchievementTriggered(achievement, authentication)
+                }
                 return
             }
 
-            hardcoreSubmissionQueue.add(achievement)
+            if (authentication == null || !addHardcoreSubmission(achievement, authentication)) {
+                logRaTrace(
+                    "hardcore_unlock_queue_rejected",
+                    "achievement_id" to achievementId,
+                    "reason" to "runtime_authentication_mismatch",
+                )
+                return
+            }
             logRaTrace(
                 "hardcore_unlock_queued_in_memory",
                 "achievement_id" to achievementId,
@@ -2785,7 +3761,7 @@ class EmulatorViewModel @Inject constructor(
                     "game_id" to offlineSession.gameId,
                     "game_hash" to offlineSession.contentId,
                     "session_id" to offlineSession.sessionId,
-                    "error" to (error.message ?: error.javaClass.simpleName),
+                    "error" to error.javaClass.simpleName,
                 )
                 return
             }
@@ -2852,12 +3828,6 @@ class EmulatorViewModel @Inject constructor(
         }
     }
 
-    private fun onLeaderboardTrackerHidden(leaderboardId: Long) {
-        sessionCoroutineScope.launch {
-            _achievementsEvent.emit(RAEventUi.LeaderboardTrackerHidden(leaderboardId))
-        }
-    }
-
     private fun onSetCompleted(subsetId: Long) {
         sessionCoroutineScope.launch {
             showSetMastery(RASetId(subsetId), emulatorSession.isRetroAchievementsHardcoreModeEnabled)
@@ -2870,15 +3840,28 @@ class EmulatorViewModel @Inject constructor(
             "api" to event.api,
             "related_id" to event.relatedId,
             "result_code" to event.resultCode,
-            "message" to event.message,
         )
         logRaTrace(
             "runtime_server_error",
             "api" to event.api,
             "related_id" to event.relatedId,
             "result_code" to event.resultCode,
-            "message" to event.message,
         )
+
+        if (
+            activeRuntimePath == RetroAchievementsRuntimePath.RC_CLIENT ||
+            activeRuntimePath == RetroAchievementsRuntimePath.DISABLED
+        ) {
+            logRaSubmission(
+                "runtime_server_error_not_owned_by_kotlin",
+                "api" to event.api,
+                "related_id" to event.relatedId,
+                "result_code" to event.resultCode,
+                "kotlin_submit" to false,
+                "runtime_path" to activeRuntimePath.traceValue,
+            )
+            return
+        }
 
         if (event.api.equals("awardachievement", ignoreCase = true) && event.relatedId > 0L) {
             val achievementId = event.relatedId
@@ -2887,7 +3870,18 @@ class EmulatorViewModel @Inject constructor(
                     ?: return@launch
                 val isHardcore = emulatorSession.isRetroAchievementsHardcoreModeEnabled
                 if (isHardcore) {
-                    hardcoreSubmissionQueue.add(achievement)
+                    val authentication = runtimeAuthenticationSnapshot()
+                    if (
+                        authentication == null ||
+                        !addHardcoreSubmission(achievement, authentication)
+                    ) {
+                        logRaTrace(
+                            "rc_client_submit_failed_queue_rejected",
+                            "achievement_id" to achievementId,
+                            "reason" to "runtime_authentication_mismatch",
+                        )
+                        return@launch
+                    }
                     logRaTrace(
                         "rc_client_submit_failed_queued_hardcore",
                         "achievement_id" to achievementId,
@@ -2900,7 +3894,10 @@ class EmulatorViewModel @Inject constructor(
     }
 
     private suspend fun persistFailedSoftcoreAwardToLedger(achievement: RAAchievement) {
-        if (!settingsRepository.isRetroAchievementsOfflineSoftcoreEnabled()) {
+        if (
+            !settingsRepository.isRetroAchievementsOfflineSoftcoreEnabled() ||
+            !retroAchievementsEndpointProvider.routingSnapshot().builtInLedgerEnabled
+        ) {
             return
         }
 
@@ -2947,12 +3944,942 @@ class EmulatorViewModel @Inject constructor(
         )
     }
 
-    private fun onRuntimeDisconnected() {
+    private suspend fun onRuntimeDisconnected() {
         logRaTrace("runtime_disconnected")
+        pendingRaReconnectGate.onDisconnected()
+        transitionToOfflineAccumulationIfNeeded()
     }
 
     private fun onRuntimeReconnected() {
         logRaTrace("runtime_reconnected")
+        requestPendingRuntimeReconnect()
+    }
+
+    private fun requestPendingRuntimeReconnect() {
+        val reconnectRequests = pendingRaReconnectRequests ?: return
+        if (pendingRaReconnectGate.consumeReconnect()) {
+            reconnectRequests.trySend(Unit)
+        }
+    }
+
+    private suspend fun initializePendingRaSubmissionSession(
+        runtimeConfig: RARuntimeBridgeConfig,
+        rom: Rom,
+    ) {
+        if (
+            !runtimeConfig.hardcoreEnabled ||
+            runtimeConfig.runtimeMode != RARuntimeBridgeMode.RC_CLIENT_ONLINE
+        ) {
+            return
+        }
+
+        val userId = runtimeConfig.username?.takeIf(String::isNotBlank) ?: return
+        val contentHash = runtimeConfig.gameHash?.takeIf(String::isNotBlank) ?: return
+        val gameId = runtimeConfig.gameId ?: currentRetroAchievementsGameId ?: return
+        val nativeSessionId = runtimeConfig.submissionSessionId.takeIf { it > 0 } ?: return
+        val sessionContext = RaSubmissionContext(
+            userId = userId,
+            gameId = gameId,
+            contentHash = contentHash,
+            sessionId = UUID.randomUUID().toString(),
+            nativeSessionId = nativeSessionId,
+        )
+        clearPendingRaSubmissionSession(
+            reason = "session_reinitialized",
+            clearLossMarker = true,
+        )
+
+        val store = PendingRaSubmissionStore(sessionContext)
+        val coordinator = RaPendingSubmissionSyncCoordinator(
+            store = store,
+            operationScope = sessionCoroutineScope,
+        ) { expectedSubmissions ->
+            val expectedNativeSubmissionIds = expectedSubmissions.map { it.nativeSubmissionId }
+            val expectedTypesByNativeId = expectedSubmissions.associate {
+                it.nativeSubmissionId to it.type
+            }
+            val nativeResult = emulatorManager.retryPendingRetroAchievementsSubmissions(
+                expectedNativeSubmissionIds,
+            )
+            RaNativeRetryResultMapper.map(
+                nativeResult = nativeResult,
+                expectedSessionId = store.context.nativeSessionId,
+                expectedTypesByNativeId = expectedTypesByNativeId,
+            )
+        }
+        val reconnectRequests = Channel<Unit>(capacity = Channel.CONFLATED)
+        pendingRaSubmissionStore = store
+        pendingRaSyncCoordinator = coordinator
+        pendingRaReconnectRequests = reconnectRequests
+        pendingRaReconnectGate.reset()
+        pendingRaSubmissionBarrier.value = null
+        _pendingRaSubmissionSnapshot.value = store.snapshot.value
+        transitionRaHardcoreContinuity(
+            RaHardcoreContinuityEvent.SessionReset,
+            reason = "hardcore_online_session_initialized",
+        )
+
+        pendingRaSessionJob = sessionCoroutineScope.launch {
+            coroutineScope {
+                launch {
+                    store.snapshot.collect { snapshot ->
+                        _pendingRaSubmissionSnapshot.value = snapshot
+                        transitionRaHardcoreContinuity(
+                            RaHardcoreContinuityEvent.PendingChanged(
+                                pendingTotal = snapshot.counts.total,
+                                networkAvailable = networkStatusProvider.isLikelyOnline(),
+                            ),
+                            reason = "pending_snapshot_changed",
+                        )
+                        if (snapshot.counts.total == 0) {
+                            hardcoreOfflineLossTracker.clearPendingUnlocks(
+                                snapshot.context.userId,
+                                snapshot.context.contentHash,
+                            )
+                            if (
+                                pendingRaRuntimeDisableGate.consumeWhenEmpty(
+                                    snapshot.counts.total,
+                                )
+                            ) {
+                                finishDeferredRetroAchievementsDisable(store)
+                                return@collect
+                            }
+                            if (
+                                networkStatusProvider.isLikelyOnline() &&
+                                pendingContextMatchesActiveRuntime(snapshot.context)
+                            ) {
+                                retroAchievementsNetworkMode = RetroAchievementsNetworkMode.ONLINE_LIVE
+                                emulatorSession.updateRetroAchievementsOfflineModeEnabled(false)
+                            }
+                        } else {
+                            hardcoreOfflineLossTracker.markPendingSubmissions(
+                                userId = snapshot.context.userId,
+                                contentId = snapshot.context.contentHash,
+                                gameTitle = rom.name,
+                                achievementCount = snapshot.counts.achievementUnlocks,
+                                leaderboardCount = snapshot.counts.leaderboardEntries,
+                            )
+                        }
+                    }
+                }
+                launch {
+                    networkConnectivityObserver.networkState.collect { networkState ->
+                        when (networkState) {
+                            NetworkConnectivityObserver.NetworkState.DISCONNECTED -> {
+                                pendingRaReconnectGate.onDisconnected()
+                                transitionToOfflineAccumulationIfNeeded()
+                            }
+                            NetworkConnectivityObserver.NetworkState.CONNECTED -> {
+                                requestPendingRuntimeReconnect()
+                            }
+                        }
+                    }
+                }
+                launch {
+                    for (ignored in reconnectRequests) {
+                        delay(750.milliseconds)
+                        handleValidatedRuntimeReconnect()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun finishDeferredRetroAchievementsDisable(
+        expectedStore: PendingRaSubmissionStore,
+    ) {
+        sessionCoroutineScope.launch {
+            emulatorManager.pauseEmulator()
+            val mirrorIsCurrent = refreshPendingRaSubmissionMirror()
+            if (
+                mirrorIsCurrent &&
+                pendingRaSubmissionStore === expectedStore &&
+                expectedStore.snapshot.value.counts.total == 0
+            ) {
+                dispatchSessionUpdateActions(
+                    emulatorSession.updateRetroAchievementsSettings(
+                        areRetroAchievementsEnabled = false,
+                        isHardcoreModeEnabled =
+                            settingsRepository.isRetroAchievementsHardcoreEnabled(),
+                    ),
+                )
+            } else {
+                pendingRaRuntimeDisableGate.update(true)
+                if (!mirrorIsCurrent) {
+                    _toastEvent.tryEmit(ToastEvent.PendingRaStateVerificationFailed)
+                }
+            }
+            resumeEmulatorIfSessionCanRun()
+        }
+    }
+
+    private suspend fun clearPendingRaSubmissionSession(
+        reason: String,
+        clearLossMarker: Boolean,
+    ) {
+        val store = detachPendingRaSubmissionSession()
+        val discarded = store?.cleanup() ?: 0
+        if (store != null && clearLossMarker) {
+            hardcoreOfflineLossTracker.clearPendingUnlocks(
+                store.context.userId,
+                store.context.contentHash,
+            )
+        }
+        if (store != null) {
+            logRaSubmission(
+                "ra_pending_session_cleared",
+                "reason" to reason,
+                "discarded" to discarded,
+                "accepted" to false,
+            )
+        }
+    }
+
+    private fun detachPendingRaSubmissionSession(): PendingRaSubmissionStore? {
+        pendingRaSessionJob?.cancel()
+        pendingRaSessionJob = null
+        pendingRaReconnectRequests?.close()
+        pendingRaReconnectRequests = null
+        pendingRaReconnectGate.reset()
+        pendingRaSyncCoordinator?.close()
+        pendingRaSyncCoordinator = null
+        val store = pendingRaSubmissionStore
+        pendingRaSubmissionStore = null
+        _pendingRaSubmissionSnapshot.value = null
+        pendingRaSubmissionBarrier.value = null
+        pendingRaRuntimeDisableGate.reset()
+        return store
+    }
+
+    private fun isInGameRetroAchievementsLogoutSupported(): Boolean {
+        val runtimeConfig = activeRuntimeBridgeConfig ?: return false
+        val store = pendingRaSubmissionStore ?: return false
+        return activeRuntimePath == RetroAchievementsRuntimePath.RC_CLIENT &&
+            runtimeConfig.runtimeMode == RARuntimeBridgeMode.RC_CLIENT_ONLINE &&
+            runtimeConfig.hardcoreEnabled &&
+            emulatorSession.isRetroAchievementsHardcoreModeEnabled &&
+            startedSessionOnlineLive &&
+            !store.snapshot.value.closed &&
+            pendingContextMatchesRuntimeSession(store.context)
+    }
+
+    private suspend fun prepareCurrentPendingRaSubmissionsForLogout(
+        expectedRuntimeConfig: RARuntimeBridgeConfig,
+        expectedStore: PendingRaSubmissionStore,
+    ): List<Long>? {
+        if (
+            activeRuntimeBridgeConfig !== expectedRuntimeConfig ||
+            pendingRaSubmissionStore !== expectedStore ||
+            !isInGameRetroAchievementsLogoutSupported() ||
+            !pendingContextMatchesActiveRuntime(expectedStore.context)
+        ) {
+            return null
+        }
+        if (!refreshPendingRaSubmissionMirror()) {
+            return null
+        }
+        if (
+            activeRuntimeBridgeConfig !== expectedRuntimeConfig ||
+            pendingRaSubmissionStore !== expectedStore ||
+            !pendingContextMatchesActiveRuntime(expectedStore.context)
+        ) {
+            return null
+        }
+
+        val expectedSubmissionIds = expectedStore.snapshot.value.records
+            .map { it.submission.nativeSubmissionId }
+        if (
+            expectedSubmissionIds.any { it <= 0L } ||
+            expectedSubmissionIds.distinct().size != expectedSubmissionIds.size
+        ) {
+            logRaSubmission(
+                "ra_pending_discard_rejected",
+                "reason" to "invalid_submission_ids",
+                "discard_reason" to "logout",
+                "accepted" to false,
+            )
+            return null
+        }
+        return expectedSubmissionIds
+    }
+
+    private suspend fun discardPreparedPendingRaSubmissionsForLogout(
+        expectedStore: PendingRaSubmissionStore,
+        expectedSubmissionIds: List<Long>,
+    ): Int {
+        val confirmedNativeDiscardCount =
+            emulatorManager.discardPendingRetroAchievementsSubmissions(
+                expectedSubmissionIds,
+            )
+        if (confirmedNativeDiscardCount == expectedSubmissionIds.size) {
+            val discardedFromMirror = expectedStore.discardByNativeSubmissionIds(
+                nativeSubmissionIds = expectedSubmissionIds.toSet(),
+                requestedContext = expectedStore.context,
+            )
+            if (discardedFromMirror == confirmedNativeDiscardCount) {
+                hardcoreOfflineLossTracker.clearPendingUnlocks(
+                    expectedStore.context.userId,
+                    expectedStore.context.contentHash,
+                )
+            } else {
+                logRaSubmission(
+                    "ra_pending_discard_mirror_mismatch",
+                    "confirmed" to confirmedNativeDiscardCount,
+                    "discarded" to discardedFromMirror,
+                    "discard_reason" to "logout",
+                    "accepted" to false,
+                )
+            }
+        }
+        logRaSubmission(
+            if (confirmedNativeDiscardCount == expectedSubmissionIds.size) {
+                "ra_pending_discarded"
+            } else {
+                "ra_pending_discard_rejected"
+            },
+            "expected" to expectedSubmissionIds.size,
+            "confirmed" to confirmedNativeDiscardCount,
+            "remaining" to expectedStore.snapshot.value.counts.total,
+            "discard_reason" to "logout",
+            "accepted" to false,
+        )
+        return confirmedNativeDiscardCount
+    }
+
+    private suspend fun refreshPendingRaSubmissionMirror(): Boolean {
+        val store = pendingRaSubmissionStore ?: return true
+        if (
+            activeRuntimePath != RetroAchievementsRuntimePath.RC_CLIENT ||
+            !pendingContextMatchesRuntimeSession(store.context)
+        ) {
+            return false
+        }
+
+        val requestedBarrierId = emulatorManager.refreshPendingRetroAchievementsSubmissions()
+        if (requestedBarrierId <= 0L) {
+            logRaSubmission(
+                "ra_pending_refresh_failed",
+                "reason" to "native_refresh_rejected",
+                "submit_owner" to "rc_client",
+            )
+            return false
+        }
+
+        val observed = try {
+            withTimeout(RA_PENDING_BARRIER_TIMEOUT_MS) {
+                pendingRaSubmissionBarrier
+                    .filterNotNull()
+                    .first {
+                        it.submissionSessionId == store.context.nativeSessionId &&
+                            it.barrierId >= requestedBarrierId
+                    }
+            }
+            true
+        } catch (_: TimeoutCancellationException) {
+            false
+        }
+        val contextStillMatches =
+            pendingRaSubmissionStore === store &&
+                pendingContextMatchesRuntimeSession(store.context)
+        logRaSubmission(
+            if (observed && contextStillMatches) {
+                "ra_pending_refresh_completed"
+            } else {
+                "ra_pending_refresh_failed"
+            },
+            "barrier_id" to requestedBarrierId,
+            "pending_total" to store.snapshot.value.counts.total,
+            "reason" to when {
+                !observed -> "barrier_timeout"
+                !contextStillMatches -> "context_changed"
+                else -> null
+            },
+            "submit_owner" to "rc_client",
+        )
+        return observed && contextStillMatches
+    }
+
+    private fun onPendingRaSubmissionBarrier(event: RAEvent.OnPendingSubmissionBarrier) {
+        val store = pendingRaSubmissionStore
+        if (
+            store == null ||
+            event.submissionSessionId != store.context.nativeSessionId ||
+            !pendingContextMatchesRuntimeSession(store.context)
+        ) {
+            logRaSubmission(
+                "ra_pending_barrier_rejected",
+                "barrier_id" to event.barrierId,
+                "reason" to "submission_session_mismatch",
+            )
+            return
+        }
+        pendingRaSubmissionBarrier.value = PendingRaSubmissionBarrier(
+            submissionSessionId = event.submissionSessionId,
+            barrierId = event.barrierId,
+        )
+    }
+
+    private suspend fun onPendingRaSubmissionAdded(event: RAEvent.OnPendingSubmissionAdded) {
+        val store = pendingRaSubmissionStore
+        if (
+            store == null ||
+            activeRuntimePath != RetroAchievementsRuntimePath.RC_CLIENT ||
+            !startedSessionOnlineLive ||
+            !emulatorSession.isRetroAchievementsHardcoreModeEnabled ||
+            !event.hardcore ||
+            event.submissionSessionId != store.context.nativeSessionId ||
+            !pendingContextMatchesRuntimeSession(store.context)
+        ) {
+            logRaSubmission(
+                "ra_pending_rejected",
+                "submission_id" to event.nativeSubmissionId,
+                "reason" to "invalid_session_context",
+                "kotlin_submit" to false,
+            )
+            return
+        }
+
+        val stableSubmissionId = "${store.context.sessionId}:${event.nativeSubmissionId}"
+        val submission = when (event.submissionType) {
+            RaNativePendingSubmissionType.ACHIEVEMENT -> {
+                if (event.achievementId <= 0L) return
+                PendingRaSubmission.AchievementUnlock(
+                    context = store.context,
+                    submissionId = stableSubmissionId,
+                    nativeSubmissionId = event.nativeSubmissionId,
+                    sequence = event.sequence,
+                    createdAtEpochMs = event.createdAtEpochMs,
+                    hardcore = true,
+                    achievementId = event.achievementId,
+                )
+            }
+            RaNativePendingSubmissionType.LEADERBOARD -> {
+                if (event.leaderboardId <= 0L || event.attemptId <= 0L) return
+                PendingRaSubmission.LeaderboardEntry(
+                    context = store.context,
+                    submissionId = stableSubmissionId,
+                    nativeSubmissionId = event.nativeSubmissionId,
+                    sequence = event.sequence,
+                    createdAtEpochMs = event.createdAtEpochMs,
+                    hardcore = true,
+                    leaderboardId = event.leaderboardId,
+                    attemptId = event.attemptId,
+                    rawScore = event.rawScore,
+                    formattedScore = event.formattedScore,
+                )
+            }
+        }
+
+        val addResult = store.add(submission)
+        val counts = store.snapshot.value.counts
+        logRaSubmission(
+            "ra_pending_added",
+            "submission_type" to submission.type.name.lowercase(),
+            "submission_id" to event.nativeSubmissionId,
+            "achievement_id" to (submission as? PendingRaSubmission.AchievementUnlock)?.achievementId,
+            "leaderboard_id" to (submission as? PendingRaSubmission.LeaderboardEntry)?.leaderboardId,
+            "attempt_id" to (submission as? PendingRaSubmission.LeaderboardEntry)?.attemptId,
+            "raw_score" to (submission as? PendingRaSubmission.LeaderboardEntry)?.rawScore,
+            "hardcore" to true,
+            "submit_owner" to "rc_client",
+            "pending_total" to counts.total,
+            "add_result" to addResult.name.lowercase(),
+            "kotlin_submit" to false,
+        )
+    }
+
+    private suspend fun onPendingRaSubmissionResolved(event: RAEvent.OnPendingSubmissionResolved) {
+        val store = pendingRaSubmissionStore ?: return
+        if (event.submissionSessionId != store.context.nativeSessionId) {
+            logRaSubmission(
+                "ra_pending_resolution_rejected",
+                "submission_id" to event.nativeSubmissionId,
+                "reason" to "submission_session_mismatch",
+            )
+            return
+        }
+        val record = store.snapshot.value.records.firstOrNull {
+            it.submission.nativeSubmissionId == event.nativeSubmissionId
+        } ?: return
+        val expectedType = when (record.submission.type) {
+            RaPendingSubmissionType.ACHIEVEMENT -> RaNativePendingSubmissionType.ACHIEVEMENT
+            RaPendingSubmissionType.LEADERBOARD -> RaNativePendingSubmissionType.LEADERBOARD
+        }
+        if (expectedType != event.submissionType) {
+            logRaSubmission(
+                "ra_pending_resolution_rejected",
+                "submission_id" to event.nativeSubmissionId,
+                "reason" to "submission_type_mismatch",
+            )
+            return
+        }
+
+        when (event.resolution) {
+            RaNativePendingSubmissionResolution.ACCEPTED,
+            RaNativePendingSubmissionResolution.ALREADY_ACCEPTED -> {
+                val removed = store.acceptByNativeSubmissionId(event.nativeSubmissionId)
+                if (removed && store.snapshot.value.counts.total == 0) {
+                    hardcoreOfflineLossTracker.clearPendingUnlocks(
+                        store.context.userId,
+                        store.context.contentHash,
+                    )
+                }
+            }
+            RaNativePendingSubmissionResolution.PERMANENT_FAILURE -> {
+                store.markPermanentFailureByNativeSubmissionId(event.nativeSubmissionId)
+            }
+            RaNativePendingSubmissionResolution.RETRYABLE_FAILURE -> {
+                store.markRetryableByNativeSubmissionId(event.nativeSubmissionId)
+            }
+        }
+        logRaSubmission(
+            "ra_pending_resolved",
+            "submission_type" to record.submission.type.name.lowercase(),
+            "submission_id" to event.nativeSubmissionId,
+            "resolution" to event.resolution.name.lowercase(),
+            "result_code" to event.resultCode,
+            "pending_total" to store.snapshot.value.counts.total,
+            "submit_owner" to "rc_client",
+        )
+    }
+
+    private suspend fun pendingContextMatchesActiveRuntime(context: RaSubmissionContext): Boolean {
+        val runtimeConfig = activeRuntimeBridgeConfig ?: return false
+        if (!activeRuntimeAuthenticationMatches(runtimeConfig)) {
+            return false
+        }
+        return pendingContextMatchesRuntimeSession(context)
+    }
+
+    private suspend fun activeRuntimeAuthenticationMatches(
+        runtimeConfig: RARuntimeBridgeConfig? = activeRuntimeBridgeConfig,
+    ): Boolean {
+        runtimeConfig ?: return false
+        val authenticatedUser =
+            retroAchievementsRepository.getUserAuthentication() as? RAUserAuth.Authenticated
+        return RaRuntimeAuthenticationPolicy.matches(
+            runtimeUserId = runtimeConfig.username,
+            runtimeToken = runtimeConfig.apiToken,
+            authenticatedUserId = authenticatedUser?.username,
+            authenticatedToken = authenticatedUser?.token,
+        )
+    }
+
+    private fun runtimeAuthenticationSnapshot(
+        runtimeConfig: RARuntimeBridgeConfig? = activeRuntimeBridgeConfig,
+    ): RAUserAuth.Authenticated? {
+        val username = runtimeConfig?.username?.takeIf(String::isNotBlank) ?: return null
+        val token = runtimeConfig.apiToken?.takeIf(String::isNotBlank) ?: return null
+        return RAUserAuth.Authenticated(username, token)
+    }
+
+    private suspend fun acquireRuntimeAuthenticationLease(): String? {
+        if (synchronized(runtimeAuthenticationLeaseMonitor) {
+                activeRuntimeAuthenticationLeaseId != null
+            }
+        ) {
+            return null
+        }
+        val authentication =
+            retroAchievementsRepository.getUserAuthentication() as? RAUserAuth.Authenticated
+                ?: return null
+        val leaseId = UUID.randomUUID().toString()
+        if (
+            !retroAchievementsRepository.acquireRuntimeAuthenticationLease(
+                leaseId = leaseId,
+                expectedAuthentication = authentication,
+            )
+        ) {
+            return null
+        }
+        synchronized(runtimeAuthenticationLeaseMonitor) {
+            activeRuntimeAuthenticationLeaseId = leaseId
+        }
+        logRaSubmission(
+            "ra_runtime_identity_lease_acquired",
+            "runtime_path" to activeRuntimePath.traceValue,
+        )
+        return leaseId
+    }
+
+    private fun releaseRuntimeAuthenticationLease(
+        leaseId: String,
+        reason: String,
+    ): Boolean {
+        scheduleHardcoreSubmissionQueueTeardown(leaseId, reason)
+        val released = synchronized(runtimeAuthenticationLeaseMonitor) {
+            if (activeRuntimeAuthenticationLeaseId != leaseId) {
+                return@synchronized null
+            }
+            val registryReleased =
+                retroAchievementsRepository.releaseRuntimeAuthenticationLease(leaseId)
+            if (registryReleased) {
+                activeRuntimeAuthenticationLeaseId = null
+                if (activeHardcoreSubmissionSessionId == leaseId) {
+                    activeHardcoreSubmissionSessionId = null
+                }
+            }
+            registryReleased
+        }
+        if (released == null) {
+            logRaSubmission(
+                "ra_runtime_identity_lease_release_ignored",
+                "reason" to reason,
+            )
+            return false
+        }
+        logRaSubmission(
+            if (released) {
+                "ra_runtime_identity_lease_released"
+            } else {
+                "ra_runtime_identity_lease_release_failed"
+            },
+            "reason" to reason,
+            "released" to released,
+            "lease_retained" to !released,
+        )
+        return released
+    }
+
+    private fun unloadAndReleaseRuntimeAuthenticationLease(
+        leaseId: String,
+        reason: String,
+        clearOwnedRuntimeState: () -> Unit = {},
+    ): Boolean {
+        scheduleHardcoreSubmissionQueueTeardown(leaseId, reason)
+        var owned = false
+        var unloadSucceeded = false
+        var registryReleased = false
+        var teardownError: Throwable? = null
+        synchronized(runtimeAuthenticationLeaseMonitor) {
+            if (activeRuntimeAuthenticationLeaseId != leaseId) {
+                return@synchronized
+            }
+            owned = true
+            try {
+                emulatorManager.unloadRetroAchievementsData()
+                unloadSucceeded = true
+            } catch (throwable: Throwable) {
+                teardownError = throwable
+            }
+            if (unloadSucceeded) {
+                try {
+                    clearOwnedRuntimeState()
+                } catch (throwable: Throwable) {
+                    teardownError = throwable
+                }
+                registryReleased =
+                    retroAchievementsRepository.releaseRuntimeAuthenticationLease(leaseId)
+                if (registryReleased) {
+                    activeRuntimeAuthenticationLeaseId = null
+                    if (activeHardcoreSubmissionSessionId == leaseId) {
+                        activeHardcoreSubmissionSessionId = null
+                    }
+                }
+            }
+        }
+        if (!owned) {
+            logRaSubmission(
+                "ra_runtime_identity_teardown_ignored",
+                "reason" to reason,
+            )
+            return false
+        }
+        if (!unloadSucceeded) {
+            logRaSubmission(
+                "ra_runtime_identity_teardown_failed",
+                "reason" to reason,
+                "error" to teardownError?.javaClass?.simpleName,
+                "lease_retained" to true,
+            )
+            return false
+        }
+        if (!registryReleased) {
+            logRaSubmission(
+                "ra_runtime_identity_teardown_failed",
+                "reason" to reason,
+                "error" to "LeaseReleaseRejected",
+                "lease_retained" to true,
+            )
+            return false
+        }
+        logRaSubmission(
+            "ra_runtime_identity_lease_released",
+            "reason" to reason,
+            "released" to registryReleased,
+            "teardown_error" to teardownError?.javaClass?.simpleName,
+        )
+        return true
+    }
+
+    private fun scheduleHardcoreSubmissionQueueTeardown(
+        leaseId: String,
+        reason: String,
+    ) {
+        val teardown = synchronized(runtimeAuthenticationLeaseMonitor) {
+            if (activeHardcoreSubmissionSessionId != leaseId) {
+                return
+            }
+            activeHardcoreSubmissionSessionId = null
+            val previous = hardcoreSubmissionQueueTeardown
+            val completion = CompletableDeferred<Unit>()
+            hardcoreSubmissionQueueTeardown = completion
+            previous to completion
+        }
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                withContext(NonCancellable) {
+                    teardown.first?.await()
+                    val discarded = hardcoreSubmissionQueue.discardAll(leaseId)
+                    logRaSubmission(
+                        "hardcore_queue_session_closed",
+                        "reason" to reason,
+                        "discarded" to discarded,
+                    )
+                }
+            } finally {
+                teardown.second.complete(Unit)
+            }
+        }
+    }
+
+    private suspend fun awaitHardcoreSubmissionQueueTeardown() {
+        while (true) {
+            val teardown = synchronized(runtimeAuthenticationLeaseMonitor) {
+                hardcoreSubmissionQueueTeardown
+            } ?: return
+            teardown.await()
+            if (
+                synchronized(runtimeAuthenticationLeaseMonitor) {
+                    hardcoreSubmissionQueueTeardown === teardown
+                }
+            ) {
+                return
+            }
+        }
+    }
+
+    private fun unloadAndReleaseActiveRuntimeAuthenticationLease(reason: String) {
+        val leaseId = synchronized(runtimeAuthenticationLeaseMonitor) {
+            activeRuntimeAuthenticationLeaseId
+        } ?: return
+        unloadAndReleaseRuntimeAuthenticationLease(leaseId, reason)
+    }
+
+    private fun unloadAndHandoffRuntimeAuthenticationLeaseToLogout(
+        leaseId: String,
+    ): Boolean {
+        var failureType: String? = null
+        val handedOff = synchronized(runtimeAuthenticationLeaseMonitor) {
+            if (activeRuntimeAuthenticationLeaseId != leaseId) {
+                return@synchronized false
+            }
+            try {
+                emulatorManager.unloadRetroAchievementsData()
+            } catch (throwable: Throwable) {
+                failureType = throwable.javaClass.simpleName
+                return@synchronized false
+            }
+            if (!retroAchievementsRepository.handoffRuntimeAuthenticationLeaseToLogout(leaseId)) {
+                failureType = "LeaseHandoffRejected"
+                return@synchronized false
+            }
+            activeRuntimeAuthenticationLeaseId = null
+            if (activeHardcoreSubmissionSessionId == leaseId) {
+                activeHardcoreSubmissionSessionId = null
+            }
+            activeRuntimeBridgeConfig = null
+            activeRuntimePath = RetroAchievementsRuntimePath.DISABLED
+            isRetroAchievementsOnlineSessionStarted = false
+            true
+        }
+        logRaSubmission(
+            if (handedOff) {
+                "ra_runtime_identity_lease_handed_off"
+            } else {
+                "ra_runtime_identity_lease_handoff_failed"
+            },
+            "reason" to "logout",
+            "error" to failureType,
+            "lease_retained" to !handedOff,
+        )
+        return handedOff
+    }
+
+    private fun pendingContextMatchesRuntimeSession(context: RaSubmissionContext): Boolean {
+        val runtimeConfig = activeRuntimeBridgeConfig ?: return false
+        return RaSubmissionContextValidator.matches(
+            pending = context,
+            active = RaActiveSubmissionContext(
+                isRcClientOnlineRuntime =
+                    activeRuntimePath == RetroAchievementsRuntimePath.RC_CLIENT &&
+                        runtimeConfig.runtimeMode == RARuntimeBridgeMode.RC_CLIENT_ONLINE,
+                runtimeHardcore = runtimeConfig.hardcoreEnabled,
+                sessionHardcore = emulatorSession.isRetroAchievementsHardcoreModeEnabled,
+                authenticatedUserId = runtimeConfig.username,
+                authenticationTokenMatchesRuntime = !runtimeConfig.apiToken.isNullOrBlank(),
+                runtimeUserId = runtimeConfig.username,
+                runtimeGameId = runtimeConfig.gameId,
+                activeGameId = currentRetroAchievementsGameId,
+                runtimeContentHash = runtimeConfig.gameHash,
+                activeContentHash = currentRom?.retroAchievementsHash,
+                nativeSessionId = runtimeConfig.submissionSessionId,
+            ),
+        )
+    }
+
+    private suspend fun handleValidatedRuntimeReconnect() {
+        val store = pendingRaSubmissionStore ?: return
+        if (!pendingContextMatchesActiveRuntime(store.context)) {
+            return
+        }
+        if (!networkStatusProvider.isOnline()) {
+            pendingRaReconnectGate.onDisconnected()
+            return
+        }
+        if (!refreshPendingRaSubmissionMirror()) {
+            pendingRaReconnectGate.onDisconnected()
+            return
+        }
+        if (store.snapshot.value.counts.total == 0) {
+            retroAchievementsNetworkMode = RetroAchievementsNetworkMode.ONLINE_LIVE
+            emulatorSession.updateRetroAchievementsOfflineModeEnabled(false)
+            transitionRaHardcoreContinuity(
+                RaHardcoreContinuityEvent.NetworkRestored(pendingTotal = 0),
+                reason = "validated_runtime_reconnect",
+            )
+            return
+        }
+        transitionRaHardcoreContinuity(
+            RaHardcoreContinuityEvent.NetworkRestored(
+                pendingTotal = store.snapshot.value.counts.total,
+            ),
+            reason = "validated_runtime_reconnect_with_pending",
+        )
+        syncPendingRaSubmissions(RaPendingSyncSource.RUNTIME_RECONNECTED)
+    }
+
+    private suspend fun syncPendingRaSubmissions(
+        source: RaPendingSyncSource,
+    ): RaPendingSyncResult {
+        val store = pendingRaSubmissionStore
+        val coordinator = pendingRaSyncCoordinator
+        val initialCounts = store?.snapshot?.value?.counts ?: RaPendingCounts.EMPTY
+        if (
+            store == null ||
+            coordinator == null ||
+            !pendingContextMatchesActiveRuntime(store.context) ||
+            !networkStatusProvider.isOnline()
+        ) {
+            return RaPendingSyncResult(
+                source = source,
+                before = initialCounts,
+                submittedAchievements = 0,
+                submittedLeaderboardEntries = 0,
+                alreadyAccepted = 0,
+                failedAchievements = initialCounts.achievementUnlocks,
+                failedLeaderboardEntries = initialCounts.leaderboardEntries,
+                remaining = initialCounts,
+                transientFailure = true,
+            )
+        }
+        if (!refreshPendingRaSubmissionMirror()) {
+            val remaining = store.snapshot.value.counts
+            return RaPendingSyncResult(
+                source = source,
+                before = remaining,
+                submittedAchievements = 0,
+                submittedLeaderboardEntries = 0,
+                alreadyAccepted = 0,
+                failedAchievements = remaining.achievementUnlocks,
+                failedLeaderboardEntries = remaining.leaderboardEntries,
+                remaining = remaining,
+                transientFailure = true,
+            )
+        }
+        val before = store.snapshot.value.counts
+
+        retroAchievementsNetworkMode = RetroAchievementsNetworkMode.RECONCILING_RA_SUBMISSIONS
+        transitionRaHardcoreContinuity(
+            RaHardcoreContinuityEvent.ReconciliationStarted(
+                pendingTotal = before.total,
+            ),
+            reason = "sync_${source.name.lowercase()}_started",
+        )
+        logRaSubmission(
+            "ra_sync_requested",
+            "source" to source.name.lowercase(),
+            "pending_achievements" to before.achievementUnlocks,
+            "pending_leaderboards" to before.leaderboardEntries,
+            "submit_owner" to "rc_client",
+        )
+        val result = try {
+            coordinator.sync(source)
+        } catch (cancellation: CancellationException) {
+            val networkAvailable = networkStatusProvider.isLikelyOnline()
+            val remaining = store.snapshot.value.counts
+            retroAchievementsNetworkMode = if (networkAvailable) {
+                RetroAchievementsNetworkMode.ONLINE_LIVE
+            } else {
+                RetroAchievementsNetworkMode.OFFLINE_ACCUMULATING
+            }
+            emulatorSession.updateRetroAchievementsOfflineModeEnabled(!networkAvailable)
+            transitionRaHardcoreContinuity(
+                RaHardcoreContinuityEvent.ReconciliationFinished(
+                    remainingTotal = remaining.total,
+                    networkAvailable = networkAvailable,
+                ),
+                reason = "sync_${source.name.lowercase()}_cancelled",
+            )
+            logRaSubmission(
+                "ra_sync_cancelled",
+                "source" to source.name.lowercase(),
+                "remaining_achievements" to remaining.achievementUnlocks,
+                "remaining_leaderboards" to remaining.leaderboardEntries,
+            )
+            throw cancellation
+        }
+        val networkAvailable = networkStatusProvider.isOnline()
+        if (networkAvailable) {
+            retroAchievementsNetworkMode = RetroAchievementsNetworkMode.ONLINE_LIVE
+            emulatorSession.updateRetroAchievementsOfflineModeEnabled(false)
+            if (result.remaining.total == 0) {
+                hardcoreOfflineLossTracker.clearPendingUnlocks(
+                    store.context.userId,
+                    store.context.contentHash,
+                )
+            }
+        } else {
+            retroAchievementsNetworkMode = RetroAchievementsNetworkMode.OFFLINE_ACCUMULATING
+            emulatorSession.updateRetroAchievementsOfflineModeEnabled(true)
+        }
+        transitionRaHardcoreContinuity(
+            RaHardcoreContinuityEvent.ReconciliationFinished(
+                remainingTotal = result.remaining.total,
+                networkAvailable = networkAvailable,
+            ),
+            reason = "sync_${source.name.lowercase()}_finished",
+        )
+        logRaSubmission(
+            "ra_sync_completed",
+            "source" to source.name.lowercase(),
+            "submitted_achievements" to result.submittedAchievements,
+            "submitted_leaderboards" to result.submittedLeaderboardEntries,
+            "already_accepted" to result.alreadyAccepted,
+            "failed_achievements" to result.failedAchievements,
+            "failed_leaderboards" to result.failedLeaderboardEntries,
+            "remaining_achievements" to result.remaining.achievementUnlocks,
+            "remaining_leaderboards" to result.remaining.leaderboardEntries,
+            "remaining_permanent" to result.remaining.permanentFailures,
+            "transition" to if (networkAvailable && result.remaining.total == 0) {
+                "reconciling_to_online_live"
+            } else if (networkAvailable) {
+                "reconciling_to_pending_online"
+            } else {
+                "reconciling_to_pending_offline"
+            },
+        )
+        return result
     }
 
     private suspend fun ensureAchievementSubmitContext(achievement: RAAchievement): Boolean {
@@ -2973,6 +4900,15 @@ class EmulatorViewModel @Inject constructor(
         val runtimeConfig = activeRuntimeBridgeConfig
         if (runtimeConfig == null) {
             logContextMismatch("achievement", achievement.id, "missing_runtime_config", "achievement_game_id" to achievement.gameId.id)
+            return false
+        }
+        if (!activeRuntimeAuthenticationMatches(runtimeConfig)) {
+            logContextMismatch(
+                "achievement",
+                achievement.id,
+                "runtime_authentication_mismatch",
+                "achievement_game_id" to achievement.gameId.id,
+            )
             return false
         }
 
@@ -3048,6 +4984,14 @@ class EmulatorViewModel @Inject constructor(
             logContextMismatch("leaderboard", leaderboardId, "missing_runtime_config")
             return false
         }
+        if (!activeRuntimeAuthenticationMatches(runtimeConfig)) {
+            logContextMismatch(
+                "leaderboard",
+                leaderboardId,
+                "runtime_authentication_mismatch",
+            )
+            return false
+        }
 
         val leaderboard = retroAchievementsRepository.getLeaderboard(leaderboardId)
         if (leaderboard == null) {
@@ -3120,6 +5064,11 @@ class EmulatorViewModel @Inject constructor(
     }
 
     private fun completeAchievementSubmissionTrace(achievementId: Long, result: String) {
+        val submitPath = if (activeRuntimePath == RetroAchievementsRuntimePath.RC_CLIENT) {
+            "rc_client_http"
+        } else {
+            "kotlin_api"
+        }
         val startedAt = pendingRuntimeAchievementTriggers.remove(achievementId)
         if (startedAt == null) {
             logRaTrace(
@@ -3127,7 +5076,7 @@ class EmulatorViewModel @Inject constructor(
                 "entity_type" to "achievement",
                 "entity_id" to achievementId,
                 "result" to result,
-                "submit_path" to "kotlin_api",
+                "submit_path" to submitPath,
             )
             return
         }
@@ -3138,7 +5087,7 @@ class EmulatorViewModel @Inject constructor(
             "entity_id" to achievementId,
             "result" to result,
             "latency_ms" to (System.currentTimeMillis() - startedAt).coerceAtLeast(0L),
-            "submit_path" to "kotlin_api",
+            "submit_path" to submitPath,
         )
     }
 
@@ -3165,105 +5114,339 @@ class EmulatorViewModel @Inject constructor(
         )
     }
 
-    private fun onLeaderboardAttemptStarted(startEvent: RAEvent.OnLeaderboardAttemptStarted) {
-        sessionCoroutineScope.launch {
-            if (settingsRepository.areRetroAchievementsLeaderboardIndicatorsEnabled()) {
-                val leaderboard = retroAchievementsRepository.getLeaderboard(startEvent.leaderboardId)
-                if (leaderboard != null) {
-                    val setSummary = retroAchievementsRepository.getAchievementSetSummary(leaderboard.setId)
-                    if (setSummary != null) {
-                        _achievementsEvent.emit(RAEventUi.LeaderboardAttemptStarted(leaderboard, setSummary.iconUrl))
+    private suspend fun onRcClientLeaderboardEvent(event: RAEvent) {
+        if (event is RAEvent.OnLeaderboardRuntimeReset) {
+            leaderboardTrackerUpdateLogLimiter.resetAll()
+            leaderboardAttemptCoordinator.completeRuntimeReset(event.attemptFloor)
+            logLeaderboardDiagnostic(
+                "leaderboard_runtime_reset",
+                "attempt_floor" to event.attemptFloor,
+            )
+            _achievementsEvent.emit(RAEventUi.Reset)
+            return
+        }
+
+        if (
+            activeRuntimePath != RetroAchievementsRuntimePath.RC_CLIENT &&
+            activeRuntimePath != RetroAchievementsRuntimePath.RC_CLIENT_OFFLINE
+        ) {
+            val identity = leaderboardEventIdentity(event)
+            val trackerLogDecision = (event as? RAEvent.OnLeaderboardAttemptUpdated)
+                ?.takeUnless { it.trackerShown }
+                ?.let { leaderboardTrackerUpdateLogLimiter.observe(it.leaderboardId, it.attemptId) }
+            if (trackerLogDecision != null && !trackerLogDecision.shouldLog) {
+                return
+            }
+            logLeaderboardDiagnostic(
+                "leaderboard_event_ignored",
+                "leaderboard_id" to identity?.leaderboardId,
+                "attempt_id" to identity?.attemptId,
+                "event_sequence" to identity?.eventSequence,
+                "event" to event::class.simpleName,
+                "reason" to "runtime_not_rc_client",
+                "tracker_update_index" to trackerLogDecision?.updateIndex,
+                "suppressed_updates" to trackerLogDecision?.suppressedUpdates,
+            )
+            return
+        }
+
+        val transition = leaderboardAttemptCoordinator.reduce(event)
+        if (transition == null) {
+            val identity = leaderboardEventIdentity(event)
+            val trackerLogDecision = (event as? RAEvent.OnLeaderboardAttemptUpdated)
+                ?.takeUnless { it.trackerShown }
+                ?.let { leaderboardTrackerUpdateLogLimiter.observe(it.leaderboardId, it.attemptId) }
+            if (trackerLogDecision != null && !trackerLogDecision.shouldLog) {
+                return
+            }
+            logLeaderboardDiagnostic(
+                "leaderboard_event_ignored",
+                "leaderboard_id" to identity?.leaderboardId,
+                "attempt_id" to identity?.attemptId,
+                "event_sequence" to identity?.eventSequence,
+                "event" to event::class.simpleName,
+                "reason" to "stale_duplicate_or_terminal",
+                "tracker_update_index" to trackerLogDecision?.updateIndex,
+                "suppressed_updates" to trackerLogDecision?.suppressedUpdates,
+            )
+            return
+        }
+
+        val key = transition.key
+        when (transition) {
+            is LeaderboardAttemptCoordinator.Transition.Started -> {
+                leaderboardTrackerUpdateLogLimiter.reset(key.leaderboardId, key.attemptId)
+                logLeaderboardUiTransition(key, transition.event.eventSequence, "tracking")
+                if (settingsRepository.areRetroAchievementsLeaderboardIndicatorsEnabled()) {
+                    loadLeaderboardUiContext(key.leaderboardId)?.let { context ->
+                        _achievementsEvent.emit(RAEventUi.LeaderboardAttemptStarted(key, context.leaderboard, context.gameIcon))
                     }
                 }
             }
-        }
-    }
-
-    private fun onLeaderboardAttemptUpdated(updateEvent: RAEvent.OnLeaderboardAttemptUpdated) {
-        sessionCoroutineScope.launch {
-            if (settingsRepository.areRetroAchievementsLeaderboardIndicatorsEnabled()) {
-                _achievementsEvent.emit(RAEventUi.LeaderboardAttemptUpdated(updateEvent.leaderboardId, updateEvent.formattedValue))
-            }
-        }
-    }
-
-    private fun onLeaderboardAttemptCompleted(completionEvent: RAEvent.OnLeaderboardAttemptCompleted) {
-        sessionCoroutineScope.launch {
-            logRaTrace(
-                "leaderboard_complete_received",
-                "leaderboard_id" to completionEvent.leaderboardId,
-                "value" to completionEvent.value,
-                "network_mode" to retroAchievementsNetworkMode.name,
-                "session_mode" to retroAchievementsSessionMode.name,
-                "online" to networkStatusProvider.isOnline(),
-            )
-            if (retroAchievementsNetworkMode == RetroAchievementsNetworkMode.ONLINE_LIVE && !networkStatusProvider.isLikelyOnline()) {
-                transitionToOfflineAccumulationIfNeeded()
-            }
-
-            if (retroAchievementsNetworkMode == RetroAchievementsNetworkMode.OFFLINE_ACCUMULATING) {
-                // Offline mode: avoid server submission (no Smart Sync support for leaderboards in this POC).
-                logRaTrace(
-                    "leaderboard_submit_skipped_offline",
-                    "leaderboard_id" to completionEvent.leaderboardId,
-                )
-                completeLeaderboardSubmissionTrace(completionEvent.leaderboardId, "offline_skipped")
-                _achievementsEvent.emit(RAEventUi.LeaderboardAttemptCancelled(completionEvent.leaderboardId))
-                return@launch
-            }
-
-            if (!emulatorSession.areLeaderboardsEnabled()) {
-                logRaTrace(
-                    "leaderboard_submit_skipped_mode",
-                    "leaderboard_id" to completionEvent.leaderboardId,
-                    "hardcore_enabled" to emulatorSession.isRetroAchievementsHardcoreModeEnabled,
-                )
-                completeLeaderboardSubmissionTrace(completionEvent.leaderboardId, "mode_skipped")
-                _achievementsEvent.emit(RAEventUi.LeaderboardAttemptCancelled(completionEvent.leaderboardId))
-                return@launch
-            }
-
-            if (activeRuntimePath == RetroAchievementsRuntimePath.RC_CLIENT) {
-                logRaTrace(
-                    "leaderboard_submit_owned_by_rc_client",
-                    "leaderboard_id" to completionEvent.leaderboardId,
-                    "value" to completionEvent.value,
-                )
-                retroAchievementsRepository.getLeaderboard(completionEvent.leaderboardId)?.let { leaderboard ->
-                    retroAchievementsRepository.getAchievementSetSummary(leaderboard.setId)?.let { setSummary ->
-                        _achievementsEvent.emit(
-                            RAEventUi.LeaderboardEntrySubmitted(
-                                leaderboardId = leaderboard.id,
-                                title = leaderboard.title,
-                                gameIcon = setSummary.iconUrl,
-                                formattedScore = completionEvent.formattedValue,
-                                rank = 0,
-                                numberOfEntries = 0,
-                            )
+            is LeaderboardAttemptCoordinator.Transition.Updated -> {
+                if (transition.event.trackerShown) {
+                    leaderboardTrackerUpdateLogLimiter.reset(key.leaderboardId, key.attemptId)
+                    logLeaderboardUiTransition(
+                        key,
+                        transition.event.eventSequence,
+                        "tracker_show",
+                        "tracker_display" to transition.event.formattedValue,
+                    )
+                } else {
+                    val logDecision = leaderboardTrackerUpdateLogLimiter.observe(key.leaderboardId, key.attemptId)
+                    if (logDecision.shouldLog) {
+                        logLeaderboardUiTransition(
+                            key,
+                            transition.event.eventSequence,
+                            "tracker_update",
+                            "tracker_display" to transition.event.formattedValue,
+                            "tracker_update_index" to logDecision.updateIndex,
+                            "suppressed_updates" to logDecision.suppressedUpdates,
                         )
                     }
                 }
-                completeLeaderboardSubmissionTrace(completionEvent.leaderboardId, "submitted_by_rc_client")
-                return@launch
+                if (settingsRepository.areRetroAchievementsLeaderboardIndicatorsEnabled()) {
+                    _achievementsEvent.emit(RAEventUi.LeaderboardAttemptUpdated(key, transition.event.formattedValue))
+                }
             }
-
-            if (!ensureLeaderboardSubmitContext(completionEvent.leaderboardId)) {
-                completeLeaderboardSubmissionTrace(completionEvent.leaderboardId, "context_mismatch")
-                _achievementsEvent.emit(RAEventUi.LeaderboardAttemptCancelled(completionEvent.leaderboardId))
-                return@launch
+            is LeaderboardAttemptCoordinator.Transition.TrackerHidden -> {
+                leaderboardTrackerUpdateLogLimiter.reset(key.leaderboardId, key.attemptId)
+                logLeaderboardUiTransition(key, transition.event.eventSequence, "tracker_hidden")
+                if (settingsRepository.areRetroAchievementsLeaderboardIndicatorsEnabled()) {
+                    _achievementsEvent.emit(RAEventUi.LeaderboardTrackerHidden(key))
+                }
             }
-
-            if (emulatorSession.isRetroAchievementsHardcoreModeEnabled) {
-                attemptSilentHardcoreReplayBeforeOnlineSubmission()
-            }
-
-            retroAchievementsRepository.getLeaderboard(completionEvent.leaderboardId)?.let { leaderboard ->
-                retroAchievementsSubmissionHandler.addPendingLeaderboardSubmission(
-                    leaderboard = leaderboard,
-                    value = completionEvent.value,
-                    formattedValue = completionEvent.formattedValue,
+            is LeaderboardAttemptCoordinator.Transition.Canceled -> {
+                leaderboardTrackerUpdateLogLimiter.reset(key.leaderboardId, key.attemptId)
+                logLeaderboardUiTransition(key, transition.event.eventSequence, "canceled")
+                _achievementsEvent.emit(
+                    RAEventUi.LeaderboardAttemptCancelled(
+                        leaderboardId = key.leaderboardId,
+                        attemptKey = key,
+                    )
                 )
             }
+            is LeaderboardAttemptCoordinator.Transition.Pending -> {
+                logLeaderboardUiTransition(
+                    key,
+                    transition.event.eventSequence,
+                    "pending",
+                    "tracker_display" to transition.event.trackerDisplay,
+                    "submit_owner" to "rc_client",
+                    "kotlin_submit" to false,
+                )
+                val context = loadLeaderboardUiContext(key.leaderboardId)
+                if (context == null) {
+                    logLeaderboardUiTransition(
+                        key,
+                        transition.event.eventSequence,
+                        "pending_metadata_unavailable",
+                    )
+                }
+                _achievementsEvent.emit(
+                    RAEventUi.LeaderboardSubmissionPending(
+                        key = key,
+                        title = context?.leaderboard?.title
+                            ?: this@EmulatorViewModel.context.getString(R.string.leaderboard_generic_title, key.leaderboardId),
+                        gameIcon = context?.gameIcon,
+                        trackerDisplay = transition.event.trackerDisplay,
+                    )
+                )
+            }
+            is LeaderboardAttemptCoordinator.Transition.Scoreboard -> {
+                val scoreboard = transition.event
+                leaderboardTrackerUpdateLogLimiter.reset(key.leaderboardId, key.attemptId)
+                logLeaderboardUiTransition(
+                    key,
+                    scoreboard.eventSequence,
+                    "scoreboard_final",
+                    "submitted_score" to scoreboard.submittedScore,
+                    "best_score" to scoreboard.bestScore,
+                    "rank" to scoreboard.newRank,
+                    "num_entries" to scoreboard.numEntries,
+                    "submit_owner" to "rc_client",
+                    "kotlin_submit" to false,
+                )
+                val context = loadLeaderboardUiContext(key.leaderboardId)
+                if (context == null) {
+                    logLeaderboardUiTransition(
+                        key,
+                        scoreboard.eventSequence,
+                        "scoreboard_metadata_unavailable",
+                    )
+                }
+                _achievementsEvent.emit(
+                    LeaderboardScoreboardUiMapper.map(
+                        key = key,
+                        scoreboard = scoreboard,
+                        title = context?.leaderboard?.title
+                            ?: this@EmulatorViewModel.context.getString(R.string.leaderboard_generic_title, key.leaderboardId),
+                        gameIcon = context?.gameIcon,
+                    )
+                )
+            }
+            is LeaderboardAttemptCoordinator.Transition.Failed -> {
+                leaderboardTrackerUpdateLogLimiter.reset(key.leaderboardId, key.attemptId)
+                logLeaderboardUiTransition(
+                    key,
+                    transition.event.eventSequence,
+                    "server_error",
+                    "result_code" to transition.event.resultCode,
+                    "submit_owner" to "rc_client",
+                    "kotlin_submit" to false,
+                )
+                _achievementsEvent.emit(
+                    RAEventUi.LeaderboardEntrySubmitError(
+                        leaderboardId = key.leaderboardId,
+                        attemptKey = key,
+                        willRetryInBackground = false,
+                    )
+                )
+            }
+        }
+    }
+
+    private suspend fun loadLeaderboardUiContext(leaderboardId: Long): LeaderboardUiContext? {
+        val leaderboard = retroAchievementsRepository.getLeaderboard(leaderboardId) ?: return null
+        val setSummary = retroAchievementsRepository.getAchievementSetSummary(leaderboard.setId) ?: return null
+        return LeaderboardUiContext(leaderboard, setSummary.iconUrl)
+    }
+
+    private data class LeaderboardEventIdentity(
+        val leaderboardId: Long,
+        val attemptId: Long,
+        val eventSequence: Long,
+    )
+
+    private fun leaderboardEventIdentity(event: RAEvent): LeaderboardEventIdentity? {
+        return when (event) {
+            is RAEvent.OnLeaderboardAttemptStarted -> LeaderboardEventIdentity(event.leaderboardId, event.attemptId, event.eventSequence)
+            is RAEvent.OnLeaderboardAttemptUpdated -> LeaderboardEventIdentity(event.leaderboardId, event.attemptId, event.eventSequence)
+            is RAEvent.OnLeaderboardAttemptSubmitted -> LeaderboardEventIdentity(event.leaderboardId, event.attemptId, event.eventSequence)
+            is RAEvent.OnLeaderboardScoreboard -> LeaderboardEventIdentity(event.leaderboardId, event.attemptId, event.eventSequence)
+            is RAEvent.OnLeaderboardSubmissionFailed -> LeaderboardEventIdentity(event.leaderboardId, event.attemptId, event.eventSequence)
+            is RAEvent.OnLeaderboardAttemptCancelled -> LeaderboardEventIdentity(event.leaderboardId, event.attemptId, event.eventSequence)
+            is RAEvent.OnLeaderboardTrackerHidden -> LeaderboardEventIdentity(event.leaderboardId, event.attemptId, event.eventSequence)
+            else -> null
+        }
+    }
+
+    private fun logLeaderboardUiTransition(
+        key: LeaderboardAttemptKey,
+        eventSequence: Long,
+        uiState: String,
+        vararg fields: Pair<String, Any?>,
+    ) {
+        logLeaderboardDiagnostic(
+            "leaderboard_ui_transition",
+            "leaderboard_id" to key.leaderboardId,
+            "attempt_id" to key.attemptId,
+            "event_sequence" to eventSequence,
+            "ui_state" to uiState,
+            *fields,
+        )
+    }
+
+    private fun logLeaderboardDiagnostic(eventType: String, vararg fields: Pair<String, Any?>) {
+        if (!leaderboardDiagnosticsEnabled) return
+        logRaSubmission(eventType, *fields)
+    }
+
+    private fun onLeaderboardAttemptCompleted(completionEvent: RAEvent.OnLeaderboardAttemptCompleted) {
+        val owner = when (activeRuntimePath) {
+            RetroAchievementsRuntimePath.RC_CLIENT,
+            RetroAchievementsRuntimePath.RC_CLIENT_OFFLINE -> LeaderboardSubmissionOwnership.Owner.RC_CLIENT
+            RetroAchievementsRuntimePath.LEGACY -> LeaderboardSubmissionOwnership.Owner.LEGACY
+            RetroAchievementsRuntimePath.DISABLED -> LeaderboardSubmissionOwnership.Owner.NONE
+        }
+        val ownership = LeaderboardSubmissionOwnership.dispatch(owner, completionEvent) { legacySubmission ->
+            sessionCoroutineScope.launch {
+                submitLegacyLeaderboardCompletion(completionEvent, legacySubmission)
+            }
+        }
+        when (ownership) {
+            LeaderboardSubmissionOwnership.Action.RuntimeOwnsSubmit,
+            LeaderboardSubmissionOwnership.Action.IgnoreProtocolMismatch -> {
+                logLeaderboardDiagnostic(
+                    "leaderboard_legacy_completion_ignored",
+                    "leaderboard_id" to completionEvent.leaderboardId,
+                    "runtime_path" to activeRuntimePath.traceValue,
+                    "reason" to if (owner == LeaderboardSubmissionOwnership.Owner.RC_CLIENT) {
+                        "rc_client_owns_submit"
+                    } else {
+                        "no_submit_owner"
+                    },
+                    "kotlin_submit" to false,
+                )
+                return
+            }
+            is LeaderboardSubmissionOwnership.Action.SubmitLegacy -> Unit
+        }
+    }
+
+    private suspend fun submitLegacyLeaderboardCompletion(
+        completionEvent: RAEvent.OnLeaderboardAttemptCompleted,
+        ownership: LeaderboardSubmissionOwnership.Action.SubmitLegacy,
+    ) {
+
+        logRaTrace(
+            "leaderboard_complete_received",
+            "leaderboard_id" to completionEvent.leaderboardId,
+            "value" to completionEvent.value,
+            "network_mode" to retroAchievementsNetworkMode.name,
+            "session_mode" to retroAchievementsSessionMode.name,
+            "online" to networkStatusProvider.isOnline(),
+        )
+        if (retroAchievementsNetworkMode == RetroAchievementsNetworkMode.ONLINE_LIVE && !networkStatusProvider.isLikelyOnline()) {
+            transitionToOfflineAccumulationIfNeeded()
+        }
+
+        if (retroAchievementsNetworkMode == RetroAchievementsNetworkMode.OFFLINE_ACCUMULATING) {
+            logRaTrace(
+                "leaderboard_submit_skipped_offline",
+                "leaderboard_id" to completionEvent.leaderboardId,
+            )
+            completeLeaderboardSubmissionTrace(completionEvent.leaderboardId, "offline_skipped")
+            _achievementsEvent.emit(RAEventUi.LeaderboardAttemptCancelled(completionEvent.leaderboardId))
+            return
+        }
+
+        if (!emulatorSession.areLeaderboardsEnabled()) {
+            logRaTrace(
+                "leaderboard_submit_skipped_mode",
+                "leaderboard_id" to completionEvent.leaderboardId,
+                "hardcore_enabled" to emulatorSession.isRetroAchievementsHardcoreModeEnabled,
+            )
+            completeLeaderboardSubmissionTrace(completionEvent.leaderboardId, "mode_skipped")
+            _achievementsEvent.emit(RAEventUi.LeaderboardAttemptCancelled(completionEvent.leaderboardId))
+            return
+        }
+
+        if (!ensureLeaderboardSubmitContext(completionEvent.leaderboardId)) {
+            completeLeaderboardSubmissionTrace(completionEvent.leaderboardId, "context_mismatch")
+            _achievementsEvent.emit(RAEventUi.LeaderboardAttemptCancelled(completionEvent.leaderboardId))
+            return
+        }
+
+        if (emulatorSession.isRetroAchievementsHardcoreModeEnabled) {
+            attemptSilentHardcoreReplayBeforeOnlineSubmission()
+        }
+
+        retroAchievementsRepository.getLeaderboard(completionEvent.leaderboardId)?.let { leaderboard ->
+            val authentication = runtimeAuthenticationSnapshot()
+            if (authentication == null) {
+                completeLeaderboardSubmissionTrace(
+                    completionEvent.leaderboardId,
+                    "missing_runtime_authentication",
+                )
+                return
+            }
+            retroAchievementsSubmissionHandler.addPendingLegacyLeaderboardSubmission(
+                leaderboard = leaderboard,
+                value = ownership.value,
+                formattedValue = ownership.formattedValue,
+                authentication = authentication,
+            )
         }
     }
 
@@ -3278,7 +5461,7 @@ class EmulatorViewModel @Inject constructor(
             "content_id" to currentRom?.retroAchievementsHash,
         )
 
-        val drainResult = hardcoreSubmissionQueue.drain()
+        val drainResult = drainHardcoreSubmissions()
         if (drainResult.remainingCount == 0) {
             logRaTrace(
                 "hardcore_silent_replay_complete",
@@ -3290,12 +5473,6 @@ class EmulatorViewModel @Inject constructor(
                 "submitted" to drainResult.submittedCount,
                 "remaining" to drainResult.remainingCount,
             )
-        }
-    }
-
-    private fun onLeaderboardAttemptCancelled(cancelEvent: RAEvent.OnLeaderboardAttemptCancelled) {
-        sessionCoroutineScope.launch {
-            _achievementsEvent.emit(RAEventUi.LeaderboardAttemptCancelled(cancelEvent.leaderboardId))
         }
     }
 
@@ -3312,7 +5489,7 @@ class EmulatorViewModel @Inject constructor(
         }
 
         val setSummary = retroAchievementsRepository.getAchievementSetSummary(setId)
-        val raUserName = (retroAchievementsRepository.getUserAuthentication() as? RAUserAuth.Authenticated)?.username
+        val raUserName = activeRuntimeBridgeConfig?.username
         val romPlayTime = romsRepository.getRomAtUri(rom.uri)?.totalPlayTime
 
         if (setSummary == null) {
@@ -3339,29 +5516,124 @@ class EmulatorViewModel @Inject constructor(
 
     private fun startRetroAchievementsSession(rom: Rom, launchDecision: RetroAchievementsLaunchDecision): CompletableDeferred<Unit> {
         val bootstrapReady = CompletableDeferred<Unit>()
-        sessionCoroutineScope.launch {
+        val previousBootstrapJob = raBootstrapJob
+        val bootstrapJob = sessionCoroutineScope.launch(start = CoroutineStart.LAZY) {
+            var acquiredLeaseId: String? = null
             try {
+                previousBootstrapJob?.cancelAndJoin()
+                awaitHardcoreSubmissionQueueTeardown()
+                val runtimeLeaseId = acquireRuntimeAuthenticationLease()
+                if (runtimeLeaseId == null) {
+                    activeRuntimeBridgeConfig = null
+                    activeRuntimePath = RetroAchievementsRuntimePath.DISABLED
+                    emulatorSession.updateRetroAchievementsIntegrationStatus(
+                        GameAchievementData.IntegrationStatus.DISABLED_LOAD_ERROR,
+                    )
+                    logRaSubmission(
+                        "ra_runtime_identity_lease_rejected",
+                        "reason" to "authentication_mutation_or_mismatch",
+                    )
+                    _raIntegrationEvent.tryEmit(RAIntegrationEvent.Failed(null))
+                    bootstrapReady.complete(Unit)
+                    return@launch
+                }
+                acquiredLeaseId = runtimeLeaseId
+                awaitHardcoreSubmissionQueueTeardown()
+                currentCoroutineContext().ensureActive()
+                val leaseAuthentication =
+                    retroAchievementsRepository.getUserAuthentication() as? RAUserAuth.Authenticated
+                if (
+                    leaseAuthentication == null ||
+                    !hardcoreSubmissionQueue.beginSession(
+                        runtimeLeaseId,
+                        leaseAuthentication,
+                    )
+                ) {
+                    releaseRuntimeAuthenticationLease(
+                        runtimeLeaseId,
+                        "hardcore_queue_session_rejected",
+                    )
+                    activeRuntimeBridgeConfig = null
+                    activeRuntimePath = RetroAchievementsRuntimePath.DISABLED
+                    emulatorSession.updateRetroAchievementsIntegrationStatus(
+                        GameAchievementData.IntegrationStatus.DISABLED_LOAD_ERROR,
+                    )
+                    logRaSubmission(
+                        "ra_runtime_identity_lease_rejected",
+                        "reason" to "hardcore_queue_not_empty_after_terminal_discard",
+                    )
+                    _raIntegrationEvent.tryEmit(RAIntegrationEvent.Failed(null))
+                    bootstrapReady.complete(Unit)
+                    return@launch
+                }
+                synchronized(runtimeAuthenticationLeaseMonitor) {
+                    activeHardcoreSubmissionSessionId = runtimeLeaseId
+                }
+                leaderboardAttemptCoordinator.beginRuntimeReset()
+                leaderboardTrackerUpdateLogLimiter.resetAll()
+                leaderboardDiagnosticsEnabled = settingsRepository.isRendererDebugToolsEnabled().firstOrNull() == true
                 offlineRetroAchievementsSession = null
                 activeRuntimeBridgeConfig = null
                 activeRuntimePath = RetroAchievementsRuntimePath.DISABLED
 
-                val networkMode = launchDecision.networkMode
-                val (offlineContext, onlineBootstrap) = run {
-                    val ctx = if (networkMode == RetroAchievementsNetworkMode.OFFLINE_ACCUMULATING) {
+                var effectiveLaunchDecision = launchDecision
+                var networkMode = effectiveLaunchDecision.networkMode
+                var offlineContext = if (networkMode == RetroAchievementsNetworkMode.OFFLINE_ACCUMULATING) {
+                    buildOfflineRetroAchievementsContext(rom)
+                } else {
+                    null
+                }
+                var onlineBootstrap = if (networkMode != RetroAchievementsNetworkMode.OFFLINE_ACCUMULATING) {
+                    withContext(Dispatchers.IO) { getRomAchievementData(rom) }
+                } else {
+                    null
+                }
+
+                if (
+                    !effectiveLaunchDecision.usesProxyBackend &&
+                    RaHardcoreLaunchPolicy.mustDowngradeHardcore(
+                        hardcoreRequested =
+                            effectiveLaunchDecision.sessionMode == RetroAchievementsSessionMode.HARDCORE,
+                        bootstrapLoadedFromNetwork =
+                            onlineBootstrap?.source == OnlineRetroAchievementsBootstrapSource.NETWORK,
+                    )
+                ) {
+                    effectiveLaunchDecision = effectiveLaunchDecision.copy(
+                        networkMode = RetroAchievementsNetworkMode.OFFLINE_ACCUMULATING,
+                        sessionMode = RetroAchievementsSessionMode.SOFTCORE,
+                        initialOfflineType = OfflineUnlockType.OFFLINE_FROM_START,
+                        isHardcoreEligibleAfterOnlineStart = false,
+                        offlineDueToNoInternetAtStart = false,
+                        hardcoreOfflineDisabled = true,
+                    )
+                    networkMode = effectiveLaunchDecision.networkMode
+                    retroAchievementsNetworkMode = networkMode
+                    retroAchievementsSessionMode = effectiveLaunchDecision.sessionMode
+                    isHardcoreEligibleAfterOnlineStart = false
+                    startedSessionOnlineLive = false
+                    val offlineSoftcoreEnabled =
+                        settingsRepository.isRetroAchievementsOfflineSoftcoreEnabled()
+                    emulatorSession.startSession(
+                        areRetroAchievementsEnabled = offlineSoftcoreEnabled,
+                        isRetroAchievementsHardcoreModeEnabled = false,
+                        sessionType = EmulatorSession.SessionType.RomSession(rom),
+                    )
+                    offlineContext = if (offlineSoftcoreEnabled) {
                         buildOfflineRetroAchievementsContext(rom)
                     } else {
                         null
                     }
-                    val bootstrap = if (networkMode == RetroAchievementsNetworkMode.ONLINE_LIVE) {
-                        withContext(Dispatchers.IO) { getRomAchievementData(rom) }
-                    } else {
-                        null
-                    }
-                    ctx to bootstrap
+                    onlineBootstrap = null
+                    logRaTrace(
+                        "ra_hardcore_online_bootstrap_rejected",
+                        "reason" to "network_bootstrap_unavailable",
+                        "fallback" to if (offlineContext != null) "softcore_offline" else "disabled",
+                    )
                 }
 
                 val achievementData = when (networkMode) {
-                    RetroAchievementsNetworkMode.ONLINE_LIVE -> onlineBootstrap?.achievementData
+                    RetroAchievementsNetworkMode.ONLINE_LIVE,
+                    RetroAchievementsNetworkMode.RECONCILING_RA_SUBMISSIONS -> onlineBootstrap?.achievementData
                         ?: GameAchievementData.withDisabledRetroAchievementsIntegration(GameAchievementData.IntegrationStatus.DISABLED_LOAD_ERROR)
                     RetroAchievementsNetworkMode.OFFLINE_ACCUMULATING -> offlineContext?.achievementData
                         ?: GameAchievementData.withDisabledRetroAchievementsIntegration(GameAchievementData.IntegrationStatus.DISABLED_LOAD_ERROR)
@@ -3379,14 +5651,16 @@ class EmulatorViewModel @Inject constructor(
                         _raIntegrationEvent.tryEmit(RAIntegrationEvent.LoginExpired(achievementData.icon))
                     }
 
+                    releaseRuntimeAuthenticationLease(runtimeLeaseId, "integration_disabled")
                     bootstrapReady.complete(Unit)
                     return@launch
                 }
 
-                raSessionJob = launch {
+                val runtimeJob = launch {
                     // Wait until the emulator has actually started
                     val expectedRuntimePath = when (networkMode) {
-                        RetroAchievementsNetworkMode.ONLINE_LIVE -> RetroAchievementsRuntimePath.RC_CLIENT
+                        RetroAchievementsNetworkMode.ONLINE_LIVE,
+                        RetroAchievementsNetworkMode.RECONCILING_RA_SUBMISSIONS -> RetroAchievementsRuntimePath.RC_CLIENT
                         RetroAchievementsNetworkMode.OFFLINE_ACCUMULATING -> RetroAchievementsRuntimePath.RC_CLIENT_OFFLINE
                     }
                     logRaRuntimeSetup(
@@ -3397,11 +5671,13 @@ class EmulatorViewModel @Inject constructor(
                     ensureEmulatorIsRunning().firstOrNull()
 
                     when (networkMode) {
-                        RetroAchievementsNetworkMode.ONLINE_LIVE -> {
-                            val runtimeConfig = buildOnlineRuntimeConfig(rom, launchDecision)
+                        RetroAchievementsNetworkMode.ONLINE_LIVE,
+                        RetroAchievementsNetworkMode.RECONCILING_RA_SUBMISSIONS -> {
+                            val runtimeConfig = buildOnlineRuntimeConfig(rom, effectiveLaunchDecision)
                             if (runtimeConfig?.runtimeMode != RARuntimeBridgeMode.RC_CLIENT_ONLINE) {
                                 activeRuntimeBridgeConfig = null
                                 activeRuntimePath = RetroAchievementsRuntimePath.DISABLED
+                                releaseRuntimeAuthenticationLease(runtimeLeaseId, "missing_runtime_config")
                                 logRaTrace(
                                     "ra_setup_failed",
                                     "runtime_path" to activeRuntimePath.name,
@@ -3424,12 +5700,13 @@ class EmulatorViewModel @Inject constructor(
                                 "ra_setup_started",
                                 "runtime_path" to activeRuntimePath.name,
                                 "encore" to settingsRepository.isRetroAchievementsEncoreModeEnabled(),
-                                "hardcore" to (launchDecision.sessionMode == RetroAchievementsSessionMode.HARDCORE),
+                                "hardcore" to (effectiveLaunchDecision.sessionMode == RetroAchievementsSessionMode.HARDCORE),
                                 "unofficial" to settingsRepository.areRetroAchievementsUnofficialAchievementsEnabled(),
                                 "game_id" to currentRetroAchievementsGameId,
                             )
 
-                            runCatching {
+                            initializePendingRaSubmissionSession(runtimeConfig, rom)
+                            try {
                                 logRaRuntimeSetup(
                                     stage = "native_setup_start",
                                     runtimePath = activeRuntimePath,
@@ -3437,7 +5714,29 @@ class EmulatorViewModel @Inject constructor(
                                     runtimeConfig = runtimeConfig,
                                 )
                                 emulatorManager.setupRetroAchievements(achievementData, runtimeConfig)
-                            }.onFailure { throwable ->
+                            } catch (throwable: Throwable) {
+                                val ownedRuntime =
+                                    unloadAndReleaseRuntimeAuthenticationLease(
+                                        runtimeLeaseId,
+                                        "native_setup_failed",
+                                    ) {
+                                        activeRuntimeBridgeConfig = null
+                                        activeRuntimePath = RetroAchievementsRuntimePath.DISABLED
+                                        isRetroAchievementsOnlineSessionStarted = false
+                                    }
+                                if (!ownedRuntime) {
+                                    if (throwable is CancellationException) {
+                                        throw throwable
+                                    }
+                                    return@launch
+                                }
+                                clearPendingRaSubmissionSession(
+                                    reason = "native_setup_failed",
+                                    clearLossMarker = true,
+                                )
+                                if (throwable is CancellationException) {
+                                    throw throwable
+                                }
                                 logRaRuntimeSetup(
                                     stage = "native_setup_failed",
                                     runtimePath = activeRuntimePath,
@@ -3448,7 +5747,7 @@ class EmulatorViewModel @Inject constructor(
                                 logRaTrace(
                                     "ra_setup_failed",
                                     "runtime_path" to activeRuntimePath.name,
-                                    "error" to (throwable.message ?: throwable.javaClass.simpleName),
+                                    "error" to throwable.javaClass.simpleName,
                                 )
                                 emulatorSession.updateRetroAchievementsIntegrationStatus(GameAchievementData.IntegrationStatus.DISABLED_LOAD_ERROR)
                                 _raIntegrationEvent.tryEmit(RAIntegrationEvent.Failed(achievementData.icon))
@@ -3462,76 +5761,86 @@ class EmulatorViewModel @Inject constructor(
                                 runtimeConfig = runtimeConfig,
                             )
                             logRaTrace("ra_setup_completed", "runtime_path" to activeRuntimePath.name)
-                            launch {
-                                retroAchievementsSubmissionHandler.startEmulatorSession().collect { event ->
-                                    when (event) {
-                                        is RAEventUi.AchievementTriggered -> {
-                                            logRaTrace(
-                                                "achievement_submit_success",
-                                                "achievement_id" to event.achievement.id,
-                                                "hardcore" to emulatorSession.isRetroAchievementsHardcoreModeEnabled,
-                                                "awarded" to true,
-                                            )
-                                            completeAchievementSubmissionTrace(event.achievement.id, "submit_success")
+                            if (activeRuntimePath == RetroAchievementsRuntimePath.LEGACY) {
+                                launch {
+                                    retroAchievementsSubmissionHandler.startEmulatorSession().collect { event ->
+                                        when (event) {
+                                            is RAEventUi.AchievementTriggered -> {
+                                                logRaTrace(
+                                                    "achievement_submit_success",
+                                                    "achievement_id" to event.achievement.id,
+                                                    "hardcore" to emulatorSession.isRetroAchievementsHardcoreModeEnabled,
+                                                    "awarded" to true,
+                                                )
+                                                completeAchievementSubmissionTrace(event.achievement.id, "submit_success")
+                                            }
+                                            is RAEventUi.LeaderboardEntrySubmitted -> {
+                                                logRaTrace(
+                                                    "leaderboard_submit_success",
+                                                    "leaderboard_id" to event.leaderboardId,
+                                                    "rank" to event.rank,
+                                                )
+                                                completeLeaderboardSubmissionTrace(event.leaderboardId, "submit_success")
+                                            }
+                                            is RAEventUi.LeaderboardEntrySubmitError -> {
+                                                logRaTrace(
+                                                    "leaderboard_submit_failed",
+                                                    "leaderboard_id" to event.leaderboardId,
+                                                    "error" to "RetryQueued",
+                                                )
+                                            }
+                                            is RAEventUi.AchievementTriggerError -> {
+                                                logRaTrace(
+                                                    "achievement_submit_failed",
+                                                    "achievement_id" to event.achievement.id,
+                                                    "hardcore" to emulatorSession.isRetroAchievementsHardcoreModeEnabled,
+                                                    "error" to "RetryQueued",
+                                                )
+                                            }
+                                            else -> Unit
                                         }
-                                        is RAEventUi.LeaderboardEntrySubmitted -> {
-                                            logRaTrace(
-                                                "leaderboard_submit_success",
-                                                "leaderboard_id" to event.leaderboardId,
-                                                "rank" to event.rank,
-                                            )
-                                            completeLeaderboardSubmissionTrace(event.leaderboardId, "submit_success")
-                                        }
-                                        is RAEventUi.LeaderboardEntrySubmitError -> {
-                                            logRaTrace(
-                                                "leaderboard_submit_failed",
-                                                "leaderboard_id" to event.leaderboardId,
-                                                "error" to "RetryQueued",
-                                            )
-                                        }
-                                        is RAEventUi.AchievementTriggerError -> {
-                                            logRaTrace(
-                                                "achievement_submit_failed",
-                                                "achievement_id" to event.achievement.id,
-                                                "hardcore" to emulatorSession.isRetroAchievementsHardcoreModeEnabled,
-                                                "error" to "RetryQueued",
-                                            )
-                                        }
-                                        else -> Unit
+                                        _achievementsEvent.emit(event)
                                     }
-                                    _achievementsEvent.emit(event)
                                 }
                             }
                             isRetroAchievementsOnlineSessionStarted = false
                             emitRetroAchievementsModeToast(
-                                status = if (launchDecision.sessionMode == RetroAchievementsSessionMode.HARDCORE) {
+                                status = if (effectiveLaunchDecision.sessionMode == RetroAchievementsSessionMode.HARDCORE) {
                                     ToastEvent.RetroAchievementsModeStatus.HARDCORE
                                 } else {
                                     ToastEvent.RetroAchievementsModeStatus.SOFTCORE
                                 }
                             )
-                            emitRetroAchievementsLoadedPopup(achievementData)
+                            emitRetroAchievementsLoadedPopup(
+                                achievementData,
+                                hardcore = effectiveLaunchDecision.sessionMode == RetroAchievementsSessionMode.HARDCORE,
+                            )
 
                             while (isActive) {
-                                if (retroAchievementsNetworkMode != RetroAchievementsNetworkMode.ONLINE_LIVE) {
-                                    break
-                                }
-
                                 if (!networkStatusProvider.isLikelyOnline()) {
                                     transitionToOfflineAccumulationIfNeeded()
                                     delay(15.seconds)
                                     continue
                                 }
 
+                                if (
+                                    retroAchievementsNetworkMode == RetroAchievementsNetworkMode.OFFLINE_ACCUMULATING ||
+                                    retroAchievementsNetworkMode == RetroAchievementsNetworkMode.RECONCILING_RA_SUBMISSIONS
+                                ) {
+                                    delay(5.seconds)
+                                    continue
+                                }
+
                                 if (!isRetroAchievementsOnlineSessionStarted) {
-                                    val isHardcoreModeEnabled = launchDecision.sessionMode == RetroAchievementsSessionMode.HARDCORE
+                                    val isHardcoreModeEnabled =
+                                        effectiveLaunchDecision.sessionMode == RetroAchievementsSessionMode.HARDCORE
                                     val startResult = withContext(Dispatchers.IO) {
                                         retroAchievementsRepository.startSession(rom.retroAchievementsHash, isHardcoreModeEnabled)
                                     }
                                     if (startResult.isFailure) {
                                         if (startResult.exceptionOrNull() is UserTokenExpiredException) {
                                             _raIntegrationEvent.tryEmit(RAIntegrationEvent.LoginExpired(achievementData.icon))
-                                            break
+                                            awaitCancellation()
                                         }
                                         delay(15.seconds)
                                         continue
@@ -3542,9 +5851,12 @@ class EmulatorViewModel @Inject constructor(
 
                                 // TODO: Should we pause the session if the app goes to background? If so, how?
                                 delay(2.minutes)
-                                val isHardcoreModeEnabled = launchDecision.sessionMode == RetroAchievementsSessionMode.HARDCORE
+                                val isHardcoreModeEnabled =
+                                    effectiveLaunchDecision.sessionMode == RetroAchievementsSessionMode.HARDCORE
                                 if (isHardcoreModeEnabled) {
-                                    attemptSilentHardcoreReplayBeforeOnlineSubmission()
+                                    if ((pendingRaSubmissionStore?.snapshot?.value?.counts?.total ?: 0) > 0) {
+                                        syncPendingRaSubmissions(RaPendingSyncSource.BEFORE_ONLINE_SUBMISSION)
+                                    }
                                 } else {
                                     retroAchievementsSubmissionHandler.retrySubmissionsImmediately()
                                 }
@@ -3571,9 +5883,13 @@ class EmulatorViewModel @Inject constructor(
                                     apiToken = userAuth.token,
                                     gameHash = rom.retroAchievementsHash,
                                     gameId = context.cache.gameId,
+                                    submissionSessionId = 0,
                                     hardcoreEnabled = false,
                                     unofficialEnabled = settingsRepository.areRetroAchievementsUnofficialAchievementsEnabled(),
                                     encoreEnabled = settingsRepository.isRetroAchievementsEncoreModeEnabled(),
+                                    apiHost = effectiveLaunchDecision.nativeClientHost,
+                                    usesProxyHost = false,
+                                    endpointGeneration = effectiveLaunchDecision.endpointGeneration,
                                 )
                             } else {
                                 null
@@ -3590,7 +5906,8 @@ class EmulatorViewModel @Inject constructor(
                             val startedAtEpochMs = System.currentTimeMillis()
                             val sessionId = UUID.randomUUID().toString()
                             val unlockMode = OfflineUnlockMode.SOFTCORE
-                            val offlineType = launchDecision.initialOfflineType ?: OfflineUnlockType.OFFLINE_FROM_START
+                            val offlineType =
+                                effectiveLaunchDecision.initialOfflineType ?: OfflineUnlockType.OFFLINE_FROM_START
 
                             offlineRetroAchievementsSession = OfflineRetroAchievementsSession(
                                 userId = context.userId,
@@ -3625,6 +5942,26 @@ class EmulatorViewModel @Inject constructor(
                                 )
                                 emulatorManager.setupRetroAchievements(achievementData, runtimeConfig)
                             }.onFailure { throwable ->
+                                val ownedRuntime =
+                                    unloadAndReleaseRuntimeAuthenticationLease(
+                                        runtimeLeaseId,
+                                        "offline_native_setup_failed",
+                                    ) {
+                                        activeRuntimeBridgeConfig = null
+                                        activeRuntimePath = RetroAchievementsRuntimePath.DISABLED
+                                        isRetroAchievementsOnlineSessionStarted = false
+                                    }
+                                if (!ownedRuntime) {
+                                    if (throwable is CancellationException) {
+                                        throw throwable
+                                    }
+                                    return@launch
+                                }
+                                finalizeOfflineRetroAchievementsSessionIfNeeded()
+                                emulatorSession.updateRetroAchievementsOfflineModeEnabled(false)
+                                if (throwable is CancellationException) {
+                                    throw throwable
+                                }
                                 logRaRuntimeSetup(
                                     stage = "native_setup_failed",
                                     runtimePath = activeRuntimePath,
@@ -3635,7 +5972,7 @@ class EmulatorViewModel @Inject constructor(
                                 logRaTrace(
                                     "ra_setup_failed",
                                     "runtime_path" to activeRuntimePath.name,
-                                    "error" to (throwable.message ?: throwable.javaClass.simpleName),
+                                    "error" to throwable.javaClass.simpleName,
                                 )
                                 emulatorSession.updateRetroAchievementsIntegrationStatus(GameAchievementData.IntegrationStatus.DISABLED_LOAD_ERROR)
                                 _raIntegrationEvent.tryEmit(RAIntegrationEvent.Failed(achievementData.icon))
@@ -3650,17 +5987,79 @@ class EmulatorViewModel @Inject constructor(
                             )
                             emitRetroAchievementsModeToast(
                                 status = ToastEvent.RetroAchievementsModeStatus.SOFTCORE_OFFLINE,
-                                offlineNoInternetAtStart = launchDecision.offlineDueToNoInternetAtStart,
-                                hardcoreOfflineDisabled = launchDecision.hardcoreOfflineDisabled,
+                                offlineNoInternetAtStart = effectiveLaunchDecision.offlineDueToNoInternetAtStart,
+                                hardcoreOfflineDisabled = effectiveLaunchDecision.hardcoreOfflineDisabled,
                             )
-                            emitRetroAchievementsLoadedPopup(achievementData)
+                            emitRetroAchievementsLoadedPopup(achievementData, hardcore = false)
+                            awaitCancellation()
                         }
+                    }
+                }
+                raSessionJob = runtimeJob
+                runtimeJob.invokeOnCompletion completion@{ cause ->
+                    if (cause == null) {
+                        return@completion
+                    }
+                    var detachedStore: PendingRaSubmissionStore? = null
+                    val ownedRuntime =
+                        unloadAndReleaseRuntimeAuthenticationLease(
+                            runtimeLeaseId,
+                            "runtime_job_failed",
+                        ) {
+                            activeRuntimeBridgeConfig = null
+                            activeRuntimePath = RetroAchievementsRuntimePath.DISABLED
+                            isRetroAchievementsOnlineSessionStarted = false
+                            detachedStore = detachPendingRaSubmissionSession()
+                        }
+                    if (!ownedRuntime) {
+                        return@completion
+                    }
+                    finalizeOfflineRetroAchievementsSessionIfNeeded()
+                    emulatorSession.updateRetroAchievementsOfflineModeEnabled(false)
+                    detachedStore?.let { store ->
+                        viewModelScope.launch {
+                            val discarded = store.cleanup()
+                            hardcoreOfflineLossTracker.clearPendingUnlocks(
+                                store.context.userId,
+                                store.context.contentHash,
+                            )
+                            logRaSubmission(
+                                "ra_pending_session_cleared",
+                                "reason" to "runtime_job_failed",
+                                "discarded" to discarded,
+                                "accepted" to false,
+                            )
+                        }
+                    }
+                    logRaSubmission(
+                        "ra_runtime_job_terminated",
+                        "error" to cause.javaClass.simpleName,
+                    )
+                    if (cause !is CancellationException) {
+                        emulatorSession.updateRetroAchievementsIntegrationStatus(
+                            GameAchievementData.IntegrationStatus.DISABLED_LOAD_ERROR,
+                        )
+                        _raIntegrationEvent.tryEmit(RAIntegrationEvent.Failed(achievementData.icon))
                     }
                 }
                 bootstrapReady.complete(Unit)
             } catch (exception: Throwable) {
+                val ownedRuntime = acquiredLeaseId?.let { leaseId ->
+                    unloadAndReleaseRuntimeAuthenticationLease(
+                        leaseId,
+                        "bootstrap_failed",
+                    ) {
+                        activeRuntimeBridgeConfig = null
+                        activeRuntimePath = RetroAchievementsRuntimePath.DISABLED
+                        isRetroAchievementsOnlineSessionStarted = false
+                    }
+                } ?: false
                 if (exception is CancellationException) {
                     throw exception
+                }
+                if (!ownedRuntime) {
+                    bootstrapReady.complete(Unit)
+                    return@launch
                 }
                 Log.e("EmulatorViewModel", "RetroAchievements bootstrap failed for '${rom.name}'", exception)
                 bootstrapReady.complete(Unit)
@@ -3669,8 +6068,15 @@ class EmulatorViewModel @Inject constructor(
                 activeRuntimePath = RetroAchievementsRuntimePath.DISABLED
                 emulatorSession.updateRetroAchievementsIntegrationStatus(GameAchievementData.IntegrationStatus.DISABLED_LOAD_ERROR)
                 _raIntegrationEvent.tryEmit(RAIntegrationEvent.Failed(null))
+            } finally {
+                bootstrapReady.complete(Unit)
             }
         }
+        raBootstrapJob = bootstrapJob
+        bootstrapJob.invokeOnCompletion {
+            bootstrapReady.complete(Unit)
+        }
+        bootstrapJob.start()
         return bootstrapReady
     }
 
@@ -3688,7 +6094,24 @@ class EmulatorViewModel @Inject constructor(
         )
     }
 
-    private fun emitRetroAchievementsLoadedPopup(achievementData: GameAchievementData) {
+    private suspend fun emitRetroAchievementsLoadedPopup(
+        achievementData: GameAchievementData,
+        hardcore: Boolean,
+    ) {
+        val username = runCatching { retroAchievementsRepository.getUserAuthentication()?.username }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+        if (username != null) {
+            _raIntegrationEvent.tryEmit(
+                RAIntegrationEvent.Welcome(
+                    icon = runCatching { URL("https://media.retroachievements.org/UserPic/$username.png") }.getOrNull(),
+                    username = username,
+                    hardcore = hardcore,
+                )
+            )
+            delay(250)
+        }
+
         if (achievementData.hasAchievements) {
             _raIntegrationEvent.tryEmit(
                 RAIntegrationEvent.Loaded(
@@ -3711,6 +6134,9 @@ class EmulatorViewModel @Inject constructor(
     )
 
     private suspend fun buildOfflineRetroAchievementsContext(rom: Rom): OfflineRetroAchievementsContext? {
+        if (!settingsRepository.isRetroAchievementsOfflineSoftcoreEnabled()) {
+            return null
+        }
         val userAuth = retroAchievementsRepository.getUserAuthentication() as? RAUserAuth.Authenticated ?: return null
         val userId = userAuth.username
         val contentId = rom.retroAchievementsHash
@@ -3792,6 +6218,74 @@ class EmulatorViewModel @Inject constructor(
         }
     }
 
+    private fun buildRaPendingSyncMenuState() = RaPendingSubmissionUiPolicy.syncMenuState(
+        context = RaPendingSyncMenuContext(
+            isRomSessionActive = _emulatorState.value is EmulatorState.RunningRom,
+            isRetroAchievementsActive = emulatorSession.areRetroAchievementsEnabled(),
+            sessionStartedOnline = startedSessionOnlineLive,
+            isHardcore = emulatorSession.isRetroAchievementsHardcoreModeEnabled,
+            runtimeOwner = when (activeRuntimePath) {
+                RetroAchievementsRuntimePath.RC_CLIENT -> RaPendingRuntimeOwner.RC_CLIENT
+                RetroAchievementsRuntimePath.LEGACY -> RaPendingRuntimeOwner.LEGACY_KOTLIN
+                RetroAchievementsRuntimePath.RC_CLIENT_OFFLINE,
+                RetroAchievementsRuntimePath.DISABLED -> RaPendingRuntimeOwner.NONE
+            },
+            isBackendProxyActive = activeRuntimePath == RetroAchievementsRuntimePath.RC_CLIENT_OFFLINE,
+            counts = pendingRaSubmissionStore?.snapshot?.value?.counts ?: RaPendingCounts.EMPTY,
+        ),
+        labelFormatter = { count ->
+            context.getString(R.string.ra_pending_sync_menu_count, count)
+        },
+    )
+
+    private fun syncPendingRaSubmissionsFromPauseMenu() {
+        sessionCoroutineScope.launch {
+            val pending = pendingRaSubmissionStore?.snapshot?.value?.counts ?: RaPendingCounts.EMPTY
+            if (
+                RaPendingSubmissionUiPolicy.manualSyncAction(pending) ==
+                RaPendingManualSyncAction.REOPEN_PAUSE_MENU
+            ) {
+                pauseEmulator(showPauseMenu = true)
+                return@launch
+            }
+            val requestId = pendingRaModalController.beginManualSync(pending)
+                ?: return@launch
+            val result = try {
+                syncPendingRaSubmissions(RaPendingSyncSource.PAUSE_MENU)
+            } catch (cancellation: CancellationException) {
+                pendingRaModalController.clear(requestId)
+                throw cancellation
+            }
+            pendingRaModalController.showResult(
+                requestId = requestId,
+                result = result,
+                action = RaPendingSyncResultAction.REOPEN_PAUSE_MENU,
+            )
+        }
+    }
+
+    fun submitRaPendingSyncResultAction(
+        requestId: Long,
+        action: RaPendingSyncResultAction,
+    ) {
+        if (!pendingRaModalController.consumeResultAction(requestId, action)) {
+            return
+        }
+        when (action) {
+            RaPendingSyncResultAction.REOPEN_PAUSE_MENU ->
+                pauseEmulator(showPauseMenu = true)
+            RaPendingSyncResultAction.RESUME_SESSION -> resumeEmulator()
+            RaPendingSyncResultAction.REOPEN_TERMINAL_EXIT ->
+                requestExitRom(RaPendingExitContext.TERMINAL_STOP)
+        }
+    }
+
+    fun canResumeEmulatorFromLifecycle(): Boolean {
+        return settingsReconciliationsInFlight.get() == 0 &&
+            !pendingRaModalController.blocksLifecycleResume() &&
+            raSessionStopGate.canResume()
+    }
+
     private fun filterRomPauseMenuOption(option: RomPauseMenuOption, rendererDebugToolsEnabled: Boolean): Boolean {
         return when (option) {
             RomPauseMenuOption.ROM_SETTINGS -> _emulatorState.value is EmulatorState.RunningRom
@@ -3800,6 +6294,7 @@ class EmulatorViewModel @Inject constructor(
             RomPauseMenuOption.LOAD_STATE -> emulatorSession.areSaveStateLoadsAllowed()
             RomPauseMenuOption.CHEATS -> emulatorSession.areCheatsEnabled()
             RomPauseMenuOption.VIEW_ACHIEVEMENTS -> emulatorSession.isRetroAchievementsEnabledForSession()
+            RomPauseMenuOption.SYNC_RETRO_ACHIEVEMENTS -> buildRaPendingSyncMenuState().isVisible
             RomPauseMenuOption.RENDERER_DEBUG -> rendererDebugToolsEnabled
             else -> true
         }
@@ -3882,16 +6377,9 @@ class EmulatorViewModel @Inject constructor(
         actions.forEach {
             when (it) {
                 EmulatorSessionUpdateAction.DisableRetroAchievements -> {
-                    _achievementsEvent.tryEmit(RAEventUi.Reset)
-                    emulatorManager.unloadRetroAchievementsData()
-                    raSessionJob?.cancel()
-                    raSessionJob = null
-                    activeRuntimeBridgeConfig = null
-                    activeRuntimePath = RetroAchievementsRuntimePath.DISABLED
-                    emulatorSession.updateRetroAchievementsOfflineModeEnabled(false)
-                    announcedMasteryKeys.clear()
-                    pendingRuntimeAchievementTriggers.clear()
-                    pendingRuntimeLeaderboardCompletions.clear()
+                    disableRetroAchievementsRuntime(
+                        reason = "runtime_disabled",
+                    )
                 }
                 EmulatorSessionUpdateAction.EnableRetroAchievements -> {
                     (emulatorSession.currentSessionType() as? EmulatorSession.SessionType.RomSession)?.rom?.let { currentRom ->
@@ -3919,6 +6407,40 @@ class EmulatorViewModel @Inject constructor(
                 EmulatorSessionUpdateAction.NotifyRetroAchievementsModeSwitch -> {
                     _toastEvent.tryEmit(ToastEvent.CannotSwitchRetroAchievementsMode)
                 }
+            }
+        }
+    }
+
+    private fun disableRetroAchievementsRuntime(
+        reason: String,
+    ) {
+        val detachedPendingStore = detachPendingRaSubmissionSession()
+        raBootstrapJob?.cancel()
+        raSessionJob?.cancel()
+        raSessionJob = null
+        leaderboardAttemptCoordinator.reset()
+        leaderboardTrackerUpdateLogLimiter.resetAll()
+        _achievementsEvent.tryEmit(RAEventUi.Reset)
+        unloadAndReleaseActiveRuntimeAuthenticationLease(reason)
+        activeRuntimeBridgeConfig = null
+        activeRuntimePath = RetroAchievementsRuntimePath.DISABLED
+        emulatorSession.updateRetroAchievementsOfflineModeEnabled(false)
+        announcedMasteryKeys.clear()
+        pendingRuntimeAchievementTriggers.clear()
+        pendingRuntimeLeaderboardCompletions.clear()
+        if (detachedPendingStore != null) {
+            viewModelScope.launch {
+                val discarded = detachedPendingStore.cleanup()
+                hardcoreOfflineLossTracker.clearPendingUnlocks(
+                    detachedPendingStore.context.userId,
+                    detachedPendingStore.context.contentHash,
+                )
+                logRaSubmission(
+                    "ra_pending_session_cleared",
+                    "reason" to reason,
+                    "discarded" to discarded,
+                    "accepted" to false,
+                )
             }
         }
     }
@@ -3963,10 +6485,15 @@ class EmulatorViewModel @Inject constructor(
             is RAEvent.OnAchievementProgressHidden,
             is RAEvent.OnLeaderboardAttemptStarted,
             is RAEvent.OnLeaderboardAttemptUpdated,
+            is RAEvent.OnLeaderboardAttemptSubmitted,
+            is RAEvent.OnLeaderboardScoreboard,
+            is RAEvent.OnLeaderboardSubmissionFailed,
             is RAEvent.OnLeaderboardAttemptCancelled,
-            is RAEvent.OnLeaderboardTrackerHidden -> {
-                // Keep high-volume runtime events out of structured trace logs.
-            }
+            is RAEvent.OnLeaderboardTrackerHidden,
+            is RAEvent.OnLeaderboardRuntimeReset,
+            is RAEvent.OnPendingSubmissionAdded,
+            is RAEvent.OnPendingSubmissionResolved,
+            is RAEvent.OnPendingSubmissionBarrier -> Unit
         }
     }
 
@@ -4004,7 +6531,13 @@ class EmulatorViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
+        detachPendingRaSubmissionSession()
+        raBootstrapJob?.cancel()
+        raSessionJob?.cancel()
+        raSessionJob = null
         sessionCoroutineScope.cancel()
+        unloadAndReleaseActiveRuntimeAuthenticationLease("view_model_cleared")
+        retroAchievementsEndpointProvider.endSession()
         emulatorManager.cleanEmulator()
     }
 

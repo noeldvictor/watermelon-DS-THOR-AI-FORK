@@ -1,5 +1,5 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <string name="app_name">melonDualDS</string>
+    <string name="app_name">WatermelonDS</string>
 
     <string name="ok">OK</string>
     <string name="yes">Yes</string>
@@ -103,6 +103,23 @@
     <string name="info_refreshing_retroachievements_detail">Fetching the latest achievement set</string>
     <string name="info_vulkan_compiling_title">Building Vulkan shaders…</string>
     <string name="info_retroarch_compiling_title">Building RetroArch shaders…</string>
+    <string name="info_retroarch_compiling_wait">Building RetroArch shaders… the screen will stay still, heavy presets take minutes</string>
+    <string name="video_retroarch_shader_browser_up">Back</string>
+    <string name="video_retroarch_shader_browser_empty">Nothing here</string>
+    <string name="video_retroarch_shader_browser_slow">SLOW</string>
+    <plurals name="video_retroarch_shader_browser_passes">
+        <item quantity="one">%1$d pass</item>
+        <item quantity="other">%1$d passes</item>
+    </plurals>
+    <string name="video_retroarch_shader_settings_title">Configure RA Shaders</string>
+    <string name="video_retroarch_shader_settings_summary">Shader library, preset parameters and the librashader log</string>
+    <string name="shader_heavy_compile_title">This preset is slow to build</string>
+    <string name="shader_heavy_compile_estimated">%1$s needs about %2$s to build the first time. The screen stays still until it finishes.</string>
+    <string name="shader_heavy_compile_measured">%1$s took %2$s to build last time. The screen stays still until it finishes.</string>
+    <string name="shader_heavy_compile_continue">Build it</string>
+    <string name="shader_heavy_compile_skip">Play without filter</string>
+    <string name="shader_duration_minutes">%1$d min %2$d s</string>
+    <string name="shader_duration_seconds">%1$d s</string>
     <string name="info_vulkan_compiling_progress">%1$s (%2$d/%3$d)</string>
     <string name="info_vulkan_compiling_stage_init">Initializing Vulkan renderer</string>
     <string name="info_vulkan_compiling_stage_pipelines">Building Vulkan pipelines</string>
@@ -117,6 +134,7 @@
     <string name="failed_reset_emulation">Failed to reset emulation</string>
     <string name="save_states_not_supported">Save states are not supported while running the firmware</string>
     <string name="load_states_unavailable_ra_hardcore_enabled">Loading save states is unavailable while Hardcore mode is enabled</string>
+    <string name="rewind_now">NOW</string>
     <string name="rewind_time_seconds">%1$ss</string> <!-- Ex: 43.56s -->
     <string name="rewind_time_minutes_seconds">%1$dm%2$ss</string> <!-- Ex: 2m37.93s -->
     <string name="rewind_not_enabled">Rewind is not enabled</string>
@@ -229,7 +247,7 @@
   <string name="rom_no_favorites">No favorites yet long-press a ROM to mark one</string>
     <string name="rom_action_favorite">Add to favorites</string>
     <string name="rom_action_unfavorite">Remove from favorites</string>
-    <string name="rom_action_details">Details</string>
+    <string name="rom_action_details">ROM Config &amp; Details</string>
     <string name="rom_action_send_save_file">Send save file</string>
     <string name="rom_action_import_save_file">Import save file</string>
     <string name="rom_save_file_share_chooser">Send save file</string>
@@ -243,6 +261,29 @@
     <string name="rom_view_toggle">Toggle grid/list</string>
     <string name="rom_config">ROM configuration</string>
     <string name="rom_sorting_most_played">Most played</string>
+    <string name="rom_all_games">All games</string>
+    <string name="pause_resume">Resume</string>
+    <string name="pause_paused_label">PAUSED</string>
+    <string name="pause_confirm_reset_title">Reset console?</string>
+    <string name="pause_confirm_reset_message">Unsaved progress will be lost. The game will restart from the beginning.</string>
+    <string name="pause_confirm_exit_title">Exit game?</string>
+    <string name="pause_confirm_exit_message">Unsaved progress will be lost.</string>
+    <string name="pause_hint_navigate">Navigate</string>
+    <string name="pause_hint_accept">Accept</string>
+    <string name="pause_hint_resume">Resume</string>
+    <string name="pause_hint_back">Back</string>
+    <string name="app_brand_watermelon" translatable="false">Watermelon</string>
+    <string name="app_brand_ds" translatable="false">DS</string>
+    <string name="external_hint_open">Open</string>
+    <string name="external_hint_favorite">Favorite</string>
+    <string name="save_state_slot_quick">QUICK</string>
+    <string name="save_state_slot_number">SLOT %1$d</string>
+    <string name="save_state_empty_slot">Empty slot</string>
+    <string name="cheats_footer_note">CHEATS APPLY ON RESUME · NOT AVAILABLE IN HARDCORE MODE</string>
+    <string name="external_choose_on_device">Choose on the device</string>
+    <string name="rom_sort_recent_chip">Recent</string>
+    <string name="rom_sort_most_played_chip">Most played</string>
+    <string name="rom_games_count">%1$d games</string>
     <string name="rom_total_play_time_format">Played %1$s</string>
     <string name="rom_last_played_format">Last played %1$s</string>
     <string name="max_rom_cache_size">Max. ROM cache size</string>
@@ -304,6 +345,11 @@
     <string name="threaded_rendering">Threaded rendering</string>
     <string name="fps_counter_position">FPS counter position</string>
     <string name="threaded_rendering_summary">Improves performance on 3D games when enabled but may cause graphical glitches.</string>
+    <string name="video_vulkan_fastpath_enabled" tools:ignore="MissingTranslation">Enable Vulkan FastPath</string>
+    <string name="video_vulkan_fastpath_enabled_summary" tools:ignore="MissingTranslation">Experimental feature. It may cause graphical glitches, stale or incorrect frames, or stability issues in some games.</string>
+    <string name="video_vulkan_fastpath_warning_title" tools:ignore="MissingTranslation">Enable experimental Vulkan FastPath?</string>
+    <string name="video_vulkan_fastpath_warning_message" tools:ignore="MissingTranslation">Vulkan FastPath may cause graphical glitches, stale or incorrect frames, or stability issues in some games.</string>
+    <string name="video_vulkan_fastpath_enable_action" tools:ignore="MissingTranslation">Enable FastPath</string>
     <string name="video_hacks">Video Hacks</string>
     <string name="video_renderer_debug_tools_enabled">Renderer debug tools</string>
     <string name="video_renderer_debug_tools_enabled_summary">Enables renderer snapshots, parity captures and performance/debug logs in release builds.</string>
@@ -434,6 +480,18 @@ Location: %1$s (currently %2$d MB, capped at 256 MB)</string>
     <string name="enable_encore_mode_summary">Allow re-earning already unlocked achievements when supported by the active set</string>
     <string name="hardcore_mode">Hardcore mode</string>
     <string name="hardcore_mode_summary">Allows hardcore achievements to be earned. Cheats, save states, slow-motion, and rewind are disabled</string>
+    <string name="ra_offline_backend_title">Offline achievements provider</string>
+    <string name="ra_offline_backend_summary">Choose the built-in WatermelonDS provider or RAOfflineProxy</string>
+    <string name="ra_offline_backend_built_in">Built into WatermelonDS</string>
+    <string name="ra_offline_backend_proxy">RAOfflineProxy</string>
+    <string name="ra_offline_proxy_active_summary">RAOfflineProxy is active. Restart the current game session after a provider change.</string>
+    <string name="ra_offline_proxy_not_active">RAOfflineProxy is selected but is not active. Start RAOfflineProxy before starting a game.</string>
+    <string name="ra_offline_proxy_hardcore_not_supported">RAOfflineProxy does not support Hardcore mode.</string>
+    <string name="ra_offline_proxy_restart_required">The RetroAchievements provider changed. Restart this game session to apply it consistently.</string>
+    <string name="version_rc">RC</string>
+    <string name="update_channel_title">Update channel</string>
+    <string name="update_channel_stable">Stable releases</string>
+    <string name="update_channel_prerelease">Stable and prerelease versions</string>
     <string name="show_active_challenge_indicators">Show active challenge indicators</string>
     <string name="show_active_challenge_indicators_summary">Shows on-screen indicators while certain achievements can be earned</string>
     <string name="show_progress_indicators">Show progress indicators</string>
@@ -545,7 +603,7 @@ Location: %1$s (currently %2$d MB, capped at 256 MB)</string>
     <string name="global_controller_mapping">Global mapping</string>
     <string name="cannot_change_use_rom_settings">Cannot change, use ROM Settings</string>
     <string name="label_rom_config_video">Video</string>
-    <string name="retroarch_shader_root_not_valid">No valid RetroArch shader root is configured.</string>
+    <string name="retroarch_shader_root_not_valid">No RetroArch shaders are configured. Install them or select a folder in Video settings.</string>
     <string name="video_setting_cannot_change_ingame">Cannot change in-game</string>
     <string name="layout_deleted">Layout deleted</string>
     <string name="named_layout_deleted">Layout \"%1$s\" deleted</string>
@@ -566,6 +624,7 @@ Location: %1$s (currently %2$d MB, capped at 256 MB)</string>
     <string name="dual_screen_presets">Presets</string>
     <string name="dual_screen_presets_settings_title">Dual screen presets</string>
     <string name="dual_screen_presets_summary">Preset: %1$s\nKeep DS ratio: %2$s • Integer scale: %3$s\nInternal H: %4$s • Internal W: %5$s\nExternal H: %6$s • External W: %7$s</string>
+    <string name="dual_screen_presets_disabled_hint">Presets disabled. Select a preset to enable the options below.</string>
     <string name="dual_screen_preset_off">Disabled (manual layout)</string>
     <string name="dual_screen_preset_internal_top_external_bottom">Internal: Top, External: Bottom</string>
     <string name="dual_screen_preset_internal_bottom_external_top">Internal: Bottom, External: Top</string>
@@ -632,6 +691,10 @@ Location: %1$s (currently %2$d MB, capped at 256 MB)</string>
     <string name="retroachievements_login_expired_status">Your RetroAchievements login expired. Click to log in again</string>
     <string name="retroachievements_logout">Logout</string>
     <string name="retroachievements_logout_confirmation">Are you sure you want to logout from RetroAchievements? You won\'t be able to unlock achievements while playing.</string>
+    <string name="retroachievements_logout_confirmation_in_game">Logging out while a game is open will permanently discard any pending RetroAchievements achievements and leaderboard entries from this session, then close the game. They cannot be submitted after signing in as another user. Continue?</string>
+    <string name="retroachievements_account_change_blocked_in_game">The RetroAchievements identity is fixed for the current game session. Close the game before signing out or signing in as another user.</string>
+    <string name="retroachievements_account_changed_in_game">The RetroAchievements account no longer matches the active game session. Submissions remain paused and bound to the original account; close the game before changing accounts.</string>
+    <string name="retroachievements_logout_failed">RetroAchievements logout could not be completed. The game was closed to protect the submission identity.</string>
     <string name="retro_achievements_login_error">There was a problem when trying to login. Make sure that your username and password are correct, and that you are connected to the internet</string>
     <string name="retro_achievements_login_error_short">There was a problem when trying to login</string>
     <string name="retro_achievements_load_error">There was a problem when trying to load the achievements for this game. Make sure you are connected to the internet and try again later</string>
@@ -656,6 +719,7 @@ Location: %1$s (currently %2$d MB, capped at 256 MB)</string>
     <string name="retro_achievements_filter_type">Type</string>
     <string name="retro_achievements_filter_state">State</string>
     <string name="retro_achievements_filter_all">All</string>
+    <string name="retro_achievements_filter_missable">Missable</string>
     <string name="retro_achievements_filter_core">Core</string>
     <string name="retro_achievements_filter_unofficial">Unofficial</string>
     <string name="retro_achievements_filter_no_results">No achievements match the selected filters.</string>
@@ -726,14 +790,36 @@ Location: %1$s (currently %2$d MB, capped at 256 MB)</string>
     <string name="offline_ra_hardcore_sync_result_all">Synced %1$d hardcore unlock(s). You can exit now.</string>
     <string name="offline_ra_hardcore_sync_result_partial">Synced %1$d, %2$d still pending. Try again before exiting.</string>
     <string name="offline_ra_hardcore_sync_result_none">Could not sync %1$d hardcore unlock(s). Try again or discard on exit.</string>
-    <string name="offline_ra_hardcore_loss_notification_title">Hardcore offline unlocks lost</string>
-    <string name="offline_ra_hardcore_loss_notification_message">%1$d hardcore unlock(s) from %2$s were lost because the app closed before reconnecting online.</string>
+    <string name="offline_ra_hardcore_loss_notification_title">Hardcore submissions may be unsynchronized</string>
+    <string name="offline_ra_hardcore_loss_notification_message">%1$d Hardcore submission(s) from %2$s may not have synchronized because the live session ended before local server acceptance was confirmed.</string>
+    <string name="ra_pending_sync_menu">Sync RetroAchievements</string>
+    <string name="ra_pending_sync_menu_count">Sync RetroAchievements (%1$d)</string>
+    <string name="ra_pending_exit_title">RetroAchievements submissions need synchronization</string>
+    <string name="ra_pending_exit_message">You have %1$d pending submissions:\n%2$d achievements\n%3$d leaderboard scores\n\nClosing now will discard submissions that have not been accepted.</string>
+    <string name="ra_pending_sync_and_exit">Sync and exit</string>
+    <string name="ra_pending_discard_and_exit">Discard and exit</string>
+    <string name="ra_pending_syncing_title">Synchronizing RetroAchievements</string>
+    <string name="ra_pending_syncing_message">Synchronizing %1$d submissions:\n%2$d achievements\n%3$d leaderboard scores</string>
+    <string name="ra_pending_sync_result_title">RetroAchievements synchronization</string>
+    <string name="ra_pending_sync_result_message">Synchronized %1$d achievements and %2$d leaderboard scores. Already accepted: %3$d.\n\nFailed: %4$d achievements and %5$d leaderboard scores.\nRemaining: %6$d.\nPermanent server rejections: %7$d.</string>
+    <string name="ra_pending_state_verification_failed">Could not verify pending RetroAchievements submissions. The game remains open.</string>
+    <string name="ra_pending_review_submissions">Review pending submissions</string>
+    <string name="ra_pending_process_loss_notification_message">%1$d Hardcore submissions (%2$d achievements, %3$d leaderboard scores) from %4$s may not have synchronized because the live session ended before local server acceptance was confirmed.</string>
     <string name="offline_ra_mode_softcore">RetroAchievements mode: Softcore</string>
     <string name="offline_ra_mode_hardcore">RetroAchievements mode: Hardcore</string>
     <string name="offline_ra_mode_softcore_offline">RetroAchievements mode: Softcore Offline</string>
     <string name="offline_ra_mode_softcore_offline_hardcore_disabled">Softcore Offline enabled. Hardcore Offline is disabled.</string>
     <string name="offline_ra_mode_softcore_offline_no_internet_start">RetroAchievements mode: Softcore Offline (no Internet).</string>
     <string name="achievements_loaded">Achievements loaded</string>
+    <string name="ra_welcome_eyebrow">RETROACHIEVEMENTS</string>
+    <string name="ra_welcome_title">Welcome, %1$s!</string>
+    <string name="ra_welcome_hardcore">Hardcore mode</string>
+    <string name="ra_welcome_softcore">Softcore mode</string>
+    <string name="ra_now_playing">NOW PLAYING</string>
+    <string name="ra_achievements_progress">%1$d / %2$d achievements</string>
+    <string name="ra_no_achievements">No achievements for this game</string>
+    <string name="ra_profile_hardcore_points">%1$s HARDCORE</string>
+    <string name="ra_profile_casual_points">%1$s CASUAL</string>
     <string name="achievements_unlocked_compact">Unlocked: %1$d/%2$d</string>
     <string name="game_has_no_achievements">This game has no achievements</string>
     <string name="achievements_failed_load">Failed to load achievements!</string>
@@ -754,10 +840,14 @@ Location: %1$s (currently %2$d MB, capped at 256 MB)</string>
     <string name="leaderboard_attempt_score_label">Score</string>
     <string name="leaderboard_attempt_value_label">Value</string>
     <string name="leaderboard_submission_success">Leaderboard submitted</string>
+    <string name="leaderboard_submission_pending">Submitting leaderboard…</string>
+    <string name="leaderboard_generic_title">Leaderboard #%1$d</string>
     <string name="leaderboard_submission_failed">Leaderboard submission failed</string>
     <string name="achievement_submission_failed">Achievement submission failed</string>
     <string name="ra_submission_retry_background">Keep playing while we retry in the background</string>
+    <string name="ra_submission_not_retrying">No further retry is available for this attempt</string>
     <string name="leaderboard_submission_info">%1$s • Rank %2$d of %3$d</string> <!-- Eg.: 01:42.95 • Rank 73 of 145 -->
+    <string name="leaderboard_best_score">Personal best: %1$s</string>
     <string name="game_completed">Completed %1$s</string>
     <string name="game_mastered">Mastered %1$s</string>
     <string name="retroachievements_unsynchronized_data">Un-synchronized RetroAchievements data</string>
@@ -917,12 +1007,48 @@ Location: %1$s (currently %2$d MB, capped at 256 MB)</string>
 
     <string name="video_retroarch_shader_root_title">RetroArch shader root</string>
     <string name="video_retroarch_shader_root_summary">Select the top-level slang-shaders folder so presets can resolve sibling shader, include, and LUT folders.</string>
-    <string name="video_retroarch_shader_preset_title">RetroArch preset path</string>
-    <string name="video_retroarch_shader_preset_summary">Relative .slangp path inside the selected shader root.</string>
+    <string name="video_retroarch_shader_preset_title">Shader</string>
+    <string name="video_retroarch_shader_preset_summary">None selected. Pick one from the shader library.</string>
     <string name="video_retroarch_shader_parameters_title">RetroArch preset parameters</string>
     <string name="video_retroarch_shader_parameters_summary">Optional overrides, for example curvature=0.25,mask_strength=0.6.</string>
     <string name="video_retroarch_shader_clear_history_title">Clear RetroArch shader history</string>
     <string name="video_retroarch_shader_clear_history_summary">Reset multipass history on the next presentation config update.</string>
+
+    <string name="video_retroarch_shader_source_title">Shader source</string>
+    <string name="video_retroarch_shader_source_internal">Install to internal storage (recommended)</string>
+    <string name="video_retroarch_shader_source_internal_description">Downloads the official libretro shaders (~53 MB). No folder permissions needed.</string>
+    <string name="video_retroarch_shader_source_folder">Select folder</string>
+    <string name="video_retroarch_shader_source_folder_description">Pick a slang-shaders folder you already downloaded.</string>
+    <string name="video_retroarch_shader_install_title">Install shaders</string>
+    <string name="video_retroarch_shader_install_summary">Download ~53 MB from libretro</string>
+    <string name="video_retroarch_shader_install_notification_title">RetroArch shaders</string>
+    <string name="video_retroarch_shader_installed_title">Shaders installed</string>
+    <string name="video_retroarch_shader_installed_summary">Updated %1$s · %2$s</string>
+    <string name="video_retroarch_shader_check_updates">Check for updates</string>
+    <string name="video_retroarch_shader_checking_updates">Checking for updates…</string>
+    <string name="video_retroarch_shader_update_available">An update is available. Download it now?</string>
+    <string name="video_retroarch_shader_up_to_date">Shaders are up to date.</string>
+    <string name="video_retroarch_shader_reinstall">Reinstall</string>
+    <string name="video_retroarch_shader_uninstall">Uninstall</string>
+    <string name="video_retroarch_shader_uninstall_confirm">Delete the installed shaders and free %1$s?</string>
+    <string name="video_retroarch_shader_downloading">Downloading shaders</string>
+    <string name="video_retroarch_shader_extracting">Extracting shaders</string>
+    <string name="video_retroarch_shader_finalizing">Finishing up</string>
+    <string name="video_retroarch_shader_waiting_network">Waiting for connection</string>
+    <string name="video_retroarch_shader_progress_bytes">%1$s / %2$s</string>
+    <string name="video_retroarch_shader_error_network">The shaders could not be downloaded. Check your connection and try again.</string>
+    <string name="video_retroarch_shader_error_space">There is not enough space. About %1$s must be free.</string>
+    <string name="video_retroarch_shader_error_corrupt">The download finished but the archive is damaged. Please try again.</string>
+    <string name="video_retroarch_shader_retry">Retry</string>
+    <string name="shader_compatibility_preset_failed">Shader \'%1$s\' could not be used: %2$s</string>
+    <string name="shader_compatibility_report_title">libraShader Quick Log</string>
+    <string name="shader_compatibility_report_summary">Shows the latest librashader log. Saving writes librashader.log to your ROMs folder.</string>
+    <string name="shader_compatibility_report_empty">No presets have been tried yet. Pick one and launch a game.</string>
+    <string name="shader_compatibility_report_save">Save as librashader.log</string>
+    <string name="shader_compatibility_report_saved">Saved to %1$s</string>
+    <string name="shader_compatibility_report_save_failed">Could not write librashader.log to the ROMs folder.</string>
+    <string name="shader_compatibility_report_no_rom_folder">No ROMs folder is configured to save into.</string>
+    <string name="shader_compatibility_report_clear">Clear</string>
 
     <string-array name="dsi_camera_source_options">
         <item>Black screen</item>
@@ -938,7 +1064,7 @@ Location: %1$s (currently %2$d MB, capped at 256 MB)</string>
 
     <string-array name="external_display_mode_options">
         <item>Mirror</item>
-        <item>MelonDualDS</item>
+        <item>WatermelonDS</item>
     </string-array>
 
     <string-array name="audio_interpolation_options">

@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <cstdint>
 #include <chrono>
+#include <limits>
 #include <pthread.h>
 #include <unistd.h>
 #include <cstdlib>
@@ -28,6 +29,8 @@
 #include "MelonDSAndroidConfiguration.h"
 #include "MelonDSAndroidCameraHandler.h"
 #include "RetroAchievementsMapper.h"
+#include "renderer/OpenGlRetroArchFilter.h"
+#include "renderer/ShaderDiagnostics.h"
 #include "renderer/VulkanFilterMode.h"
 #include "performancehint/ThreadSafePerformanceHintSession.h"
 #include "performancehint/PerformanceHintManagerFactory.h"
@@ -1100,6 +1103,169 @@ Java_me_magnum_melonds_MelonEmulator_getRuntimeSubsetIds(JNIEnv* env, jobject th
     return subsetIds;
 }
 
+JNIEXPORT jlongArray JNICALL
+Java_me_magnum_melonds_MelonEmulator_retryPendingRetroAchievementsSubmissions(
+    JNIEnv* env,
+    jobject thiz,
+    jlongArray expectedNativeSubmissionIds)
+{
+    (void)thiz;
+    if (expectedNativeSubmissionIds == nullptr)
+        return nullptr;
+
+    const jsize expectedCount = env->GetArrayLength(expectedNativeSubmissionIds);
+    if (env->ExceptionCheck())
+    {
+        clearPendingJniException(env);
+        return nullptr;
+    }
+    constexpr size_t headerSize = 4;
+    constexpr size_t resolutionSize = 4;
+    if (
+        static_cast<size_t>(expectedCount) >
+        (static_cast<size_t>(std::numeric_limits<jsize>::max()) - headerSize) /
+            resolutionSize
+    )
+    {
+        return nullptr;
+    }
+
+    std::vector<jlong> expectedWireIds(static_cast<size_t>(expectedCount));
+    if (expectedCount > 0)
+    {
+        env->GetLongArrayRegion(
+            expectedNativeSubmissionIds,
+            0,
+            expectedCount,
+            expectedWireIds.data()
+        );
+        if (env->ExceptionCheck())
+        {
+            clearPendingJniException(env);
+            return nullptr;
+        }
+    }
+
+    std::vector<uint64_t> expectedSubmissionIds;
+    expectedSubmissionIds.reserve(expectedWireIds.size());
+    for (const jlong submissionId : expectedWireIds)
+        expectedSubmissionIds.push_back(static_cast<uint64_t>(submissionId));
+
+    const auto result =
+        MelonDSAndroid::retryPendingRetroAchievementsSubmissions(
+            expectedSubmissionIds
+        );
+    if (
+        result.resolutions.size() >
+        (static_cast<size_t>(std::numeric_limits<jsize>::max()) - headerSize) /
+            resolutionSize
+    )
+    {
+        return nullptr;
+    }
+
+    std::vector<jlong> encoded;
+    encoded.reserve(headerSize + result.resolutions.size() * resolutionSize);
+    encoded.push_back(static_cast<jlong>(result.submissionSessionId));
+    encoded.push_back(static_cast<jlong>(result.forcedRetryCount));
+    encoded.push_back(static_cast<jlong>(result.resolutions.size()));
+    encoded.push_back(result.transportFailure ? 1 : 0);
+    for (const auto& resolution : result.resolutions)
+    {
+        encoded.push_back(static_cast<jlong>(resolution.submissionId));
+        encoded.push_back(static_cast<jlong>(resolution.submissionType));
+        encoded.push_back(static_cast<jlong>(resolution.resolution));
+        encoded.push_back(static_cast<jlong>(resolution.result));
+    }
+
+    jlongArray array = env->NewLongArray(static_cast<jsize>(encoded.size()));
+    if (array == nullptr || env->ExceptionCheck())
+    {
+        clearPendingJniException(env);
+        return nullptr;
+    }
+    env->SetLongArrayRegion(array, 0, static_cast<jsize>(encoded.size()), encoded.data());
+    if (env->ExceptionCheck())
+    {
+        clearPendingJniException(env);
+        env->DeleteLocalRef(array);
+        return nullptr;
+    }
+    return array;
+}
+
+JNIEXPORT jlong JNICALL
+Java_me_magnum_melonds_MelonEmulator_refreshPendingRetroAchievementsSubmissions(
+    JNIEnv* env,
+    jobject thiz)
+{
+    (void)env;
+    (void)thiz;
+    return static_cast<jlong>(
+        MelonDSAndroid::refreshPendingRetroAchievementsSubmissions()
+    );
+}
+
+JNIEXPORT jint JNICALL
+Java_me_magnum_melonds_MelonEmulator_discardPendingRetroAchievementsSubmissions(
+    JNIEnv* env,
+    jobject thiz,
+    jlongArray expectedNativeSubmissionIds)
+{
+    (void)thiz;
+    if (expectedNativeSubmissionIds == nullptr)
+        return -1;
+
+    const jsize expectedCount = env->GetArrayLength(expectedNativeSubmissionIds);
+    if (env->ExceptionCheck())
+    {
+        clearPendingJniException(env);
+        return -1;
+    }
+
+    std::vector<jlong> expectedWireIds(static_cast<size_t>(expectedCount));
+    if (expectedCount > 0)
+    {
+        env->GetLongArrayRegion(
+            expectedNativeSubmissionIds,
+            0,
+            expectedCount,
+            expectedWireIds.data()
+        );
+        if (env->ExceptionCheck())
+        {
+            clearPendingJniException(env);
+            return -1;
+        }
+    }
+
+    std::vector<uint64_t> expectedSubmissionIds;
+    expectedSubmissionIds.reserve(expectedWireIds.size());
+    for (const jlong submissionId : expectedWireIds)
+    {
+        if (submissionId <= 0)
+            return -1;
+        expectedSubmissionIds.push_back(static_cast<uint64_t>(submissionId));
+    }
+
+    return MelonDSAndroid::discardPendingRetroAchievementsSubmissions(
+        expectedSubmissionIds
+    );
+}
+
+JNIEXPORT void JNICALL
+Java_me_magnum_melonds_MelonEmulator_setRetroAchievementsSubmissionTransportSuspended(
+    JNIEnv* env,
+    jobject thiz,
+    jboolean suspended)
+{
+    (void)env;
+    (void)thiz;
+    MelonDSAndroid::setRetroAchievementsSubmissionTransportSuspended(
+        suspended == JNI_TRUE
+    );
+}
+
 JNIEXPORT jint JNICALL
 Java_me_magnum_melonds_MelonEmulator_loadRomInternal(JNIEnv* env, jobject thiz, jstring romPath, jstring sramPath, jint gbaSlotType, jstring gbaRomPath, jstring gbaSramPath)
 {
@@ -1192,6 +1358,142 @@ Java_me_magnum_melonds_MelonEmulator_precompileVulkanPipelines(
 }
 
 JNIEXPORT void JNICALL
+Java_me_magnum_melonds_MelonEmulator_configureOpenGlRetroArchFilter(
+        JNIEnv* env,
+        jobject thiz,
+        jboolean enabled,
+        jstring presetPath,
+        jstring parameterOverrides,
+        jboolean clearHistory,
+        jstring sourceResolution,
+        jint maxLayoutWidth,
+        jint maxLayoutHeight,
+        jint passCount)
+{
+    MelonDSAndroid::OpenGlRetroArchFilter::Config config;
+    config.enabled = enabled == JNI_TRUE;
+    config.clearHistory = clearHistory == JNI_TRUE;
+    config.maxLayoutWidth = maxLayoutWidth > 0 ? static_cast<melonDS::u32>(maxLayoutWidth) : 0u;
+    config.maxLayoutHeight = maxLayoutHeight > 0 ? static_cast<melonDS::u32>(maxLayoutHeight) : 0u;
+    config.passCount = passCount > 0 ? static_cast<melonDS::u32>(passCount) : 0u;
+
+    if (sourceResolution != nullptr)
+    {
+        const char* sourceResolutionChars = env->GetStringUTFChars(sourceResolution, nullptr);
+        if (sourceResolutionChars != nullptr)
+        {
+            config.nativeSourceResolution = std::string(sourceResolutionChars) == "native";
+            env->ReleaseStringUTFChars(sourceResolution, sourceResolutionChars);
+        }
+    }
+
+    if (presetPath != nullptr)
+    {
+        const char* presetPathChars = env->GetStringUTFChars(presetPath, nullptr);
+        if (presetPathChars != nullptr)
+        {
+            config.presetPath = presetPathChars;
+            env->ReleaseStringUTFChars(presetPath, presetPathChars);
+        }
+    }
+
+    if (parameterOverrides != nullptr)
+    {
+        const char* parametersChars = env->GetStringUTFChars(parameterOverrides, nullptr);
+        if (parametersChars != nullptr)
+        {
+            std::string parameters(parametersChars);
+            env->ReleaseStringUTFChars(parameterOverrides, parametersChars);
+
+            std::string entry;
+            auto flushEntry = [&]() {
+                const size_t separator = entry.find('=');
+                if (separator != std::string::npos)
+                {
+                    std::string name = entry.substr(0, separator);
+                    std::string rawValue = entry.substr(separator + 1);
+                    try
+                    {
+                        if (!name.empty())
+                            config.parameterOverrides.emplace_back(name, std::stof(rawValue));
+                    }
+                    catch (...)
+                    {
+                    }
+                }
+                entry.clear();
+            };
+
+            for (char character : parameters)
+            {
+                if (character == '\n' || character == ',' || character == ';')
+                    flushEntry();
+                else if (character != ' ' && character != '\r' && character != '\t')
+                    entry += character;
+            }
+            flushEntry();
+        }
+    }
+
+    if (config.presetPath.empty())
+        config.enabled = false;
+
+    MelonDSAndroid::OpenGlRetroArchFilter::get().setConfig(config);
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_me_magnum_melonds_MelonEmulator_consumeShaderDiagnostics(JNIEnv* env, jobject thiz)
+{
+    const std::vector<MelonDSAndroid::ShaderDiagnostics::Entry> entries =
+        MelonDSAndroid::ShaderDiagnostics::get().consume();
+
+    jclass stringClass = env->FindClass("java/lang/String");
+    if (stringClass == nullptr)
+        return nullptr;
+
+    jobjectArray result = env->NewObjectArray(static_cast<jsize>(entries.size()), stringClass, nullptr);
+    if (result == nullptr)
+        return nullptr;
+
+    for (jsize index = 0; index < static_cast<jsize>(entries.size()); index++)
+    {
+        const auto& entry = entries[static_cast<size_t>(index)];
+        std::string record = entry.backend;
+        record += '\t';
+        record += entry.succeeded ? "OK" : "FAIL";
+        record += '\t';
+        record += entry.presetPath;
+        record += '\t';
+        record += std::to_string(entry.sourceWidth) + "x" + std::to_string(entry.sourceHeight);
+        record += '\t';
+        record += std::to_string(entry.outputWidth) + "x" + std::to_string(entry.outputHeight);
+        record += '\t';
+        record += entry.reason;
+
+        jstring recordString = env->NewStringUTF(record.c_str());
+        env->SetObjectArrayElement(result, index, recordString);
+        env->DeleteLocalRef(recordString);
+    }
+
+    return result;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_me_magnum_melonds_MelonEmulator_prewarmOpenGlRetroArchFilter(JNIEnv* env, jobject thiz, jint atlasWidth, jint atlasHeight)
+{
+    return MelonDSAndroid::OpenGlRetroArchFilter::get().prewarm(
+        static_cast<melonDS::u32>(std::max(0, static_cast<int>(atlasWidth))),
+        static_cast<melonDS::u32>(std::max(0, static_cast<int>(atlasHeight)))
+    ) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_me_magnum_melonds_MelonEmulator_releaseOpenGlRetroArchFilter(JNIEnv* env, jobject thiz)
+{
+    MelonDSAndroid::OpenGlRetroArchFilter::get().release();
+}
+
+JNIEXPORT void JNICALL
 Java_me_magnum_melonds_MelonEmulator_presentFrame(JNIEnv* env, jobject thiz, jlong deadlineNs, jobject renderFrameCallback)
 {
     jmethodID renderMethod = getOrInitFrameRenderMethodId(env, renderFrameCallback);
@@ -1235,11 +1537,20 @@ Java_me_magnum_melonds_MelonEmulator_presentFrame(JNIEnv* env, jobject thiz, jlo
         if (presentationFrame->renderFence)
             eglWaitSyncKHR(currentDisplay, presentationFrame->renderFence, 0);
 
+        GLuint textureToPresent = presentationFrame->frameTexture;
+        const GLuint filteredTexture = MelonDSAndroid::OpenGlRetroArchFilter::get().runFilter(
+            presentationFrame->frameTexture,
+            presentationFrame->width,
+            presentationFrame->height
+        );
+        if (filteredTexture != 0)
+            textureToPresent = filteredTexture;
+
         env->CallVoidMethod(
             renderFrameCallback,
             renderMethod,
             true,
-            static_cast<jint>(presentationFrame->frameTexture)
+            static_cast<jint>(textureToPresent)
         );
         EGLSyncKHR presentFence = eglCreateSyncKHR(currentDisplay, EGL_SYNC_FENCE_KHR, nullptr);
         presentationFrame->presentFence = presentFence;
@@ -1623,6 +1934,7 @@ Java_me_magnum_melonds_impl_emulator_debug_RendererDebugBridge_startDenseScreenB
     jobject thiz,
     jint frameCount,
     jint stepFrames,
+    jint warmupFrames,
     jint captureKindsMask)
 {
     (void)env;
@@ -1630,6 +1942,7 @@ Java_me_magnum_melonds_impl_emulator_debug_RendererDebugBridge_startDenseScreenB
     MelonDSAndroid::startDenseScreenBurstCaptureForDebug(
         static_cast<int>(frameCount),
         static_cast<int>(stepFrames),
+        static_cast<int>(warmupFrames),
         static_cast<melonDS::u32>(captureKindsMask));
 }
 
@@ -1639,6 +1952,15 @@ Java_me_magnum_melonds_impl_emulator_debug_RendererDebugBridge_isDenseScreenBurs
     (void)env;
     (void)thiz;
     return MelonDSAndroid::isDenseScreenBurstCaptureCompleteForDebug() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jintArray JNICALL
+Java_me_magnum_melonds_impl_emulator_debug_RendererDebugBridge_getDenseScreenBurstScheduleStats(
+    JNIEnv* env,
+    jobject thiz)
+{
+    (void)thiz;
+    return MakeJavaIntArray(env, MelonDSAndroid::getDenseScreenBurstScheduleStatsForDebug());
 }
 
 JNIEXPORT jint JNICALL

@@ -5546,6 +5546,12 @@ bool VulkanRenderer3D::createComputePipelineFromSpirv(
 bool VulkanRenderer3D::createTriRasterPipelines()
 {
     const TextureSamplingPath samplingPath = ActiveTextureSamplingPath;
+    const EmbeddedShader triRasterBaseShader = selectProfileShader(
+        PipelineProfile,
+        melonDS_compat_gpu3d_vulkan_tri_raster_base_comp_spv,
+        melonDS_compat_gpu3d_vulkan_tri_raster_base_comp_spv_len,
+        melonDS_gpu3d_vulkan_tri_raster_base_comp_spv,
+        melonDS_gpu3d_vulkan_tri_raster_base_comp_spv_len);
 
     struct RasterSpecializationData
     {

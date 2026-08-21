@@ -9,6 +9,25 @@ import okio.Buffer
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 
+private const val MAX_LOGGED_RA_PARAMETER_VALUE_LENGTH = 200
+private val REDACTED_RA_PARAMETER_KEYS = setOf("m", "p", "t", "u", "v", "x")
+const val RETROACHIEVEMENTS_USER_AGENT = "melonDualDS-android/0.7.0"
+
+internal fun sanitizeRaRequestParameterValue(key: String, value: String): String {
+    if (key in REDACTED_RA_PARAMETER_KEYS) {
+        return "<redacted>"
+    }
+
+    val normalizedValue = value
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+    return if (normalizedValue.length > MAX_LOGGED_RA_PARAMETER_VALUE_LENGTH) {
+        "${normalizedValue.take(MAX_LOGGED_RA_PARAMETER_VALUE_LENGTH)}…(len=${normalizedValue.length})"
+    } else {
+        normalizedValue
+    }
+}
+
 class MelonOkHttpInterceptor(
     context: Context,
 ) : Interceptor {
@@ -16,22 +35,15 @@ class MelonOkHttpInterceptor(
         const val IDENTITY_TAG = "RAIdentity"
         const val REQUEST_TAG = "RARequest"
         const val USER_AGENT = "User-Agent"
-        const val MELON_USER_AGENT_PREFIX = "melonDualDS-android"
         const val UNKNOWN_VERSION = "unknown"
         const val REQUEST_PARAM_ACTION = "r"
-        const val MAX_LOGGED_VALUE_LENGTH = 200
-        val REDACTED_PARAMETER_KEYS = setOf("p", "t", "u", "v")
     }
 
     private val appPackageName = context.packageName
     private val appVersionName = runCatching {
         context.packageManager.getPackageInfo(context.packageName, 0).versionName
     }.getOrNull().orEmpty().ifBlank { UNKNOWN_VERSION }
-    private val melonUserAgent: String = buildString {
-        append(MELON_USER_AGENT_PREFIX)
-        append("/")
-        append(appVersionName.lowercase().replace(' ', '-').replace("(", "").replace(")", ""))
-    }
+    private val melonUserAgent = RETROACHIEVEMENTS_USER_AGENT
 
     private data class RequestParameter(
         val key: String,
@@ -79,28 +91,13 @@ class MelonOkHttpInterceptor(
         }
     }
 
-    private fun sanitizeParameterValue(key: String, value: String): String {
-        if (key in REDACTED_PARAMETER_KEYS) {
-            return "<redacted>"
-        }
-
-        val normalizedValue = value
-            .replace("\r", "\\r")
-            .replace("\n", "\\n")
-        return if (normalizedValue.length > MAX_LOGGED_VALUE_LENGTH) {
-            "${normalizedValue.take(MAX_LOGGED_VALUE_LENGTH)}…(len=${normalizedValue.length})"
-        } else {
-            normalizedValue
-        }
-    }
-
     private fun formatParametersForLog(parameters: List<RequestParameter>): String {
         if (parameters.isEmpty()) {
             return "<none>"
         }
 
         return parameters.joinToString("&") { parameter ->
-            "${parameter.key}=${sanitizeParameterValue(parameter.key, parameter.value)}"
+            "${parameter.key}=${sanitizeRaRequestParameterValue(parameter.key, parameter.value)}"
         }
     }
 

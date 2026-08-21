@@ -69,13 +69,23 @@ set(VULKAN_SHADER_SOURCES
         "${CORE_LIB_DIR}/src/GPU3D_Vulkan_GraphicsEdgeShader.frag"
         "${CORE_LIB_DIR}/src/GPU3D_Vulkan_GraphicsEdgeFogShader.frag"
         "${CORE_LIB_DIR}/src/GPU3D_Vulkan_GraphicsFogShader.frag"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_TriRasterBaseShader.comp"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_CaptureLineExportShader.comp"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsRasterShader.frag"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsNoColorShader.frag"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsEdgeShader.frag"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsEdgeFogShader.frag"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsFogShader.frag"
         "${ANDROID_CPP_DIR}/renderer/VulkanCompositorShader.comp"
+        "${ANDROID_CPP_DIR}/renderer/VulkanCompositorCompatibilityShader.comp"
         "${ANDROID_CPP_DIR}/renderer/VulkanAccumulate3dShader.comp"
         "${ANDROID_CPP_DIR}/renderer/VulkanPlaneFilterShader.comp"
         "${ANDROID_CPP_DIR}/renderer/VulkanScaleFXShader.comp"
         "${ANDROID_CPP_DIR}/renderer/VulkanPlaneOverlayShader.comp"
+        "${ANDROID_CPP_DIR}/renderer/VulkanAccumulate3dCompatibilityShader.comp"
         "${ANDROID_CPP_DIR}/renderer/VulkanSurfacePresenter.vert"
         "${ANDROID_CPP_DIR}/renderer/VulkanSurfacePresenter.frag"
+        "${ANDROID_CPP_DIR}/renderer/VulkanSurfacePresenterCompatibility.frag"
 )
 
 set(VULKAN_SHADER_HEADERS
@@ -104,7 +114,22 @@ set(VULKAN_SHADER_HEADERS
         "${CORE_LIB_DIR}/src/GPU3D_Vulkan_GraphicsEdgeShaderData.h"
         "${CORE_LIB_DIR}/src/GPU3D_Vulkan_GraphicsEdgeFogShaderData.h"
         "${CORE_LIB_DIR}/src/GPU3D_Vulkan_GraphicsFogShaderData.h"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_TriRasterBaseShaderData.h"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_CaptureLineExportShaderData.h"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsRasterShaderFragmentData.h"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsRasterNoFragDepthShaderFragmentData.h"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsRasterNoFragDepthDirectShaderFragmentData.h"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsRasterNoFragDepthDirectFastModulateShaderFragmentData.h"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsRasterNoFragDepthDirectFastModulateToonShaderFragmentData.h"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsRasterNoFragDepthDirectFastModulatePlainShaderFragmentData.h"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsRasterNoFragDepthDirectFastModulateOpaqueAlphaToonShaderFragmentData.h"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsRasterNoFragDepthDirectFastModulateOpaqueAlphaPlainShaderFragmentData.h"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsNoColorShaderData.h"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsEdgeShaderData.h"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsEdgeFogShaderData.h"
+        "${CORE_LIB_DIR}/src/compatibility/GPU3D_Vulkan_GraphicsFogShaderData.h"
         "${ANDROID_CPP_DIR}/renderer/VulkanCompositorShaderData.h"
+        "${ANDROID_CPP_DIR}/renderer/VulkanCompositorCompatibilityShaderData.h"
         "${ANDROID_CPP_DIR}/renderer/VulkanAccumulate3dShaderData.h"
         "${ANDROID_CPP_DIR}/renderer/VulkanPlaneFilterMode1ShaderData.h"
         "${ANDROID_CPP_DIR}/renderer/VulkanPlaneFilterMode2ShaderData.h"
@@ -124,8 +149,10 @@ set(VULKAN_SHADER_HEADERS
         "${ANDROID_CPP_DIR}/renderer/VulkanScaleFXPass3ShaderData.h"
         "${ANDROID_CPP_DIR}/renderer/VulkanScaleFXPass4ShaderData.h"
         "${ANDROID_CPP_DIR}/renderer/VulkanPlaneOverlayShaderData.h"
+        "${ANDROID_CPP_DIR}/renderer/VulkanAccumulate3dCompatibilityShaderData.h"
         "${ANDROID_CPP_DIR}/renderer/VulkanSurfacePresenterVertexShaderData.h"
         "${ANDROID_CPP_DIR}/renderer/VulkanSurfacePresenterFragmentShaderData.h"
+        "${ANDROID_CPP_DIR}/renderer/VulkanSurfacePresenterCompatibilityFragmentShaderData.h"
 )
 
 if (CMAKE_HOST_WIN32)
@@ -209,6 +236,9 @@ add_library(
         "${ANDROID_CPP_DIR}/renderer/FrameQueue.cpp"
         "${ANDROID_CPP_DIR}/renderer/ScreenshotRenderer.cpp"
         "${ANDROID_CPP_DIR}/renderer/VulkanOutput.cpp"
+        "${ANDROID_CPP_DIR}/renderer/ShaderDiagnostics.cpp"
+        "${ANDROID_CPP_DIR}/renderer/OpenGlRetroArchFilter.cpp"
+        "${ANDROID_CPP_DIR}/renderer/OpenGlRetroArchFilterChain.cpp"
         "${ANDROID_CPP_DIR}/renderer/VulkanRetroArchFilterChain.cpp"
         "${ANDROID_CPP_DIR}/renderer/VulkanSurfacePresenter.cpp"
         "${ANDROID_CPP_DIR}/retroachievements/RetroAchievementsManager.cpp"
@@ -227,6 +257,10 @@ target_include_directories(melonDS-android-frontend PUBLIC
         "${ANDROID_CPP_DIR}/faad2/include"
         "${ANDROID_CPP_DIR}/rcheevos/include"
         "${LIBRASHADER_INCLUDE_DIR}"
+)
+
+target_include_directories(melonDS-android-frontend PRIVATE
+        "${ANDROID_CPP_DIR}/rcheevos/src"
 )
 
 find_library(android-lib android)

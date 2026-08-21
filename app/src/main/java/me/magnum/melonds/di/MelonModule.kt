@@ -45,10 +45,12 @@ import me.magnum.melonds.impl.retroachievements.offline.OfflinePrefetchCacheRepo
 import me.magnum.melonds.impl.retroachievements.offline.OfflinePrefetchCacheStorage
 import me.magnum.melonds.impl.retroachievements.offline.RAApiSmartSyncRaClient
 import me.magnum.melonds.impl.retroachievements.offline.SmartSyncEngine
+import me.magnum.melonds.common.retroachievements.RetroAchievementsEndpointProvider
 import me.magnum.melonds.impl.romprocessors.Api24RomFileProcessorFactory
 import me.magnum.melonds.ui.romdetails.RomDetailsUiMapper
 import me.magnum.rcheevosapi.RAApi
 import me.magnum.rcheevosapi.RAUserAuthStore
+import me.magnum.rcheevosapi.RAUserProfileStore
 import javax.inject.Singleton
 
 @Module
@@ -62,8 +64,8 @@ object MelonModule {
 
     @Provides
     @Singleton
-    fun provideSettingsRepository(@ApplicationContext context: Context, sharedPreferences: SharedPreferences, controllerConfigurationFactory: ControllerConfigurationFactory, json: Json, uriHandler: UriHandler, settingsBackupManager: SettingsBackupManager): SettingsRepository {
-        return SharedPreferencesSettingsRepository(context, sharedPreferences, controllerConfigurationFactory, json, uriHandler, CoroutineScope(Dispatchers.IO), settingsBackupManager)
+    fun provideSettingsRepository(@ApplicationContext context: Context, sharedPreferences: SharedPreferences, controllerConfigurationFactory: ControllerConfigurationFactory, json: Json, uriHandler: UriHandler, settingsBackupManager: SettingsBackupManager, retroArchShaderLibraryManager: RetroArchShaderLibraryManager): SettingsRepository {
+        return SharedPreferencesSettingsRepository(context, sharedPreferences, controllerConfigurationFactory, json, uriHandler, CoroutineScope(Dispatchers.IO), settingsBackupManager, retroArchShaderLibraryManager)
     }
 
     @Provides
@@ -120,10 +122,20 @@ object MelonModule {
         raApi: RAApi,
         retroAchievementsDao: RetroAchievementsDao,
         raUserAuthStore: RAUserAuthStore,
+        raUserProfileStore: RAUserProfileStore,
         sharedPreferences: SharedPreferences,
+        endpointProvider: RetroAchievementsEndpointProvider,
         @ApplicationContext context: Context,
     ): RetroAchievementsRepository {
-        return AndroidRetroAchievementsRepository(raApi, retroAchievementsDao, raUserAuthStore, sharedPreferences, context)
+        return AndroidRetroAchievementsRepository(
+            raApi,
+            retroAchievementsDao,
+            raUserAuthStore,
+            raUserProfileStore,
+            sharedPreferences,
+            context,
+            endpointProvider,
+        )
     }
 
     @Provides
@@ -152,8 +164,16 @@ object MelonModule {
 
     @Provides
     @Singleton
-    fun provideOfflineLedgerRepository(storage: OfflineLedgerStorage, signer: OfflineLedgerSigner): OfflineLedgerRepository {
-        return OfflineLedgerRepository(storage = storage, signer = signer)
+    fun provideOfflineLedgerRepository(
+        storage: OfflineLedgerStorage,
+        signer: OfflineLedgerSigner,
+        endpointProvider: RetroAchievementsEndpointProvider,
+    ): OfflineLedgerRepository {
+        return OfflineLedgerRepository(
+            storage = storage,
+            signer = signer,
+            writesEnabled = { endpointProvider.currentSnapshot().builtInLedgerEnabled },
+        )
     }
 
     @Provides
@@ -162,11 +182,13 @@ object MelonModule {
         raApi: RAApi,
         ledgerRepository: OfflineLedgerRepository,
         prefetchCacheRepository: OfflinePrefetchCacheRepository,
+        endpointProvider: RetroAchievementsEndpointProvider,
     ): SmartSyncEngine {
         return SmartSyncEngine(
             raClient = RAApiSmartSyncRaClient(raApi),
             ledgerRepository = ledgerRepository,
             prefetchCacheRepository = prefetchCacheRepository,
+            syncEnabled = { endpointProvider.currentSnapshot().builtInSyncEnabled },
         )
     }
 

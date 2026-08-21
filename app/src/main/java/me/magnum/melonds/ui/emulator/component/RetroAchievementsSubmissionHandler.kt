@@ -1,5 +1,6 @@
 package me.magnum.melonds.ui.emulator.component
 
+import android.util.Log
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.updateAndGet
 import me.magnum.melonds.domain.repositories.RetroAchievementsRepository
 import me.magnum.melonds.domain.repositories.RomsRepository
+import me.magnum.melonds.domain.repositories.SettingsRepository
 import me.magnum.melonds.impl.emulator.EmulatorSession
 import me.magnum.melonds.impl.network.NetworkConnectivityObserver
 import me.magnum.melonds.ui.emulator.model.RAEventUi
@@ -33,6 +35,7 @@ import kotlin.time.Duration.Companion.minutes
 class RetroAchievementsSubmissionHandler @Inject constructor(
     private val retroAchievementsRepository: RetroAchievementsRepository,
     private val romsRepository: RomsRepository,
+    private val settingsRepository: SettingsRepository,
     private val emulatorSession: EmulatorSession,
     private val networkConnectivityObserver: NetworkConnectivityObserver,
 ) {
@@ -77,16 +80,36 @@ class RetroAchievementsSubmissionHandler @Inject constructor(
         }
     }
 
-    fun addPendingAchievementSubmission(achievement: RAAchievement, forHardcoreMode: Boolean) {
+    fun addPendingAchievementSubmission(
+        achievement: RAAchievement,
+        forHardcoreMode: Boolean,
+        authentication: RAUserAuth.Authenticated,
+    ) {
         pendingSubmissions.update {
-            it + PendingSubmission.AchievementSubmission(achievement, forHardcoreMode, true)
+            it + PendingSubmission.AchievementSubmission(
+                achievement = achievement,
+                forHardcoreMode = forHardcoreMode,
+                authentication = authentication,
+                firstTry = true,
+            )
         }
         pendingSubmissionsChannel?.trySend(Unit)
     }
 
-    fun addPendingLeaderboardSubmission(leaderboard: RALeaderboard, value: Int, formattedValue: String) {
+    fun addPendingLegacyLeaderboardSubmission(
+        leaderboard: RALeaderboard,
+        value: Int,
+        formattedValue: String,
+        authentication: RAUserAuth.Authenticated,
+    ) {
         pendingSubmissions.update {
-            it + PendingSubmission.LeaderboardEntrySubmission(leaderboard, value, formattedValue, true)
+            it + PendingSubmission.LeaderboardEntrySubmission(
+                leaderboard = leaderboard,
+                value = value,
+                formattedValue = formattedValue,
+                authentication = authentication,
+                firstTry = true,
+            )
         }
         pendingSubmissionsChannel?.trySend(Unit)
     }
@@ -140,13 +163,21 @@ class RetroAchievementsSubmissionHandler @Inject constructor(
     }
 
     private suspend fun awardAchievement(achievementSubmission: PendingSubmission.AchievementSubmission): PendingSubmissionResult {
-        return retroAchievementsRepository.awardAchievement(achievementSubmission.achievement, achievementSubmission.forHardcoreMode).fold(
+        return retroAchievementsRepository.awardAchievementForAuthentication(
+            achievement = achievementSubmission.achievement,
+            forHardcoreMode = achievementSubmission.forHardcoreMode,
+            expectedAuthentication = achievementSubmission.authentication,
+        ).fold(
             onSuccess = {
                 val events = if (it.achievementAwarded) {
                     buildList {
                         add(RAEventUi.AchievementTriggered(achievementSubmission.achievement))
                         if (it.isSetMastered()) {
-                            buildSetMasteryEvent(achievementSubmission.achievement.setId, achievementSubmission.forHardcoreMode)?.let {
+                            buildSetMasteryEvent(
+                                setId = achievementSubmission.achievement.setId,
+                                forHardcoreMode = achievementSubmission.forHardcoreMode,
+                                userName = achievementSubmission.authentication.username,
+                            )?.let {
                                 add(it)
                             }
                         }
@@ -168,16 +199,29 @@ class RetroAchievementsSubmissionHandler @Inject constructor(
     }
 
     private suspend fun submitLeaderboardEntry(leaderboardSubmission: PendingSubmission.LeaderboardEntrySubmission): PendingSubmissionResult {
-        return retroAchievementsRepository.submitLeaderboardEntry(leaderboardSubmission.leaderboard.id, leaderboardSubmission.value).fold(
+        if (settingsRepository.isRendererDebugToolsEnabled().firstOrNull() == true) {
+            Log.i(
+                "RASubmission",
+                "event_type=kotlin_leaderboard_submit_start submit_path=kotlin_api " +
+                    "leaderboard_id=${leaderboardSubmission.leaderboard.id} request_score=${leaderboardSubmission.value}",
+            )
+        }
+        return retroAchievementsRepository.submitLeaderboardEntryForAuthentication(
+            leaderboardId = leaderboardSubmission.leaderboard.id,
+            value = leaderboardSubmission.value,
+            expectedAuthentication = leaderboardSubmission.authentication,
+        ).fold(
             onSuccess = { submissionResponse ->
                 val events = retroAchievementsRepository.getAchievementSetSummary(leaderboardSubmission.leaderboard.setId)?.let { setSummary ->
                     val submissionEvent = RAEventUi.LeaderboardEntrySubmitted(
                         leaderboardId = leaderboardSubmission.leaderboard.id,
+                        attemptKey = null,
                         title = leaderboardSubmission.leaderboard.title,
                         gameIcon = setSummary.iconUrl,
-                        formattedScore = leaderboardSubmission.formattedValue,
-                        rank = submissionResponse.rank,
-                        numberOfEntries = submissionResponse.numEntries,
+                        submittedScore = leaderboardSubmission.formattedValue,
+                        bestScore = null,
+                        rank = submissionResponse.rank.toLong(),
+                        numberOfEntries = submissionResponse.numEntries.toLong(),
                     )
                     listOf(submissionEvent)
                 }.orEmpty()
@@ -195,11 +239,14 @@ class RetroAchievementsSubmissionHandler @Inject constructor(
         )
     }
 
-    private suspend fun buildSetMasteryEvent(setId: RASetId, forHardcoreMode: Boolean): RAEventUi.GameMastered? {
+    private suspend fun buildSetMasteryEvent(
+        setId: RASetId,
+        forHardcoreMode: Boolean,
+        userName: String,
+    ): RAEventUi.GameMastered? {
         val rom = (emulatorSession.currentSessionType() as? EmulatorSession.SessionType.RomSession)?.rom
         if (rom != null) {
             val setSummary = retroAchievementsRepository.getAchievementSetSummary(setId)
-            val raUserName = (retroAchievementsRepository.getUserAuthentication() as? RAUserAuth.Authenticated)?.username
             val romPlayTime = romsRepository.getRomAtUri(rom.uri)?.totalPlayTime
 
             if (setSummary != null) {
@@ -213,7 +260,7 @@ class RetroAchievementsSubmissionHandler @Inject constructor(
                 return RAEventUi.GameMastered(
                     gameTitle = title,
                     gameIcon = setSummary.iconUrl,
-                    userName = raUserName,
+                    userName = userName,
                     playTime = romPlayTime,
                     forHardcodeMode = forHardcoreMode,
                 )
@@ -234,11 +281,17 @@ class RetroAchievementsSubmissionHandler @Inject constructor(
     }
 
     private sealed class PendingSubmission {
-        data class AchievementSubmission(val achievement: RAAchievement, val forHardcoreMode: Boolean, val firstTry: Boolean) : PendingSubmission()
+        data class AchievementSubmission(
+            val achievement: RAAchievement,
+            val forHardcoreMode: Boolean,
+            val authentication: RAUserAuth.Authenticated,
+            val firstTry: Boolean,
+        ) : PendingSubmission()
         data class LeaderboardEntrySubmission(
             val leaderboard: RALeaderboard,
             val value: Int,
             val formattedValue: String,
+            val authentication: RAUserAuth.Authenticated,
             val firstTry: Boolean,
         ) : PendingSubmission()
     }
