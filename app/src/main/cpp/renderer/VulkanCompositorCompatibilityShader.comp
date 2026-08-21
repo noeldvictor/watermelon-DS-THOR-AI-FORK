@@ -17,6 +17,9 @@ layout(set = 0, binding = 3, std430) readonly buffer BottomPackedBuffer
     uint bottomPacked[];
 };
 
+layout(set = 0, binding = 7, rgba8) uniform readonly image2D topFilteredPlanes;
+layout(set = 0, binding = 8, rgba8) uniform readonly image2D bottomFilteredPlanes;
+
 layout(set = 0, binding = 5, std430) readonly buffer Capture3dBuffer
 {
     uint capture3dPacked[];
@@ -46,6 +49,7 @@ layout(push_constant) uniform PushConsts
     uint bottomStructuredHandoffNoCurrent3d;
     uint topStructuredHandoffSuppress3d;
     uint bottomStructuredHandoffSuppress3d;
+    uint planeFilterActive;
 } pc;
 
 const uint kMetaFlagRegularCaptureUses3d = 1u << 21u;
@@ -318,11 +322,24 @@ uint readBottomPacked(int y, int x)
     return bottomPacked[offset];
 }
 
-#define DEFINE_SAMPLE_FILTERED_PACKED_LAYER(FUNC_NAME, READ_PACKED_FN) \
-Rgba6 FUNC_NAME(int sourceX, int dsY, int scaledX, int scaledY, uint safeScale, int layerOffset) \
+#define DEFINE_SAMPLE_FILTERED_PACKED_LAYER(FUNC_NAME, READ_PACKED_FN, FILTERED_PLANES_IMAGE) \
+Rgba6 FUNC_NAME(int sourceX, int dsY, int scaledX, int scaledY, uint safeScale, int layerOffset, int displayMode) \
 { \
     Rgba6 nearest = unpackColor6(READ_PACKED_FN(dsY, layerOffset + sourceX)); \
-    if (pc.filtering != kFilterLinear || safeScale <= 1u) \
+    if (safeScale <= 1u) \
+        return nearest; \
+    if (pc.planeFilterActive != 0u && displayMode == 1) \
+    { \
+        int planeRow = scaledY + ((layerOffset != 0) ? int(192u * safeScale) : 0); \
+        vec4 filteredTexel = imageLoad(FILTERED_PLANES_IMAGE, ivec2(scaledX, planeRow)); \
+        Rgba6 filteredColor; \
+        filteredColor.r = clampColor6(int(filteredTexel.r * 63.0 + 0.5)); \
+        filteredColor.g = clampColor6(int(filteredTexel.g * 63.0 + 0.5)); \
+        filteredColor.b = clampColor6(int(filteredTexel.b * 63.0 + 0.5)); \
+        filteredColor.a = int(filteredTexel.a * 255.0 + 0.5); \
+        return filteredColor; \
+    } \
+    if (pc.filtering != kFilterLinear) \
         return nearest; \
     float dsXFloat = (float(scaledX) + 0.5) / float(safeScale) - 0.5; \
     float dsYFloat = (float(scaledY) + 0.5) / float(safeScale) - 0.5; \
@@ -354,8 +371,8 @@ Rgba6 FUNC_NAME(int sourceX, int dsY, int scaledX, int scaledY, uint safeScale, 
     return vec3ToColor6(clamp(sharpened, minColor, maxColor), nearest.a); \
 }
 
-DEFINE_SAMPLE_FILTERED_PACKED_LAYER(sampleTopFilteredPackedLayer, readTopPacked)
-DEFINE_SAMPLE_FILTERED_PACKED_LAYER(sampleBottomFilteredPackedLayer, readBottomPacked)
+DEFINE_SAMPLE_FILTERED_PACKED_LAYER(sampleTopFilteredPackedLayer, readTopPacked, topFilteredPlanes)
+DEFINE_SAMPLE_FILTERED_PACKED_LAYER(sampleBottomFilteredPackedLayer, readBottomPacked, bottomFilteredPlanes)
 
 #undef DEFINE_SAMPLE_FILTERED_PACKED_LAYER
 
@@ -380,15 +397,15 @@ Rgba6 FUNC_NAME(int sourceX, int dsY, int scaledX, int scaledY, uint safeScale) 
     bool screenMatchesCapture3DSource = pc.captureSourceScreenSwapValid == 0u \
         || (SCREEN_IS_TOP ? (pc.captureSourceScreenSwap != 0u) : (pc.captureSourceScreenSwap == 0u)); \
 	    Rgba6 pixel = SCREEN_IS_TOP \
-            ? sampleTopFilteredPackedLayer(sourceX, dsY, scaledX, scaledY, safeScale, 0) \
-            : sampleBottomFilteredPackedLayer(sourceX, dsY, scaledX, scaledY, safeScale, 0); \
+            ? sampleTopFilteredPackedLayer(sourceX, dsY, scaledX, scaledY, safeScale, 0, displayMode) \
+            : sampleBottomFilteredPackedLayer(sourceX, dsY, scaledX, scaledY, safeScale, 0, displayMode); \
 	    Rgba6 nearestPixel = unpackColor6(READ_PACKED_FN(dsY, sourceX)); \
 	    if (displayMode == 1) \
 	    { \
 	        Rgba6 val1 = pixel; \
 	        Rgba6 val2 = SCREEN_IS_TOP \
-                ? sampleTopFilteredPackedLayer(sourceX, dsY, scaledX, scaledY, safeScale, 256) \
-                : sampleBottomFilteredPackedLayer(sourceX, dsY, scaledX, scaledY, safeScale, 256); \
+                ? sampleTopFilteredPackedLayer(sourceX, dsY, scaledX, scaledY, safeScale, 256, displayMode) \
+                : sampleBottomFilteredPackedLayer(sourceX, dsY, scaledX, scaledY, safeScale, 256, displayMode); \
         Rgba6 val3 = unpackColor6(READ_PACKED_FN(dsY, 512 + sourceX)); \
         int compMode = val3.a & 0xF; \
         bool structured2DSlot = hasStructured2D3DSlot(val3); \
@@ -994,8 +1011,8 @@ Rgba6 FUNC_NAME(int sourceX, int dsY, int scaledX, int scaledY, uint safeScale) 
     else if (displayMode == 2 && vramCaptureUses3d) \
     { \
         Rgba6 val2 = SCREEN_IS_TOP \
-            ? sampleTopFilteredPackedLayer(sourceX, dsY, scaledX, scaledY, safeScale, 256) \
-            : sampleBottomFilteredPackedLayer(sourceX, dsY, scaledX, scaledY, safeScale, 256); \
+            ? sampleTopFilteredPackedLayer(sourceX, dsY, scaledX, scaledY, safeScale, 256, displayMode) \
+            : sampleBottomFilteredPackedLayer(sourceX, dsY, scaledX, scaledY, safeScale, 256, displayMode); \
         Rgba6 val3 = unpackColor6(READ_PACKED_FN(dsY, 512 + sourceX)); \
         int compMode = val3.a & 0xF; \
         bool structured2DSlot = hasStructured2D3DSlot(val3); \
