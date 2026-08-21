@@ -7682,9 +7682,19 @@ bool VulkanOutput::prepareFrameForPresentation(
             && !bottomCanUseAccumulatedHighres
             && softPackedSnapshot.topScreenStats.RegularCaptureUses3dLines == kScreenHeight
             && softPackedSnapshot.bottomScreenStats.RegularCaptureUses3dLines == 0u;
-        const bool accumulateRequestParityIsTop = currentTopFullCaptureRequestTuple
-            ? directPresentationSourceScreenSwap
-            : recycledSnapshotParityIsTop;
+        // The accumulators store CONTENT, so the parity has to follow the LCD
+        // the 3D unit actually rendered for. Upstream keys this off the
+        // presentation-source heuristic, which disagrees with the unit on
+        // alternating dual-3D frames and poisons the other screen's
+        // accumulator - the held-content path then shows the top screen's
+        // image on the bottom display. Prefer the unit's own render swap when
+        // the two disagree, and fall back to upstream's choice otherwise so
+        // the recycled-snapshot path keeps working.
+        const bool accumulateRequestParityIsTop = currentBackendIsGraphics
+            ? backendRenderScreenSwap
+            : (currentTopFullCaptureRequestTuple
+                ? directPresentationSourceScreenSwap
+                : recycledSnapshotParityIsTop);
         const bool accumulateCurrentTopHighres =
             ((accumulateRequestParityIsTop && topCanUseAccumulatedHighres)
                 || bottomVramToTopStructuredComp7Replay)

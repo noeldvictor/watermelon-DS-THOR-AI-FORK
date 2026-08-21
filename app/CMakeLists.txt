@@ -5,6 +5,23 @@ endif()
 
 project(melonDS-android-frontend)
 
+# Schedule for the big core this fork targets (Snapdragon 8 Gen 2: Cortex-X3
+# prime, A715/A710 mid, A510 little). -mtune only changes instruction
+# scheduling and cost models - it emits no new instructions - so the binary
+# still runs on any armv8-a device. Raising -march instead would pull in
+# dotprod/fp16/LSE and drop pre-armv8.2 hardware, which is a separate call.
+option(MELONDS_TUNE_FOR_THOR "Tune arm64 codegen for the Snapdragon 8 Gen 2" ON)
+if (MELONDS_TUNE_FOR_THOR AND ANDROID_ABI STREQUAL "arm64-v8a")
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-mtune=cortex-x3" MELONDS_HAS_MTUNE_CORTEX_X3)
+    if (MELONDS_HAS_MTUNE_CORTEX_X3)
+        add_compile_options(-mtune=cortex-x3)
+        message(STATUS "melonDS: tuning arm64 codegen for cortex-x3")
+    else()
+        message(STATUS "melonDS: toolchain does not know cortex-x3, using default tuning")
+    endif()
+endif()
+
 add_compile_definitions(MELONDS_GL_HEADER=<GLES3/gl32.h>)
 add_compile_definitions(EGL_EGLEXT_PROTOTYPES)
 if (MELONDS_ANDROID_DEBUG_BUILD)

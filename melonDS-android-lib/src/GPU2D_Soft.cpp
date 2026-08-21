@@ -72,6 +72,59 @@ const RendererDebugSamplePoint* findRendererDebugSamplePoint(melonDS::u32 x, mel
 }
 }
 
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#define MELONDS_2D_NEON 1
+#endif
+
+namespace
+{
+#ifdef MELONDS_2D_NEON
+// Master brightness runs over every pixel of every scanline, and the scalar
+// form is pure packed-field integer arithmetic: red and blue share one word
+// (0x3F003F) because the intermediate product cannot carry out of the red
+// field, and green is handled separately (0x003F00). The same u32 operations
+// on a uint32x4_t are bit-identical - no saturation, no reassociation - so
+// this is a pure width change, four pixels at a time.
+// count must be a multiple of 4; every caller passes a full 256 pixel line.
+inline void BrightnessUpNeon(melonDS::u32* dst, int count, melonDS::u32 factor)
+{
+    const uint32x4_t maskRB = vdupq_n_u32(0x3F003F);
+    const uint32x4_t maskG = vdupq_n_u32(0x003F00);
+    const uint32x4_t vfactor = vdupq_n_u32(factor);
+    const uint32x4_t alpha = vdupq_n_u32(0xFF000000);
+    for (int i = 0; i + 4 <= count; i += 4)
+    {
+        uint32x4_t val = vld1q_u32(dst + i);
+        uint32x4_t rb = vandq_u32(val, maskRB);
+        uint32x4_t g = vandq_u32(val, maskG);
+        rb = vaddq_u32(rb, vandq_u32(vshrq_n_u32(vmulq_u32(vsubq_u32(maskRB, rb), vfactor), 4), maskRB));
+        g = vaddq_u32(g, vandq_u32(vshrq_n_u32(vmulq_u32(vsubq_u32(maskG, g), vfactor), 4), maskG));
+        vst1q_u32(dst + i, vorrq_u32(vorrq_u32(rb, g), alpha));
+    }
+}
+
+inline void BrightnessDownNeon(melonDS::u32* dst, int count, melonDS::u32 factor)
+{
+    const uint32x4_t maskRB = vdupq_n_u32(0x3F003F);
+    const uint32x4_t maskG = vdupq_n_u32(0x003F00);
+    const uint32x4_t vfactor = vdupq_n_u32(factor);
+    const uint32x4_t biasRB = vdupq_n_u32(0xF * 0x010001);
+    const uint32x4_t biasG = vdupq_n_u32(0xF * 0x000100);
+    const uint32x4_t alpha = vdupq_n_u32(0xFF000000);
+    for (int i = 0; i + 4 <= count; i += 4)
+    {
+        uint32x4_t val = vld1q_u32(dst + i);
+        uint32x4_t rb = vandq_u32(val, maskRB);
+        uint32x4_t g = vandq_u32(val, maskG);
+        rb = vsubq_u32(rb, vandq_u32(vshrq_n_u32(vaddq_u32(vmulq_u32(rb, vfactor), biasRB), 4), maskRB));
+        g = vsubq_u32(g, vandq_u32(vshrq_n_u32(vaddq_u32(vmulq_u32(g, vfactor), biasG), 4), maskG));
+        vst1q_u32(dst + i, vorrq_u32(vorrq_u32(rb, g), alpha));
+    }
+}
+#endif
+}
+
 namespace melonDS
 {
 namespace GPU2D
@@ -3797,10 +3850,14 @@ void SoftRenderer::DrawScanlineActivePipeline(u32 line, Unit* unit)
             u32 factor = masterBrightness & 0x1F;
             if (factor > 16) factor = 16;
 
+#ifdef MELONDS_2D_NEON
+            BrightnessUpNeon(dst, 256, factor);
+#else
             for (int i = 0; i < 256; i++)
             {
                 dst[i] = ColorBrightnessUp(dst[i], factor, 0x0);
             }
+#endif
         }
         else if ((masterBrightness >> 14) == 2)
         {
@@ -3808,10 +3865,14 @@ void SoftRenderer::DrawScanlineActivePipeline(u32 line, Unit* unit)
             u32 factor = masterBrightness & 0x1F;
             if (factor > 16) factor = 16;
 
+#ifdef MELONDS_2D_NEON
+            BrightnessDownNeon(dst, 256, factor);
+#else
             for (int i = 0; i < 256; i++)
             {
                 dst[i] = ColorBrightnessDown(dst[i], factor, 0xF);
             }
+#endif
         }
     }
 
