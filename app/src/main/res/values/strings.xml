@@ -400,6 +400,8 @@
     <string name="category_video">Video</string>
     <string name="category_video_summary">Filter, threaded rendering, FPS counter</string>
     <string name="filter">Filter</string>
+    <string name="turbo">Turbo</string>
+    <string name="turbo_speed">Turbo speed</string>
     <string name="hd_texture_filter">3D texture filter</string>
     <string name="obj_sprite_filter">Sprite (OBJ) filter</string>
     <string name="bg_layer_filter">Background layer filter</string>

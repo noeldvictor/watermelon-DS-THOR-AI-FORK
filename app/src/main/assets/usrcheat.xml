@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Bundled cheat database seed.
+
+    This ships with the app and is imported automatically the first time the
+    cheat database is empty, so a fresh install starts with cheats already
+    available instead of requiring a manual import.
+
+    Format is the R4CCE / DeSmuME "codelist" XML that the in-app importer
+    already understands (the same shape as a usrcheat.xml exported by R4CCE):
+
+        <codelist>
+          <name>Database display name</name>
+          <game>
+            <name>Game title</name>
+            <gameid>AAAA 12345678</gameid>   <!-- gamecode, space, header CRC -->
+            <folder>
+              <name>Folder name</name>
+              <cheat>
+                <name>Cheat name</name>
+                <note>Optional description</note>
+                <codes>02000000 00000000</codes>
+              </cheat>
+            </folder>
+          </game>
+        </codelist>
+
+    <gameid> must be the four character gamecode followed by a space and the
+    ROM header checksum. Both are matched exactly, so an entry with the wrong
+    checksum will silently never apply to any ROM.
+
+    Cheats can also live directly under <game> without a <folder>.
+
+    To ship a real database, replace this file wholesale with a community
+    usrcheat.xml and bump SEED_VERSION in BundledCheatDatabaseImporter so
+    existing installs pick up the new content on next launch.
+-->
+<codelist>
+    <name>Bundled cheats</name>
+</codelist>

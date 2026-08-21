@@ -2438,6 +2438,20 @@ Java_me_magnum_melonds_MelonEmulator_setFastForwardEnabled(JNIEnv* env, jobject 
 }
 
 JNIEXPORT void JNICALL
+Java_me_magnum_melonds_MelonEmulator_setFastForwardSpeedMultiplier(JNIEnv* env, jobject thiz, jfloat multiplier)
+{
+    // A negative multiplier means uncapped, matching the preference. Apply it
+    // immediately when fast forward is already running so the overlay can
+    // change turbo speed mid-frame instead of waiting for a config round trip.
+    fastForwardSpeedMultiplier = multiplier;
+    if (isFastForwardEnabled) {
+        limitFps = fastForwardSpeedMultiplier > 0;
+        targetFps = 60 * fastForwardSpeedMultiplier;
+        updatePerformanceHintTarget();
+    }
+}
+
+JNIEXPORT void JNICALL
 Java_me_magnum_melonds_MelonEmulator_setFrameLimitSpeedMultiplier(JNIEnv* env, jobject thiz, jfloat multiplier)
 {
     frameLimitSpeedMultiplier = sanitizeFrameLimitSpeedMultiplier(multiplier);

@@ -21,6 +21,7 @@ import me.magnum.melonds.common.UriFileHandler
 import me.magnum.melonds.common.uridelegates.UriHandler
 import me.magnum.melonds.domain.repositories.SettingsRepository
 import me.magnum.melonds.impl.AppLogFileRecorder
+import me.magnum.melonds.impl.BundledCheatDatabaseImporter
 import me.magnum.melonds.impl.SettingsBackupManager
 import me.magnum.melonds.impl.retroachievements.offline.HardcoreOfflineLossTracker
 import android.system.Os
@@ -43,6 +44,7 @@ class MelonDSApplication : Application(), Configuration.Provider {
     @Inject lateinit var hardcoreOfflineLossTracker: HardcoreOfflineLossTracker
     @Inject lateinit var settingsBackupManager: SettingsBackupManager
     @Inject lateinit var appLogFileRecorder: AppLogFileRecorder
+    @Inject lateinit var bundledCheatDatabaseImporter: BundledCheatDatabaseImporter
 
     override fun attachBaseContext(base: Context) {
         super.attachBaseContext(base)
@@ -58,6 +60,7 @@ class MelonDSApplication : Application(), Configuration.Provider {
         settingsBackupManager.initializeMirror()
         appLogFileRecorder.start()
         recoverUnexpectedHardcoreOfflineLossIfNeeded()
+        importBundledCheatsIfNeeded()
         MelonDSAndroidInterface.setup(
             UriFileHandler(this, uriHandler),
             settingsRepository.getVulkanDriverConfiguration(applicationInfo.nativeLibraryDir),
@@ -93,6 +96,13 @@ class MelonDSApplication : Application(), Configuration.Provider {
 
     private fun performMigrations() {
         migrator.performMigrations()
+    }
+
+    @OptIn(DelicateCoroutinesApi::class)
+    private fun importBundledCheatsIfNeeded() {
+        GlobalScope.launch(Dispatchers.IO) {
+            bundledCheatDatabaseImporter.importIfNeeded()
+        }
     }
 
     private fun recoverUnexpectedHardcoreOfflineLossIfNeeded() {

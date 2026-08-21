@@ -29,6 +29,7 @@ import kotlinx.serialization.json.decodeFromStream
 import kotlinx.serialization.json.encodeToStream
 import me.magnum.melonds.common.retroarch.RetroArchShaderPreset
 import me.magnum.melonds.common.retroarch.RetroArchShaderRootResolver
+import me.magnum.melonds.domain.model.HdFilterTarget
 import me.magnum.melonds.domain.model.RetroArchShaderSource
 import me.magnum.melonds.common.uridelegates.UriHandler
 import me.magnum.melonds.domain.model.AudioBitrate
@@ -438,6 +439,18 @@ class SharedPreferencesSettingsRepository(
         return speedMultiplierPreference.toFloatOrNull() ?: -1.0f
     }
 
+    override fun setFastForwardSpeedMultiplier(multiplier: Float) {
+        // trimmed so 2.0 persists as "2" and matches the ListPreference values
+        val stored = if (multiplier == multiplier.toInt().toFloat()) {
+            multiplier.toInt().toString()
+        } else {
+            multiplier.toString()
+        }
+        preferences.edit(commit = true) {
+            putString("fast_forward_speed_multiplier", stored)
+        }
+    }
+
     override fun getFrameLimitSpeedMultiplier(): Float {
         val speedMultiplierPreference = preferences.getString("frame_limit_speed_multiplier", "1")!!
         return speedMultiplierPreference.toFloatOrNull()?.coerceIn(0.25f, 1.0f) ?: 1.0f
@@ -670,6 +683,18 @@ class SharedPreferencesSettingsRepository(
 
     override fun getVulkanDriverMode(): VulkanDriverMode {
         return getEnumPreference("video_vulkan_driver_mode", VulkanDriverMode.SYSTEM)
+    }
+
+    override fun getHdFilterMode(target: HdFilterTarget): Int {
+        return preferences.getString(target.preferenceKey, "0")?.toIntOrNull() ?: 0
+    }
+
+    override fun setHdFilterMode(target: HdFilterTarget, mode: Int) {
+        // stored as a string to match the ListPreference the settings
+        // screen writes, so both entry points share one representation
+        preferences.edit(commit = true) {
+            putString(target.preferenceKey, mode.toString())
+        }
     }
 
     override fun setVulkanDriverMode(mode: VulkanDriverMode) {

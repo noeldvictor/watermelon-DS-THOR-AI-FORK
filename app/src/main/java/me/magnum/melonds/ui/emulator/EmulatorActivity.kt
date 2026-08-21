@@ -74,6 +74,7 @@ import me.magnum.melonds.MelonEmulator
 import me.magnum.melonds.R
 import me.magnum.melonds.common.PermissionHandler
 import me.magnum.melonds.databinding.ActivityEmulatorBinding
+import me.magnum.melonds.domain.model.HdFilterTarget
 import me.magnum.melonds.domain.model.ConsoleType
 import me.magnum.melonds.domain.model.ControllerConfiguration
 import me.magnum.melonds.domain.model.DualScreenPreset
@@ -2242,6 +2243,27 @@ class EmulatorActivity : AppCompatActivity() {
                     hasValidRetroArchShaderRoot = menuState.hasValidRetroArchShaderRoot,
                 )
             })
+            add(romSettingsMenuLabel(getString(R.string.turbo), turboStateLabel()) to {
+                frontendInputHandler.onFastForwardPressed()
+                refreshRomSettingsMenuIfOpen()
+                Unit
+            })
+            add(romSettingsMenuLabel(getString(R.string.turbo_speed), turboSpeedLabel()) to {
+                showTurboSpeedDialog()
+            })
+            if (renderer == VideoRenderer.VULKAN || renderer == VideoRenderer.COMPUTE) {
+                add(romSettingsMenuLabel(getString(R.string.hd_texture_filter), hdFilterModeLabel(HdFilterTarget.TEXTURE_3D)) to {
+                    showHdFilterDialog(HdFilterTarget.TEXTURE_3D, R.string.hd_texture_filter)
+                })
+            }
+            if (renderer == VideoRenderer.VULKAN) {
+                add(romSettingsMenuLabel(getString(R.string.obj_sprite_filter), hdFilterModeLabel(HdFilterTarget.OBJ_SPRITE)) to {
+                    showHdFilterDialog(HdFilterTarget.OBJ_SPRITE, R.string.obj_sprite_filter)
+                })
+                add(romSettingsMenuLabel(getString(R.string.bg_layer_filter), hdFilterModeLabel(HdFilterTarget.BG_LAYER)) to {
+                    showHdFilterDialog(HdFilterTarget.BG_LAYER, R.string.bg_layer_filter)
+                })
+            }
             if (menuState.showRetroArchSettings) {
                 add(romSettingsMenuLabel(getString(R.string.video_retroarch_shader_preset_title), menuState.retroArchPresetPathValue) to {
                     showRomRetroArchPresetPathDialog(
@@ -2295,6 +2317,78 @@ class EmulatorActivity : AppCompatActivity() {
 
     private fun romSettingsMenuLabel(title: String, value: String): String {
         return "$title: $value"
+    }
+
+    private fun turboSpeedValues(): List<Float> {
+        return resources.getStringArray(R.array.fast_forward_speed_multiplier_values).map { it.toFloatOrNull() ?: -1f }
+    }
+
+    private fun turboStateLabel(): String {
+        return getString(if (frontendInputHandler.fastForwardEnabled) R.string.on else R.string.off)
+    }
+
+    private fun turboSpeedLabel(): String {
+        val labels = resources.getStringArray(R.array.fast_forward_speed_multiplier_options)
+        val index = turboSpeedValues().indexOf(settingsRepository.getFastForwardSpeedMultiplier())
+        return labels.getOrElse(index) { labels.firstOrNull().orEmpty() }
+    }
+
+    // The multiplier is a global preference, but it is pushed straight to the
+    // frame pacer so a change takes effect even while turbo is already held.
+    private fun showTurboSpeedDialog() {
+        val values = turboSpeedValues()
+        val labels = resources.getStringArray(R.array.fast_forward_speed_multiplier_options).toList()
+        val checkedItem = values.indexOf(settingsRepository.getFastForwardSpeedMultiplier()).coerceAtLeast(0)
+
+        pushConsoleOverlay(
+            ConsoleOverlayNode.Choice(
+                title = getString(R.string.turbo_speed),
+                labels = labels,
+                selectedIndex = checkedItem,
+                onSelect = { index ->
+                    val multiplier = values.getOrElse(index) { -1f }
+                    settingsRepository.setFastForwardSpeedMultiplier(multiplier)
+                    MelonEmulator.setFastForwardSpeedMultiplier(multiplier)
+                    popConsoleOverlay()
+                    refreshRomSettingsMenuIfOpen()
+                    Unit
+                },
+            )
+        )
+    }
+
+    private fun hdFilterModeValues(): List<Int> {
+        return resources.getStringArray(R.array.hd_filter_mode_values).map { it.toIntOrNull() ?: 0 }
+    }
+
+    private fun hdFilterModeLabel(target: HdFilterTarget): String {
+        val labels = resources.getStringArray(R.array.hd_filter_mode_options)
+        val index = hdFilterModeValues().indexOf(settingsRepository.getHdFilterMode(target))
+        return labels.getOrElse(index) { labels.firstOrNull().orEmpty() }
+    }
+
+    // These are global preferences rather than per-ROM config, but the
+    // renderer applies them to the live Renderer3D without a reload, so they
+    // are worth reaching from the in-game overlay.
+    private fun showHdFilterDialog(target: HdFilterTarget, titleResource: Int) {
+        val values = hdFilterModeValues()
+        val labels = resources.getStringArray(R.array.hd_filter_mode_options).toList()
+        val checkedItem = values.indexOf(settingsRepository.getHdFilterMode(target)).coerceAtLeast(0)
+
+        pushConsoleOverlay(
+            ConsoleOverlayNode.Choice(
+                title = getString(titleResource),
+                labels = labels,
+                selectedIndex = checkedItem,
+                onSelect = { index ->
+                    settingsRepository.setHdFilterMode(target, values.getOrElse(index) { 0 })
+                    viewModel.onSettingsChanged()
+                    popConsoleOverlay()
+                    refreshRomSettingsMenuIfOpen()
+                    Unit
+                },
+            )
+        )
     }
 
     private fun showRomVideoFilteringDialog(

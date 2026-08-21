@@ -3,6 +3,7 @@ package me.magnum.melonds.domain.repositories
 import android.net.Uri
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import me.magnum.melonds.domain.model.HdFilterTarget
 import me.magnum.melonds.domain.model.*
 import me.magnum.melonds.domain.model.camera.DSiCameraSourceType
 import me.magnum.melonds.domain.model.input.SoftInputBehaviour
@@ -18,6 +19,7 @@ interface SettingsRepository {
 
     fun getTheme(): Theme
     fun getFastForwardSpeedMultiplier(): Float
+    fun setFastForwardSpeedMultiplier(multiplier: Float)
     fun getFrameLimitSpeedMultiplier(): Float
     fun isRewindEnabled(): Boolean
     fun isSustainedPerformanceModeEnabled(): Boolean
@@ -56,6 +58,8 @@ interface SettingsRepository {
     fun getCurrentVideoRenderer(): VideoRenderer
     fun getEffectiveVideoRenderer(romConfig: RomConfig): VideoRenderer
     fun setCurrentVideoRenderer(renderer: VideoRenderer)
+    fun getHdFilterMode(target: HdFilterTarget): Int
+    fun setHdFilterMode(target: HdFilterTarget, mode: Int)
     fun getVideoRenderer(): Flow<VideoRenderer>
     fun getVulkanDriverConfiguration(nativeLibraryDir: String): VulkanDriverConfiguration
     fun getVulkanDriverMode(): VulkanDriverMode

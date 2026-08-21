@@ -193,6 +193,8 @@ object MelonEmulator {
 
     external fun setFastForwardEnabled(enabled: Boolean)
 
+    external fun setFastForwardSpeedMultiplier(multiplier: Float)
+
     external fun setFrameLimitSpeedMultiplier(multiplier: Float)
 
     external fun setMicrophoneEnabled(enabled: Boolean)
