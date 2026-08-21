@@ -754,6 +754,12 @@ vec3 sampleFastNormalizedTexel()
     uint texArrayIndex = pc.variantKey & 0xFFFFu;
     uint texHeight = (pc.passIndex >> 16u) & 0xFFFFu;
     uint texWidth = pc.passIndex & 0xFFFFu;
+    // bits 12+ of these fields carry the HD texel scale and filter mode,
+    // exactly as the main sampling path decodes them. Dividing the UV by
+    // the unmasked value collapses it toward zero and samples a hugely
+    // magnified corner of the texture.
+    texWidth &= 0xFFFu;
+    texHeight &= 0xFFFu;
     vec2 sampledTexelCenter = floor(fTexcoord) + vec2(0.5);
     vec2 sampledUv = sampledTexelCenter / vec2(float(texWidth), float(texHeight));
     vec4 normalizedTexel = texture(normTexArrays[texArrayIndex], vec3(sampledUv, float(texLayer)));
