@@ -960,7 +960,7 @@ void VulkanRenderer3D::RenderFrameCompatibilityBackend(GPU& gpu)
         if (nowNs - LastHDSamplingStatsLogNs >= 1'000'000'000ull)
         {
             LastHDSamplingStatsLogNs = nowNs;
-            Platform::Log(Platform::LogLevel::Debug,
+            Platform::Log(Platform::LogLevel::Warn,
                           "GPU3D_Vulkan[Stats]: hdSampling=%d texScale=%d filterMode=%d capFallback(restore=%llu otherSwap=%llu banked=%llu miss=%llu fill=%llu clear=%llu)",
                           PipelinesUseHDSampling ? 1 : 0,
                           Texcache.GetHDTextureScale(),
