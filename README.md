@@ -1,4 +1,4 @@
-# Watermelon Thor Experimental
+# Watermelon Thor
 
 An experimental dual-screen Android fork of [melonDS](https://melonds.kuribo64.net/) tuned for the
 AYN Thor, with HD texture pack support and per-layer upscaling filters.
