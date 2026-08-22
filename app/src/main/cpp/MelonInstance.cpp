@@ -11031,15 +11031,6 @@ bool MelonInstance::latchSoftPackedFrameSnapshotFastPath(
                 else
                     planeHoldTopLines++;
             }
-            else if (topStructuredVramCapture)
-                copyStructuredLine(
-                    lastSoftPackedFrameSnapshot.packedTopPlane0,
-                    lastSoftPackedFrameSnapshot.packedTopPlane1,
-                    lastSoftPackedFrameSnapshot.packedTopControl,
-                    structuredTopPlane0,
-                    structuredTopPlane1,
-                    structuredTopControl,
-                    snapshotRowBase);
             else if (topStructuredVramCapture && sharedBankServeRaw)
             {
                 const bool structuredOnly =
@@ -11213,15 +11204,6 @@ bool MelonInstance::latchSoftPackedFrameSnapshotFastPath(
                 else
                     planeHoldBottomLines++;
             }
-            else if (bottomStructuredVramCapture)
-                copyStructuredLine(
-                    lastSoftPackedFrameSnapshot.packedBottomPlane0,
-                    lastSoftPackedFrameSnapshot.packedBottomPlane1,
-                    lastSoftPackedFrameSnapshot.packedBottomControl,
-                    structuredBottomPlane0,
-                    structuredBottomPlane1,
-                    structuredBottomControl,
-                    snapshotRowBase);
             else if (bottomStructuredVramCapture && sharedBankServeRaw)
             {
                 const bool structuredOnly =
