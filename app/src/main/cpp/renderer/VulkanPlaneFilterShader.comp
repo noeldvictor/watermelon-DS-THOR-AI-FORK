@@ -332,39 +332,47 @@ vec4 MMPXLiteTexel(vec4 a, vec4 b, vec4 c, vec4 d, vec4 e, vec4 f, vec4 g, vec4 
 #endif
 
 #if PLANE_FILTER_MODE == 8 || PLANE_FILTER_MODE == 11 || PLANE_FILTER_MODE == 12
+// Anime4K v4.0.1 Difference-of-Gaussians upscaler (bloc97, MIT). Ported from
+// the formulation Azahar uses for mobile: the separable intermediate passes are
+// fused into one 3x3 Gaussian neighbourhood, which avoids full-frame temporary
+// images and their bandwidth cost on tile-based GPUs like the Adreno.
+//
+// Applied per producer rather than at present time, so sprites can get it while
+// the 3D layer and backgrounds stay untouched.
+//
+// Taps are laid out a b c / d e f / g h px_i with e at the centre.
+float Anime4KLuma(vec4 c)
+{
+    return dot(c.rgb, vec3(0.299, 0.587, 0.114));
+}
+
 vec4 Anime4KLiteTexel(vec4 a, vec4 b, vec4 c, vec4 d, vec4 e, vec4 f, vec4 g, vec4 h, vec4 px_i, ivec2 subpixel)
 {
+    // Edge-aware upscale first; the DoG below only corrects luminance.
     vec4 base = MMPXLiteTexel(a, b, c, d, e, f, g, h, px_i, subpixel);
     if (IsThinContrastDetail(e, b, d, f, h))
         return ProtectThinDetail(base, b, d, e, f, h);
 
-    vec4 cardinal = (b + d + f + h) * 0.25;
-    vec4 pair = (d + f) * 0.5;
-    float pairDist = ColorDistance(d, f);
-    float verticalDist = ColorDistance(b, h);
-    if (verticalDist < pairDist)
-    {
-        pair = (b + h) * 0.5;
-        pairDist = verticalDist;
-    }
+    float tl = Anime4KLuma(a), tc = Anime4KLuma(b), tr = Anime4KLuma(c);
+    float ml = Anime4KLuma(d), mc = Anime4KLuma(e), mr = Anime4KLuma(f);
+    float bl = Anime4KLuma(g), bc = Anime4KLuma(h), br = Anime4KLuma(px_i);
 
-    float diagDownDist = ColorDistance(a, px_i);
-    if (diagDownDist < pairDist)
-    {
-        pair = (a + px_i) * 0.5;
-        pairDist = diagDownDist;
-    }
+    // Normalized sigma-1 Gaussian, then unsharp against it.
+    float gaussian = mc * 0.20417996 + (tc + ml + mr + bc) * 0.12384140 +
+                     (tl + tr + bl + br) * 0.07511360;
 
-    float diagUpDist = ColorDistance(c, g);
-    if (diagUpDist < pairDist)
-        pair = (c + g) * 0.5;
+    // Clamping to the local neighbourhood is what separates this from a plain
+    // unsharp mask: it suppresses the halos that would otherwise ring around
+    // the dark outlines that dominate sprite art.
+    float neighborhoodMin = min(min(min(tl, tc), min(tr, ml)),
+                                min(min(mc, mr), min(min(bl, bc), br)));
+    float neighborhoodMax = max(max(max(tl, tc), max(tr, ml)),
+                                max(max(mc, mr), max(max(bl, bc), br)));
+    float correctedLuma = clamp(mc + (mc - gaussian) * 0.8, neighborhoodMin, neighborhoodMax);
 
-    float contrast = max(max(ColorDistance(e, b), ColorDistance(e, d)),
-                         max(ColorDistance(e, f), ColorDistance(e, h)));
-    float edgeWeight = smoothstep(4.0 / 255.0, 56.0 / 255.0, contrast);
-    vec4 smoothed = mix(base, pair, edgeWeight * 0.72);
-    vec4 sharpened = smoothed + ((smoothed - cardinal) * (edgeWeight * 0.30));
-    return ProtectThinDetail(clamp(sharpened, vec4(0.0), vec4(1.0)), b, d, e, f, h);
+    // Correct luminance only and carry the delta into rgb, so hues never shift.
+    vec4 sharpened = vec4(clamp(base.rgb + (correctedLuma - mc), 0.0, 1.0), base.a);
+    return ProtectThinDetail(sharpened, b, d, e, f, h);
 }
 #endif
 
