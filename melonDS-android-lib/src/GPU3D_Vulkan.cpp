@@ -13905,6 +13905,14 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
     };
     bool graphicsFogWriteObserved = false;
     const auto fastOpaqueModulatePipelineFor = [&](const GraphicsPolygonDraw& draw, u32 pipelineIndex, bool noAttr, bool noDepthNoAttr = false) -> VkPipeline {
+        // The fast modulate variants sample through sampleFastNormalizedTexel,
+        // which knows nothing about HD textures: it has no texel scale, no
+        // nearest mode 15 for native texels sitting under a pack, and it reads
+        // a normalized view of data the HD path stores as integers. Fall back
+        // to the regular raster path whenever HD sampling is specialized in.
+        if (PipelinesUseHDSampling)
+            return VK_NULL_HANDLE;
+
         if ((dispCnt & (1u << 0u)) == 0u
             || draw.firstTriangle >= Triangles.size()
             || pipelineIndex >= GraphicsOpaqueFastModulatePipelines.size())

@@ -31,4 +31,13 @@
             android:fillColor="#2E0F0C"
             android:pathData="M12.5,5.8 A0.8,1.1 0 1 0 14.1,5.8 A0.8,1.1 0 1 0 12.5,5.8 Z" />
     </group>
+
+    <!-- Thor bolt: marks this as the AYN Thor fork rather than upstream
+         WatermelonDS. Drawn in viewport space over the dual screens. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M62.5,30 L46.5,58 L57,58 L50.5,80 L68.5,50 L58,50 Z" />
+    <path
+        android:fillColor="#FFC107"
+        android:pathData="M61,32.5 L48.8,56.5 L57.4,56.5 L52.5,75 L66.4,51.5 L57.6,51.5 Z" />
 </vector>
