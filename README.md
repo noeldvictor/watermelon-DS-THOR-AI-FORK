@@ -25,13 +25,34 @@ This repository is self-contained — the emulator core (`melonDS-android-lib/`,
 
 ### Per-layer upscaling filters
 * Independent filter selection for **3D textures**, **OBJ sprites**, and **BG layers**
-  (Settings → Video): nearest, bilinear, and a set of pixel-art filters including xBR, Eagle,
-  SaI, and a faithful multi-pass **ScaleFX** port.
+  (Settings → Video): nearest, bilinear, and a set of pixel-art filters including Scale2x,
+  HQ2x, SaI, Eagle, MMPX, a faithful multi-pass **ScaleFX** port, and **Anime4K (DoG)**.
+* **Anime4K** is applied *per producer*, not to the finished frame — so sprite art can get it
+  while 3D geometry and backgrounds are left alone. It is Anime4K v4.0.1's
+  Difference-of-Gaussians upscaler with the separable passes fused into one 3×3 neighbourhood,
+  which keeps full-frame temporaries (and their bandwidth cost) off tile-based mobile GPUs.
 * Filters run in the Vulkan compositor as a cached pre-pass — static scenes cost nothing
   (content-hashed reuse), and 3D texture filtering is cached per texture at upload.
 * A persistent on-disk filter cache (Settings → Video → "Filter disk cache") keeps filtered
   results between sessions, so a second launch of the same game does no filtering work at all.
 * No full-screen smoothing: original pixels stay sharp unless a layer's filter says otherwise.
+
+### In-game overlay
+* **Turbo** with a speed picker (1.5x/2x/3x/4x/8x/uncapped) that takes effect while turbo is
+  already held, rather than only at configuration time.
+* **Texture filter switching** for the 3D, sprite and BG producers without leaving the game —
+  the renderer applies these to the live `Renderer3D`, so no reload is needed.
+* **Stretch to fit both screens**, see below.
+
+### Input
+* Key bindings can take an optional **modifier**, so a hotkey can sit behind a chord and leave
+  the plain button free for the game. Combos are matched before plain bindings; the unmodified
+  key still works on its own. Existing configurations load unchanged.
+
+### Cheats
+* A cheat database bundled at `app/src/main/assets/usrcheat.xml` is imported on first launch when
+  the cheat database is empty, so a fresh install starts with cheats available. The format is the
+  R4CCE/DeSmuME `codelist` XML the in-app importer already understands.
 
 ### Dual-screen and stability work
 * **Stretch to fit both screens** (in-game pause menu -> Dual Screen Presets):
@@ -63,8 +84,8 @@ adopts upstream's where it is strictly broader. Notable current examples:
 Requirements: JDK 21, Android NDK 28.x, CMake 3.22+, Rust (for librashader).
 
 ```
-git clone --recurse-submodules https://github.com/noeldvictor/melonDS-android.git
-cd melonDS-android
+git clone --recurse-submodules https://github.com/noeldvictor/watermelon-DS-THOR-AI-FORK.git
+cd watermelon-DS-THOR-AI-FORK
 ./gradlew :app:assembleGitHubProdDebug
 ```
 
@@ -86,6 +107,9 @@ Shader binaries are checked in. After editing any `.comp`/`.frag`/`.vert`, regen
 * [WatermelonDS](https://github.com/SapphireRhodonite/WatermelonDS) by SapphireRhodonite — Vulkan renderer,
   dual-screen and external display support, RetroAchievements, RetroArch shader presets
 * [librashader](https://github.com/SnowflakePowered/librashader) — RetroArch shader preset support
+* [Anime4K](https://github.com/bloc97/Anime4K) by bloc97 — the DoG upscaler used by the sprite
+  filter (MIT). The mobile single-pass formulation follows the one in
+  [Azahar](https://github.com/azahar-emu/azahar).
 * HD pack format inspired by the texture replacement systems of Dolphin and DuckStation
 
 melonDS is free software licensed under the GPLv3; this fork retains that license.
