@@ -6839,14 +6839,23 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
                     structuredTopControl,
                     snapshotRowBase);
             else if (topStructuredVramCapture)
-                copyStructuredLine(
-                    lastSoftPackedFrameSnapshot.packedTopPlane0,
-                    lastSoftPackedFrameSnapshot.packedTopPlane1,
-                    lastSoftPackedFrameSnapshot.packedTopControl,
-                    structuredTopPlane0,
-                    structuredTopPlane1,
-                    structuredTopControl,
-                    snapshotRowBase);
+                {
+                    // Merge the structured 2D over the captured line
+                    // rather than replacing it, as this fork did before
+                    // the merge. Replacing drops the capture underneath,
+                    // and because the branch taken alternates frame to
+                    // frame the dialog box flickers.
+                    mergeStructuredDisplayLine(
+                        lastSoftPackedFrameSnapshot.packedTopPlane0,
+                        lastSoftPackedFrameSnapshot.packedTopPlane1,
+                        lastSoftPackedFrameSnapshot.packedTopControl,
+                        topPackedRaw,
+                        structuredTopPlane0,
+                        structuredTopPlane1,
+                        structuredTopControl,
+                        y,
+                        snapshotRowBase);
+                }
 
             const u32 bottomLineMeta = lastSoftPackedFrameSnapshot.packedBottomLineMeta[static_cast<size_t>(y)];
             const u32 bottomDisplayMode = (bottomLineMeta >> 16u) & 0x3u;
@@ -6904,14 +6913,23 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
                     structuredBottomControl,
                     snapshotRowBase);
             else if (bottomStructuredVramCapture)
-                copyStructuredLine(
-                    lastSoftPackedFrameSnapshot.packedBottomPlane0,
-                    lastSoftPackedFrameSnapshot.packedBottomPlane1,
-                    lastSoftPackedFrameSnapshot.packedBottomControl,
-                    structuredBottomPlane0,
-                    structuredBottomPlane1,
-                    structuredBottomControl,
-                    snapshotRowBase);
+                {
+                    // Merge the structured 2D over the captured line
+                    // rather than replacing it, as this fork did before
+                    // the merge. Replacing drops the capture underneath,
+                    // and because the branch taken alternates frame to
+                    // frame the dialog box flickers.
+                    mergeStructuredDisplayLine(
+                        lastSoftPackedFrameSnapshot.packedBottomPlane0,
+                        lastSoftPackedFrameSnapshot.packedBottomPlane1,
+                        lastSoftPackedFrameSnapshot.packedBottomControl,
+                        bottomPackedRaw,
+                        structuredBottomPlane0,
+                        structuredBottomPlane1,
+                        structuredBottomControl,
+                        y,
+                        snapshotRowBase);
+                }
         }
     }
 
@@ -11083,13 +11101,27 @@ bool MelonInstance::latchSoftPackedFrameSnapshotFastPath(
                 }
                 else
                 {
-                    copyStructuredLine(
+                    // Keep the captured line underneath and merge the
+                    // structured 2D over it, exactly as the shared-bank
+                    // sibling above does. Replacing the line wholesale
+                    // drops the capture, and since the branch taken
+                    // alternates frame to frame the dialog box flickers.
+                    copyPackedLine(
                         lastSoftPackedFrameSnapshot.packedTopPlane0,
                         lastSoftPackedFrameSnapshot.packedTopPlane1,
                         lastSoftPackedFrameSnapshot.packedTopControl,
+                        topPackedRaw,
+                        y,
+                        snapshotRowBase);
+                    mergeStructuredDisplayLine(
+                        lastSoftPackedFrameSnapshot.packedTopPlane0,
+                        lastSoftPackedFrameSnapshot.packedTopPlane1,
+                        lastSoftPackedFrameSnapshot.packedTopControl,
+                        topPackedRaw,
                         structuredTopPlane0,
                         structuredTopPlane1,
                         structuredTopControl,
+                        y,
                         snapshotRowBase);
                 }
             }
@@ -11256,13 +11288,27 @@ bool MelonInstance::latchSoftPackedFrameSnapshotFastPath(
                 }
                 else
                 {
-                    copyStructuredLine(
+                    // Keep the captured line underneath and merge the
+                    // structured 2D over it, exactly as the shared-bank
+                    // sibling above does. Replacing the line wholesale
+                    // drops the capture, and since the branch taken
+                    // alternates frame to frame the dialog box flickers.
+                    copyPackedLine(
                         lastSoftPackedFrameSnapshot.packedBottomPlane0,
                         lastSoftPackedFrameSnapshot.packedBottomPlane1,
                         lastSoftPackedFrameSnapshot.packedBottomControl,
+                        bottomPackedRaw,
+                        y,
+                        snapshotRowBase);
+                    mergeStructuredDisplayLine(
+                        lastSoftPackedFrameSnapshot.packedBottomPlane0,
+                        lastSoftPackedFrameSnapshot.packedBottomPlane1,
+                        lastSoftPackedFrameSnapshot.packedBottomControl,
+                        bottomPackedRaw,
                         structuredBottomPlane0,
                         structuredBottomPlane1,
                         structuredBottomControl,
+                        y,
                         snapshotRowBase);
                 }
             }
