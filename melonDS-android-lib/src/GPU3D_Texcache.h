@@ -505,18 +505,17 @@ public:
                 packTexHash = XXH64(entry.TextureHash, sizeof(u64)*2, 0);
             bool hasPal = (fmt != 7);
             u64 packPalHash = PackPalHash(gpu, fmt, texParam, slot1addr, entry.TexPalStart, entry.TexPalHash, width, height, false);
-            u64 packPalHashLegacy = PackPalHash(gpu, fmt, texParam, slot1addr, entry.TexPalStart, entry.TexPalHash, width, height, true);
-
+            // No legacy-key retry here, unlike the texture pack path above. A
+            // user pack has to keep resolving under the old key because we
+            // cannot re-author someone else's art, but this cache is ours and
+            // self-populating. The old fmt-5 palette hash covered a bounding
+            // span rather than the referenced entries, so distinct palettes
+            // could collide on one key - retrying it here would serve a
+            // filtered image built from a different palette and tint the
+            // texture. A miss just re-filters and stores under the correct key.
             const u32 storageScale = TexLoader.GetStorageScale();
             const HDTexPackImage* cached =
                 FilterCache->LookupTexture(width, height, packTexHash, packPalHash, hasPal, fmt);
-            if ((!cached || cached->Width != width * storageScale) && packPalHashLegacy != packPalHash)
-            {
-                const HDTexPackImage* legacyCached =
-                    FilterCache->LookupTexture(width, height, packTexHash, packPalHashLegacy, hasPal, fmt);
-                if (legacyCached)
-                    cached = legacyCached;
-            }
             if (cached && cached->Width == width * storageScale && cached->Height == height * storageScale)
             {
                 TexLoader.UploadReplacement(storagePlace.TextureID, width, height, storagePlace.Layer, *cached);
