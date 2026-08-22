@@ -91,9 +91,9 @@ class InputSetupViewModel @Inject constructor(
         _slot2AxisUnderAssignment.value = null
     }
 
-    fun updateInputAssignedKey(key: Int) {
+    fun updateInputAssignedKey(key: Int, modifierKey: Int? = null) {
         val inputUnderAssignment = _inputUnderAssignment.value ?: return
-        val inputType = InputConfig.Assignment.Key(null, key)
+        val inputType = InputConfig.Assignment.Key(null, key, modifierKey)
         setInputAssignment(inputUnderAssignment, inputType)
         focusOnNextInput(inputUnderAssignment)
     }

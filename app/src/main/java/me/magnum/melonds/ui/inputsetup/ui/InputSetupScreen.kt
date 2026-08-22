@@ -391,8 +391,14 @@ private fun Input(
                     assignments.joinToString(" / ") { assignment ->
                         when (assignment) {
                             is InputConfig.Assignment.Key -> {
-                                val keyCodeString = KeyEvent.keyCodeToString(assignment.keyCode)
-                                keyCodeString.replace("KEYCODE", "").replace("_", " ").trim()
+                                fun prettyKey(code: Int) = KeyEvent.keyCodeToString(code)
+                                    .replace("KEYCODE", "").replace("_", " ").trim()
+                                val keyLabel = prettyKey(assignment.keyCode)
+                                // show a chord as MODIFIER + KEY so a combo binding is
+                                // distinguishable from the plain key at a glance
+                                assignment.modifierKeyCode
+                                    ?.let { "${prettyKey(it)} + $keyLabel" }
+                                    ?: keyLabel
                             }
                             is InputConfig.Assignment.Axis -> {
                                 val axisString = MotionEvent.axisToString(assignment.axisCode)

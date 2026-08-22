@@ -137,11 +137,21 @@ class InputSetupActivity : AppCompatActivity() {
         return super.onGenericMotionEvent(event)
     }
 
+    // Keys currently held while a binding is being captured. Holding one key
+    // and pressing a second records the pair as a combo, so a hotkey can sit
+    // behind a chord and leave the plain button free for the game.
+    private val heldAssignmentKeys = linkedSetOf<Int>()
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_UP) {
+            heldAssignmentKeys.remove(event.keyCode)
+        }
         if (event.action == KeyEvent.ACTION_DOWN && viewModel.inputUnderAssignment.value != null) {
             @SuppressLint("GestureBackNavigation")
             if (event.keyCode != KeyEvent.KEYCODE_BACK) {
-                viewModel.updateInputAssignedKey(event.keyCode)
+                val modifier = heldAssignmentKeys.lastOrNull { it != event.keyCode }
+                heldAssignmentKeys.add(event.keyCode)
+                viewModel.updateInputAssignedKey(event.keyCode, modifier)
                 return true
             }
         }
