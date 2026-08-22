@@ -13371,7 +13371,8 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
                 const u32 wMode = wBuffer ? 1u : 0u;
                 const u32 depthCompareMode = (draw.polyAttr & (1u << 14u)) != 0u ? 1u : 0u;
                 const u32 pipelineIndex = (wMode * GraphicsDepthCompareModeCount) + depthCompareMode;
-                if (pipelineIndex < GraphicsOpaqueFastModulateOpaqueAlphaPlainColorOnlyPipelines.size()
+                if (!PipelinesUseHDSampling
+                    && pipelineIndex < GraphicsOpaqueFastModulateOpaqueAlphaPlainColorOnlyPipelines.size()
                     && GraphicsOpaqueFastModulateOpaqueAlphaPlainColorOnlyPipelines[pipelineIndex] != VK_NULL_HANDLE)
                 {
                     colorOnlyOpaqueDrawSelected[drawIndex] = 1u;
@@ -13996,6 +13997,12 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
             : VK_NULL_HANDLE;
     };
     const auto fastOpaqueModulateOcclusionNoAttrPipelineFor = [&](const GraphicsPolygonDraw& draw, u32 pipelineIndex, bool noDepth = false) -> VkPipeline {
+        // Same reason as fastOpaqueModulatePipelineFor: these variants sample
+        // through sampleFastNormalizedTexel, which has no HD texel scale and
+        // no nearest mode 15 for native texels under a pack.
+        if (PipelinesUseHDSampling)
+            return VK_NULL_HANDLE;
+
         if ((dispCnt & (1u << 0u)) == 0u
             || draw.firstTriangle >= Triangles.size()
             || pipelineIndex >= GraphicsOpaqueFastModulateOcclusionNoAttrPipelines.size())
