@@ -128,6 +128,22 @@ fun ConsolePresetsOverlay(
                     }
                 }
                 Spacer(Modifier.height(6.dp))
+                // One tap for the common case: both letterboxing rules off so
+                // each DS screen fills its physical panel. Keeping the two
+                // underlying toggles below for finer control.
+                ConsoleToggleRow(
+                    label = stringResource(R.string.dual_screen_stretch_to_fit),
+                    checked = !keepAspectRatio && !integerScaleEnabled,
+                    onToggle = { stretch ->
+                        if (stretch) {
+                            onKeepAspectRatioChanged(false)
+                            onIntegerScaleChanged(false)
+                        } else {
+                            onKeepAspectRatioChanged(true)
+                        }
+                    },
+                    enabled = presetSelected,
+                )
                 ConsoleToggleRow(
                     label = stringResource(R.string.keep_ds_ratio),
                     checked = keepAspectRatio,

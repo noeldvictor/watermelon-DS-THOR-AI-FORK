@@ -34,6 +34,10 @@ This repository is self-contained — the emulator core (`melonDS-android-lib/`,
 * No full-screen smoothing: original pixels stay sharp unless a layer's filter says otherwise.
 
 ### Dual-screen and stability work
+* **Stretch to fit both screens** (in-game pause menu -> Dual Screen Presets):
+  one toggle drops both letterboxing rules so each DS screen fills its physical
+  panel edge to edge. The individual "Keep DS aspect ratio" and "Integer scale"
+  switches remain below it for finer control.
 * Fixes for dual-display presentation on the Thor's two panels (screen-swap alternation,
   capture-backed scenes, frame pacing under load), verified with per-display captures.
 * Renderer thread-safety and Vulkan lifecycle fixes throughout the compositor and presenter.
