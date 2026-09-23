@@ -33,7 +33,7 @@ import tex3d  # noqa: E402
 
 WORK = HERE / "work"
 PACKS = HERE / "packs"
-PACKAGE = "me.magnum.melondualds.dev"
+PACKAGE = "app.watermelonthor.dev"
 
 
 def log(msg: str) -> None:

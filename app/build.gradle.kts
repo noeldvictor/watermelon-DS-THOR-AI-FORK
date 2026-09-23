@@ -34,7 +34,9 @@ android {
     compileSdk = AppConfig.compileSdkVersion
     ndkVersion = AppConfig.ndkVersion
     defaultConfig {
-        applicationId = "me.magnum.melondualds"
+        // Own application ID so Watermelon Thor installs side by side with WatermelonDS and
+        // melonDS. The Kotlin packages and namespace stay me.magnum.melonds.
+        applicationId = "app.watermelonthor"
         minSdk = AppConfig.minSdkVersion
         targetSdk = AppConfig.targetSdkVersion
         versionCode = AppConfig.versionCode
@@ -130,14 +132,6 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
-    }
-}
-
-androidComponents {
-    onVariants(selector().withName("gitHubProdDebug")) { variant ->
-        // Keep prod-debug distinct from other debug/release variants.
-        variant.manifestPlaceholders.put("appName", "debug WatermelonDS")
-        variant.sources.res?.addStaticSourceDirectory("src/nightly/res")
     }
 }
 
@@ -583,8 +577,6 @@ kotlin {
 }
 
 dependencies {
-    val gitHubImplementation by configurations
-
     implementation(projects.masterswitch)
     implementation(projects.rcheevosApi)
     implementation(projects.common)
@@ -633,14 +625,8 @@ dependencies {
     implementation(libs.androidx.security.crypto)
     implementation(libs.kotlinx.coroutines.rx)
     implementation(libs.picasso)
-    implementation(libs.markwon)
-    implementation(libs.markwon.imagepicasso)
-    implementation(libs.markwon.linkify)
     implementation(libs.commons.compress)
     implementation(libs.xz)
-
-    gitHubImplementation(libs.retrofit)
-    gitHubImplementation(libs.retrofit.converter.kotlinx)
 
     ksp(libs.hilt.compiler)
     ksp(libs.hilt.compiler.android)

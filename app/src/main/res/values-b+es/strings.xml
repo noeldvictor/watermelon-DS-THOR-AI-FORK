@@ -1,5 +1,5 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <string name="app_name">WatermelonDS</string>
+    <string name="app_name">Watermelon Thor</string>
     
     <string name="ok">Ok</string>
     <string name="yes">Sí</string>
@@ -14,13 +14,9 @@
     <string name="options">Opciones</string>
     <string name="preview">Vista previa</string>
     <string name="undo">Deshacer</string>
-    <string name="update">Actualizar</string>
     <string name="close">Cerrar</string>
     <string name="play">Jugar</string>
     <string name="ellipsis">…</string>
-
-    <string name="version_alpha">Alfa</string>
-    <string name="version_beta">Beta</string>
 
     <string name="console_ds">DS</string>
     <string name="console_dsi">DSi (Experimental)</string>
@@ -48,12 +44,7 @@
     <string name="action_boot_firmware">Arrancar firmware</string>
     <string name="action_refresh_rom_list">Actualizar lista de ROM</string>
     <string name="hint_search_roms">Buscando ROMs…</string>
-    <string name="update_available">Actualización disponible: %1$s</string>
-    <string name="skip_update">Omitir</string>
-    <string name="downloading_update">Descargando actualización…</string>
     <string name="starting_download">Iniciando descarga…</string>
-    <string name="download_progress_sizes">%1$.1fMB/%2$.1fMB</string>
-    <string name="update_download_failed">Error al descargar la actualización</string>
 
     <string name="dsiware_manager">Administrador de DSiWare</string>
     <string name="no_dsiware_titles_installed">No tienes ningún título DSiWare instalado</string>
@@ -203,9 +194,9 @@
     <string name="enable_jit_summary">Mejora el rendimiento, pero puede provocar bloqueos o crasheos</string>
     <string name="jit_not_supported">JIT solamente es compatible con dispositivos de 64 bits.</string>
     <string name="save_internal_config_as_file">Guardar configuración interna como archivo</string>
-    <string name="save_internal_config_as_file_summary">Mantiene melonDualDS.opts sincronizado en el directorio de archivos de guardado, o en una ruta de ROMs si no hay directorio de guardado configurado.</string>
+    <string name="save_internal_config_as_file_summary">Mantiene WatermelonThor.opts sincronizado en el directorio de archivos de guardado, o en una ruta de ROMs si no hay directorio de guardado configurado.</string>
     <string name="system_app_log_file_enabled">Escribir log de la app en la carpeta de ROMs</string>
-    <string name="system_app_log_file_enabled_summary">Crea melonDualLog.log en la primera carpeta de ROMs y registra líneas logcat de app, nativo y core para depurar. Actívalo solo mientras reproduces un problema.</string>
+    <string name="system_app_log_file_enabled_summary">Crea WatermelonThor.log en la primera carpeta de ROMs y registra líneas logcat de app, nativo y core para depurar. Actívalo solo mientras reproduces un problema.</string>
     <string name="backup_settings">Respaldar ajustes</string>
     <string name="restore_settings">Restaurar ajustes</string>
     <string name="settings_backup_success">Respaldo de ajustes creado.\n\nSe omitieron:\n&#8226; Token de sesión de RetroAchievements\n&#8226; Directorios de búsqueda de ROMs\n&#8226; Directorio de DS BIOS\n&#8226; Directorio de DSi BIOS</string>
@@ -213,7 +204,7 @@
     <string name="settings_restore_success">Ajustes restaurados.\n\nSin cambios:\n&#8226; Token de sesión de RetroAchievements\n&#8226; Directorios de búsqueda de ROMs\n&#8226; Directorio de DS BIOS\n&#8226; Directorio de DSi BIOS</string>
     <string name="settings_restore_error">Error al restaurar ajustes</string>
     <string name="settings_mirror_detected_title">Ajustes previos detectados</string>
-    <string name="settings_mirror_detected_message">Se encontró un archivo melonDualDS.opts en este directorio. ¿Quieres restaurar los ajustes de la instalación previa?</string>
+    <string name="settings_mirror_detected_message">Se encontró un archivo WatermelonThor.opts en este directorio. ¿Quieres restaurar los ajustes de la instalación previa?</string>
     <string name="settings_mirror_restore">Restaurar</string>
     <string name="settings_mirror_ignore">No usar</string>
     <string name="backup_internal_layout">Respaldar layout interno</string>

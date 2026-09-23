@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <string name="app_name">melonDualDS</string>
+    <string name="app_name">Watermelon Thor</string>
 
     <string name="ok">OK</string>
     <string name="yes">Oui</string>
@@ -15,13 +15,9 @@
     <string name="options">Options</string>
     <string name="preview">Prévisualiser</string>
     <string name="undo">Annuler</string>
-    <string name="update">Mettre à jour</string>
     <string name="close">Fermer</string>
     <string name="play">Jouer</string>
     <string name="ellipsis">…</string>
-
-    <string name="version_alpha">Alpha</string>
-    <string name="version_beta">Bêta</string>
 
     <string name="console_ds">DS</string>
     <string name="console_dsi">DSi (expérimental)</string>
@@ -49,12 +45,7 @@
     <string name="action_boot_firmware">Démarrer le firmware</string>
     <string name="action_refresh_rom_list">Rafraîchir la liste des ROMs</string>
     <string name="hint_search_roms">Chercher des ROMs…</string>
-    <string name="update_available">Mise à jour disponible : %1$s</string>
-    <string name="skip_update">Ignorer</string>
-    <string name="downloading_update">Téléchargement de la mise à jour…</string>
     <string name="starting_download">Début du téléchargement…</string>
-    <string name="download_progress_sizes">%1$.1f Mo/%2$.1f Mo</string>
-    <string name="update_download_failed">Échec du téléchargement de la mise à jour</string>
 
     <string name="dsiware_manager">Gestionnaire des DSiWare</string>
     <string name="no_dsiware_titles_installed">Vous n\'avez aucun titre DSiWare installé</string>

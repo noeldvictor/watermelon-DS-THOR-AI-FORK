@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">melonDualDS</string>
+    <string name="app_name">Watermelon Thor</string>
 
     <string name="ok">确定</string>
     <string name="yes">是</string>
@@ -15,16 +15,11 @@
     <string name="options">选项</string>
     <string name="preview">预览</string>
     <string name="undo">撤销</string>
-    <string name="update">更新</string>
     <string name="close">关闭</string>
     <string name="play">游玩</string>
     <string name="save">保存</string>
     <string name="ellipsis">…</string>
     <string name="navigate_back">返回</string>
-
-    <string name="version_alpha">Alpha</string>
-    <string name="version_beta">Beta</string>
-    <string name="version_nightly">Nightly</string>
 
     <string name="console_ds">DS</string>
     <string name="console_dsi">DSi（实验性）</string>
@@ -56,15 +51,7 @@
     <string name="action_boot_firmware">启动固件</string>
     <string name="action_refresh_rom_list">刷新 ROM 列表</string>
     <string name="hint_search_roms">搜索 ROM…</string>
-    <string name="update_available">发现可用更新：%1$s</string>
-    <string name="nightly_update_available">发现可用的 Nightly 版本更新</string>
-    <string name="nightly_update_available_message">您要立即下载吗？</string>
-    <string name="skip_update">忽略此版本</string>
-    <string name="remind_later_update">稍后提醒</string>
-    <string name="downloading_update">正在下载更新…</string>
     <string name="starting_download">开始下载…</string>
-    <string name="download_progress_sizes">%1$.1fMB/%2$.1fMB</string>
-    <string name="update_download_failed">下载更新失败</string>
 
     <string name="dsiware_manager">DSiWare 管理器</string>
     <string name="no_dsiware_titles_installed">您未安装任何 DSiWare 游戏</string>
@@ -208,8 +195,6 @@
     <string name="rewind_memory_usage_above_recommended_limit">内存使用量超过建议限制</string>
     <string name="sustained_performance_mode">持续性能模式</string>
     <string name="sustained_performance_mode_summary">启用后，峰值性能会降低，但温度墙问题将没那么明显。</string>
-    <string name="check_for_updates">检查更新</string>
-    <string name="check_for_updates_summary">启用后，应用程序将定期检查可用更新</string>
     <string name="rom_icon_filtering">图标过滤</string>
     <string name="rom_view_mode">默认 ROM 列表视图</string>
     <string name="rom_ra_cover_enabled">使用 RetroAchievements 徽章作为封面</string>
@@ -255,9 +240,9 @@
     <string name="enable_jit_summary">提高性能，但可能会导致定格或崩溃。</string>
     <string name="jit_not_supported">JIT 仅支持64位设备。</string>
     <string name="save_internal_config_as_file">将内部配置保存为文件</string>
-    <string name="save_internal_config_as_file_summary">使 melonDualDS.opts 与存档文件目录保持同步；未配置存档文件目录时，则与 ROM 目录保持同步。</string>
+    <string name="save_internal_config_as_file_summary">使 WatermelonThor.opts 与存档文件目录保持同步；未配置存档文件目录时，则与 ROM 目录保持同步。</string>
     <string name="system_app_log_file_enabled">将应用日志写入 ROM 文件夹</string>
-    <string name="system_app_log_file_enabled_summary">在第一个 ROM 文件夹中创建 melonDualLog.log，并记录应用、原生代码和核心的 logcat 日志用于调试。仅在复现问题时启用。</string>
+    <string name="system_app_log_file_enabled_summary">在第一个 ROM 文件夹中创建 WatermelonThor.log，并记录应用、原生代码和核心的 logcat 日志用于调试。仅在复现问题时启用。</string>
     <string name="backup_settings">备份设置</string>
     <string name="restore_settings">恢复设置</string>
     <string name="settings_backup_success">设置备份已创建。\n\n已跳过下列设置：\n&#8226; RetroAchievements 会话\n&#8226; ROM/存档目录\n&#8226; DS BIOS 目录\n&#8226; DSi BIOS 目录</string>
@@ -265,7 +250,7 @@
     <string name="settings_restore_success">设置已恢复。\n\n下列设置未改变：\n&#8226; RetroAchievements 会话\n&#8226; ROM/存档目录\n&#8226; DS BIOS 目录\n&#8226; DSi BIOS 目录</string>
     <string name="settings_restore_error">恢复设置失败</string>
     <string name="settings_mirror_detected_title">检测到之前的设置</string>
-    <string name="settings_mirror_detected_message">在此目录中找到了 melonDualDS.opts 文件。是否从之前的安装恢复设置？</string>
+    <string name="settings_mirror_detected_message">在此目录中找到了 WatermelonThor.opts 文件。是否从之前的安装恢复设置？</string>
     <string name="settings_mirror_restore">恢复</string>
     <string name="settings_mirror_ignore">不使用</string>
     <string name="backup_internal_layout">备份内部布局</string>

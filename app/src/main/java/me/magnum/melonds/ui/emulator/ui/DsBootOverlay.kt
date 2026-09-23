@@ -253,8 +253,8 @@ private fun DsWordmark(alpha: Float) {
             lineHeight = 20.sp,
         )
         Text(
-            text = "DS",
-            color = watermelon.green,
+            text = " Thor",
+            color = WatermelonColors.thorGold,
             fontFamily = SpaceGrotesk,
             fontWeight = FontWeight.Bold,
             fontSize = 20.sp,

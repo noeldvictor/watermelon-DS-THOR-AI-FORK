@@ -1,5 +1,5 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <string name="app_name">melonDualDS</string>
+    <string name="app_name">Watermelon Thor</string>
 
     <string name="ok">OK</string>
     <string name="yes">Да</string>
@@ -15,16 +15,11 @@
     <string name="options">Опции</string>
     <string name="preview">Предпросмотр</string>
     <string name="undo">Отмена</string>
-    <string name="update">Обновить</string>
     <string name="close">Закрыть</string>
     <string name="play">Запуск</string>
     <string name="save">Сохранить</string>
     <string name="ellipsis">…</string>
     <string name="navigate_back">Назад</string>
-
-    <string name="version_alpha">Альфа</string>
-    <string name="version_beta">Бета</string>
-    <string name="version_nightly">Ночная сборка</string>
 
     <string name="console_ds">DS</string>
     <string name="console_dsi">DSi (экспериментально)</string>
@@ -52,15 +47,7 @@
     <string name="action_boot_firmware">Загрузить прошивку</string>
     <string name="action_refresh_rom_list">Обновить список игр</string>
     <string name="hint_search_roms">Поиск игр…</string>
-    <string name="update_available">Доступно обновление: %1$s</string>
-    <string name="nightly_update_available">Доступно ночное обновление</string>
-    <string name="nightly_update_available_message">Загрузить сейчас?</string>
-    <string name="skip_update">Пропустить</string>
-    <string name="remind_later_update">Позже</string>
-    <string name="downloading_update">Загрузка обновления…</string>
     <string name="starting_download">Запуск загрузки…</string>
-    <string name="download_progress_sizes">%1$.1f МБ/%2$.1f МБ</string>
-    <string name="update_download_failed">Не удалось загрузить обновление</string>
 
     <string name="dsiware_manager">Менеджер DSiWare</string>
     <string name="no_dsiware_titles_installed">Нет установленных игр DSiWare</string>
@@ -174,8 +161,6 @@
     <string name="rewind_memory_usage_above_recommended_limit">Превышен рекомендуемый объём памяти</string>
     <string name="sustained_performance_mode">Режим устойчивой производительности</string>
     <string name="sustained_performance_mode_summary">При включении ограничивает пиковую производительность устройства для избежания троттлинга.</string>
-    <string name="check_for_updates">Проверять обновления</string>
-    <string name="check_for_updates_summary">Если включено, приложение будет периодически проверять наличие обновлений</string>
     <string name="rom_icon_filtering">Сглаживание иконок</string>
     <string name="max_rom_cache_size">Максимальный размер кэша</string>
     <string name="clear_extracted_rom_cache">Очистить кэш распакованных игр</string>

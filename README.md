@@ -29,10 +29,14 @@ external display support, RetroAchievements, RetroArch shader presets. On top of
 | Dual-screen rendering | Dual-screen presets and layouts | Adds fixes for flicker and wrong-screen content on alternating dual-3D scenes |
 | CPU / JIT | melonDS core as of Nov 2025 | ARM64 JIT fixes and speedups (see below) |
 | Saves and audio | — | Crash-safe save writes; sound comes back after the volume has been set to 0 |
+| Install | Application ID `me.magnum.melondualds` | Own application ID `app.watermelonthor`, so it installs alongside WatermelonDS and melonDS; its settings files in shared folders have their own names (`WatermelonThor.opts`, `<game>.thor.opts`) |
+| Updates | In-app updater that downloads WatermelonDS releases from GitHub | No in-app updater: new builds are installed by hand |
 
-**Install note:** this fork keeps WatermelonDS's application ID (`me.magnum.melondualds`, with
-`.dev` for debug builds), so it **replaces** WatermelonDS rather than installing alongside it.
-Back up your saves before switching between the two.
+**Install note:** this fork has its own application ID, `app.watermelonthor` (`.dev` for debug
+builds, `.nightly` for nightly builds), so it installs **alongside** WatermelonDS and melonDS
+instead of replacing them. Each app keeps its own settings and internal data (such as HD packs
+and the filter cache). Builds from before the ID change used WatermelonDS's ID
+(`me.magnum.melondualds`) and installed over it; the new ID does not pick up their data.
 
 This repository is self-contained: the emulator core (`melonDS-android-lib/`, derived from the
 [melonDS](https://github.com/melonDS-emu/melonDS) core) is part of the tree, with no core submodule.

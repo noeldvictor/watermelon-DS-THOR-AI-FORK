@@ -61,6 +61,7 @@ import me.magnum.melonds.ui.romlist.composables.romIconRequest
 import me.magnum.melonds.ui.romlist.composables.romInitials
 import me.magnum.melonds.ui.romlist.composables.romPlatformLabel
 import me.magnum.melonds.ui.theme.SpaceGrotesk
+import me.magnum.melonds.ui.theme.WatermelonColors
 import me.magnum.melonds.ui.theme.WatermelonMono
 import kotlin.time.Duration
 
@@ -406,8 +407,8 @@ fun ExternalIdleInfo() {
                 letterSpacing = (-0.5).sp,
             )
             Text(
-                text = stringResource(R.string.app_brand_ds),
-                color = Color(0xFF6FBF4A),
+                text = " " + stringResource(R.string.app_brand_thor),
+                color = WatermelonColors.thorGold,
                 fontFamily = SpaceGrotesk,
                 fontSize = 34.sp,
                 fontWeight = FontWeight.Bold,

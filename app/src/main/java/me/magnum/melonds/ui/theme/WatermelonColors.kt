@@ -24,6 +24,9 @@ data class WatermelonColors(
 ) {
     companion object {
         val gold = Color(0xFFD4A017)
+        // "Thor" in the wordmark, the launcher bolt's gold; the darker one on light backgrounds
+        val thorGold = Color(0xFFFFC93C)
+        val thorGoldOnLight = Color(0xFFB87400)
         val favoriteStar = Color(0xFFFFD23F)
         val emulationBg = Color(0xFF0B0A0D)
         val tvBg = Color(0xFF121116)

@@ -15,16 +15,11 @@
     <string name="options">Options</string>
     <string name="preview">Preview</string>
     <string name="undo">Undo</string>
-    <string name="update">Update</string>
     <string name="close">Close</string>
     <string name="play">Play</string>
     <string name="save">Save</string>
     <string name="ellipsis">…</string>
     <string name="navigate_back">Back</string>
-
-    <string name="version_alpha">Alpha</string>
-    <string name="version_beta">Beta</string>
-    <string name="version_nightly">Nightly</string>
 
     <string name="console_ds">DS</string>
     <string name="console_dsi">DSi (Experimental)</string>
@@ -56,15 +51,7 @@
     <string name="action_boot_firmware">Boot firmware</string>
     <string name="action_refresh_rom_list">Refresh ROM list</string>
     <string name="hint_search_roms">Search ROMs…</string>
-    <string name="update_available">Update available: %1$s</string>
-    <string name="nightly_update_available">Nightly update available</string>
-    <string name="nightly_update_available_message">Do you want to download it now?</string>
-    <string name="skip_update">Skip</string>
-    <string name="remind_later_update">Later</string>
-    <string name="downloading_update">Downloading update…</string>
     <string name="starting_download">Starting download…</string>
-    <string name="download_progress_sizes">%1$.1fMB/%2$.1fMB</string>
-    <string name="update_download_failed">Failed to download update</string>
 
     <string name="dsiware_manager">DSiWare Manager</string>
     <string name="no_dsiware_titles_installed">You don\'t have any DSiWare title installed</string>
@@ -231,8 +218,6 @@
     <string name="sustained_performance_mode_summary">When enabled, peak performance will be lower but thermal throttling will be less pronounced.</string>
     <string name="dev_mcp_server" translatable="false">Dev server (MCP)</string>
     <string name="dev_mcp_server_summary" translatable="false">Debug builds only. Serves MCP tools (settings, launch, save states, stats) on 127.0.0.1:27184 for adb forward tcp:27184 tcp:27184.</string>
-    <string name="check_for_updates">Check for updates</string>
-    <string name="check_for_updates_summary">When enabled, the app will periodically check for available updates</string>
     <string name="rom_icon_filtering">Icon filtering</string>
     <string name="rom_view_mode">Default ROM list view</string>
     <string name="rom_ra_cover_enabled">Use RetroAchievements badge as cover</string>
@@ -275,7 +260,7 @@
     <string name="pause_hint_resume">Resume</string>
     <string name="pause_hint_back">Back</string>
     <string name="app_brand_watermelon" translatable="false">Watermelon</string>
-    <string name="app_brand_ds" translatable="false">DS</string>
+    <string name="app_brand_thor" translatable="false">Thor</string>
     <string name="external_hint_open">Open</string>
     <string name="external_hint_favorite">Favorite</string>
     <string name="save_state_slot_quick">QUICK</string>
@@ -311,9 +296,9 @@
     <string name="enable_jit_summary">Improves performance but may cause freezes or crashes.</string>
     <string name="jit_not_supported">JIT is only supported in 64 bit devices.</string>
     <string name="save_internal_config_as_file">Save internal config as a file</string>
-    <string name="save_internal_config_as_file_summary">Keeps melonDualDS.opts synchronized in the save-file directory, or in a ROM directory when no save-file directory is configured.</string>
+    <string name="save_internal_config_as_file_summary">Keeps WatermelonThor.opts synchronized in the save-file directory, or in a ROM directory when no save-file directory is configured.</string>
     <string name="system_app_log_file_enabled">Write app log to ROM folder</string>
-    <string name="system_app_log_file_enabled_summary">Creates melonDualLog.log in the first ROM folder and records app, native, and core logcat lines for debugging. Enable only while reproducing an issue.</string>
+    <string name="system_app_log_file_enabled_summary">Creates WatermelonThor.log in the first ROM folder and records app, native, and core logcat lines for debugging. Enable only while reproducing an issue.</string>
     <string name="system_dldi_sd_card_enabled">Enable DLDI / Homebrew SD</string>
     <string name="system_dldi_sd_card_enabled_summary">Mounts a virtual SD card for DLDI homebrew. Needed by apps like ZXDS.</string>
     <string name="system_dldi_sd_card_dir">DLDI SD folder</string>
@@ -329,7 +314,7 @@
     <string name="settings_restore_success">Settings restored.\n\nThe following were unchanged:\n&#8226; RetroAchievements session token\n&#8226; ROM search directories\n&#8226; DS BIOS directory\n&#8226; DSi BIOS directory</string>
     <string name="settings_restore_error">Failed to restore settings</string>
     <string name="settings_mirror_detected_title">Previous settings detected</string>
-    <string name="settings_mirror_detected_message">A melonDualDS.opts file was found in this directory. Restore settings from the previous installation?</string>
+    <string name="settings_mirror_detected_message">A WatermelonThor.opts file was found in this directory. Restore settings from the previous installation?</string>
     <string name="settings_mirror_restore">Restore</string>
     <string name="settings_mirror_ignore">Do not use</string>
     <string name="backup_internal_layout">Backup internal layout</string>
@@ -485,17 +470,13 @@ Location: %1$s (currently %2$d MB, capped at 256 MB)</string>
     <string name="hardcore_mode">Hardcore mode</string>
     <string name="hardcore_mode_summary">Allows hardcore achievements to be earned. Cheats, save states, slow-motion, and rewind are disabled</string>
     <string name="ra_offline_backend_title">Offline achievements provider</string>
-    <string name="ra_offline_backend_summary">Choose the built-in WatermelonDS provider or RAOfflineProxy</string>
-    <string name="ra_offline_backend_built_in">Built into WatermelonDS</string>
+    <string name="ra_offline_backend_summary">Choose the built-in Watermelon Thor provider or RAOfflineProxy</string>
+    <string name="ra_offline_backend_built_in">Built into Watermelon Thor</string>
     <string name="ra_offline_backend_proxy">RAOfflineProxy</string>
     <string name="ra_offline_proxy_active_summary">RAOfflineProxy is active. Restart the current game session after a provider change.</string>
     <string name="ra_offline_proxy_not_active">RAOfflineProxy is selected but is not active. Start RAOfflineProxy before starting a game.</string>
     <string name="ra_offline_proxy_hardcore_not_supported">RAOfflineProxy does not support Hardcore mode.</string>
     <string name="ra_offline_proxy_restart_required">The RetroAchievements provider changed. Restart this game session to apply it consistently.</string>
-    <string name="version_rc">RC</string>
-    <string name="update_channel_title">Update channel</string>
-    <string name="update_channel_stable">Stable releases</string>
-    <string name="update_channel_prerelease">Stable and prerelease versions</string>
     <string name="show_active_challenge_indicators">Show active challenge indicators</string>
     <string name="show_active_challenge_indicators_summary">Shows on-screen indicators while certain achievements can be earned</string>
     <string name="show_progress_indicators">Show progress indicators</string>
@@ -1070,7 +1051,7 @@ Location: %1$s (currently %2$d MB, capped at 256 MB)</string>
 
     <string-array name="external_display_mode_options">
         <item>Mirror</item>
-        <item>WatermelonDS</item>
+        <item>Dual screen</item>
     </string-array>
 
     <string-array name="audio_interpolation_options">

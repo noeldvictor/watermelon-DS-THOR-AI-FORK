@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 
-PACKAGE = os.environ.get("THOR_PACKAGE", "me.magnum.melondualds.dev")
+PACKAGE = os.environ.get("THOR_PACKAGE", "app.watermelonthor.dev")
 BOTTOM_DISPLAY = os.environ.get("THOR_BOTTOM_DISPLAY", "4630946482288158084")
 PROTOCOL = "2025-06-18"
 

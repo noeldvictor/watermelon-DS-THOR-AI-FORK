@@ -11,7 +11,7 @@ class RetroAchievementsHostOverrideReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val preferences = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
         when (intent.action) {
-            ACTION_SET -> {
+            actionSet(context), LEGACY_ACTION_SET -> {
                 val result = RetroAchievementsEndpointStorage.activateExternal(
                     preferences,
                     intent.getStringExtra(EXTRA_HOST),
@@ -22,7 +22,7 @@ class RetroAchievementsHostOverrideReceiver : BroadcastReceiver() {
                     Log.w(TAG, "Rejected RAOfflineProxy host: ${it.message}")
                 }
             }
-            ACTION_CLEAR -> {
+            actionClear(context), LEGACY_ACTION_CLEAR -> {
                 val snapshot = RetroAchievementsEndpointStorage.clearExternal(preferences)
                 RetroAchievementsEndpointStorage.logSnapshot(snapshot, "external_clear")
             }
@@ -31,8 +31,18 @@ class RetroAchievementsHostOverrideReceiver : BroadcastReceiver() {
     }
 
     companion object {
-        const val ACTION_SET = "me.magnum.melondualds.action.SET_RETROACHIEVEMENTS_HOST_OVERRIDE"
-        const val ACTION_CLEAR = "me.magnum.melondualds.action.CLEAR_RETROACHIEVEMENTS_HOST_OVERRIDE"
+        private const val ACTION_SET_SUFFIX = ".action.SET_RETROACHIEVEMENTS_HOST_OVERRIDE"
+        private const val ACTION_CLEAR_SUFFIX = ".action.CLEAR_RETROACHIEVEMENTS_HOST_OVERRIDE"
+
+        // RAOfflineProxy was written against WatermelonDS and sends these fixed names (built on
+        // its application ID, me.magnum.melondualds). Still accepted next to the ones built on
+        // this app's own ID.
+        const val LEGACY_ACTION_SET = "me.magnum.melondualds$ACTION_SET_SUFFIX"
+        const val LEGACY_ACTION_CLEAR = "me.magnum.melondualds$ACTION_CLEAR_SUFFIX"
+
+        fun actionSet(context: Context) = "${context.packageName}$ACTION_SET_SUFFIX"
+        fun actionClear(context: Context) = "${context.packageName}$ACTION_CLEAR_SUFFIX"
+
         const val EXTRA_HOST = "host"
         private const val TAG = "RAHostOverrideReceiver"
     }

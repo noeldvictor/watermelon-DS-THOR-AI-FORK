@@ -447,7 +447,9 @@ class FileSystemRomsRepository(
         val romFileName = rom.fileName.ifBlank {
             uriHandler.getUriDocument(rom.uri)?.name ?: rom.name
         }
-        return romFileName.replaceAfterLast('.', "opts", "$romFileName.opts")
+        // "Game.thor.opts", not WatermelonDS's "Game.opts": both apps can use the same save
+        // directory, the options hold app-local layout IDs, and a reset deletes the file
+        return romFileName.replaceAfterLast('.', "thor.opts", "$romFileName.thor.opts")
     }
 
     private fun notifyRomOptionsReadError(optionsDocument: DocumentFile) {

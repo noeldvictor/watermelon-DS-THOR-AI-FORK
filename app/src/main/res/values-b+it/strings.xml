@@ -1,5 +1,5 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <string name="app_name">melonDualDS</string>
+    <string name="app_name">Watermelon Thor</string>
 
     <string name="ok">Ok</string>
     <string name="yes">Sì</string>
@@ -14,15 +14,10 @@
     <string name="options">Opzioni</string>
     <string name="preview">Anteprima</string>
     <string name="undo">Annulla</string>
-    <string name="update">Aggiorna</string>
     <string name="close">Chiudi</string>
     <string name="play">Gioca</string>
     <string name="save">Salva</string>
     <string name="ellipsis">…</string>
-
-    <string name="version_alpha">Alfa</string>
-    <string name="version_beta">Beta</string>
-    <string name="version_nightly">Nightly</string>
 
     <string name="console_ds">DS</string>
     <string name="console_dsi">DSi (Sperimentale)</string>
@@ -50,15 +45,7 @@
     <string name="action_boot_firmware">Avvia il firmware</string>
     <string name="action_refresh_rom_list">Aggiorna lista ROM</string>
     <string name="hint_search_roms">Cerca ROM…</string>
-    <string name="update_available">Aggiornamento disponibile: %1$s</string>
-    <string name="nightly_update_available">Aggiornamento Nightly disponibile</string>
-    <string name="nightly_update_available_message">Vuoi scaricarlo adesso?</string>
-    <string name="skip_update">Salta</string>
-    <string name="remind_later_update">Più tardi</string>
-    <string name="downloading_update">Download dell\'aggiornamento in corso…</string>
     <string name="starting_download">Avvio del download…</string>
-    <string name="download_progress_sizes">%1$.1fMB/%2$.1fMB</string>
-    <string name="update_download_failed">Impossibile scaricare l\'aggiornamento</string>
 
     <string name="dsiware_manager">Gestione DSiWare</string>
     <string name="no_dsiware_titles_installed">Non ci sono titoli DSiWare installati</string>
@@ -156,8 +143,6 @@
     <string name="rewind_memory_usage_above_recommended_limit">Utilizzo della memoria superiore ai limiti consigliati</string>
     <string name="sustained_performance_mode">Modalità performance costante</string>
     <string name="sustained_performance_mode_summary">Se abilitato, le prestazioni massime saranno inferiori ma il thermal throttling sarà meno pronunciato.</string>
-    <string name="check_for_updates">Cerca aggiornamenti</string>
-    <string name="check_for_updates_summary">Se abilitato, l\'applicazione controllerà regolarmente la presenza di nuovi aggiornamenti</string>
     <string name="rom_icon_filtering">Filtro icone</string>
     <string name="max_rom_cache_size">Dimensione massima della cache ROM</string>
     <string name="clear_extracted_rom_cache">Pulisci la cache ROM</string>

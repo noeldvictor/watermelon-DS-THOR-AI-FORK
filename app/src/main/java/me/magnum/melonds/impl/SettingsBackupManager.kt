@@ -31,7 +31,9 @@ class SettingsBackupManager @Inject constructor(
 ) : OnSharedPreferenceChangeListener {
     companion object {
         private const val TAG = "SettingsBackupManager"
-        private const val MELON_DUAL_DS_OPTIONS_FILE = "melonDualDS.opts"
+        // Not WatermelonDS's "melonDualDS.opts": both apps can share a ROM directory, and
+        // pruneStaleMirrors deletes the mirror file from directories it no longer uses
+        private const val MELON_DUAL_DS_OPTIONS_FILE = "WatermelonThor.opts"
         private const val SETTINGS_FILE = "settings.json"
         private const val CONTROLLER_FILE = "controller_config.json"
         private const val LAYOUTS_FILE = "layouts.json"
@@ -58,9 +60,6 @@ class SettingsBackupManager @Inject constructor(
         private val CHEAT_RESTORE_DELETE_ORDER = listOf("cheat", "cheat_folder", "game", "cheat_database")
         private val LONG_PREF_KEYS = setOf(
             "ra_hash_library_last_updated",
-            "github_updates_nightly_next_check_date",
-            "github_updates_nightly_last_release_date",
-            "github_updates_last_check",
             "last_version",
         )
     }

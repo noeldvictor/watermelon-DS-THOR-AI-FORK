@@ -42,10 +42,10 @@ Start it one of three ways, then forward the port:
 ```sh
 # Any time, also with a game in front (doesn't disturb it). This process only;
 # add --ez persist true to also turn the settings toggle on.
-adb -s <serial> shell am broadcast -f 32 -p me.magnum.melondualds.dev \
-    -a me.magnum.melondualds.dev.START_DEV_SERVER
+adb -s <serial> shell am broadcast -f 32 -p app.watermelonthor.dev \
+    -a app.watermelonthor.dev.START_DEV_SERVER
 # Cold start from the ROM list
-adb -s <serial> shell am start -n me.magnum.melondualds.dev/me.magnum.melonds.ui.romlist.RomListActivity \
+adb -s <serial> shell am start -n app.watermelonthor.dev/me.magnum.melonds.ui.romlist.RomListActivity \
     --ez devserver true
 # Or: Settings -> General -> "Dev server (MCP)" (debug builds only; persists)
 

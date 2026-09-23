@@ -76,6 +76,7 @@ import me.magnum.melonds.domain.model.SortingOrder
 import me.magnum.melonds.domain.model.rom.Rom
 import me.magnum.melonds.ui.common.WatermelonMark
 import me.magnum.melonds.ui.theme.SpaceGrotesk
+import me.magnum.melonds.ui.theme.WatermelonColors
 import me.magnum.melonds.ui.theme.WatermelonMono
 import me.magnum.melonds.ui.theme.watermelon
 import kotlin.time.Duration
@@ -151,7 +152,7 @@ fun WatermelonLibraryHeader(
                     Icon(Icons.Filled.Close, contentDescription = null, tint = colors.text2, modifier = Modifier.size(20.dp))
                 }
             } else {
-                WatermelonMark(height = 24.dp)
+                WatermelonMark(height = 28.dp)
                 Spacer(Modifier.width(9.dp))
                 Row(modifier = Modifier.weight(1f)) {
                     Text(
@@ -163,8 +164,8 @@ fun WatermelonLibraryHeader(
                         letterSpacing = (-0.3).sp,
                     )
                     Text(
-                        text = "DS",
-                        color = colors.green,
+                        text = " Thor",
+                        color = if (colors.isDark) WatermelonColors.thorGold else WatermelonColors.thorGoldOnLight,
                         fontFamily = SpaceGrotesk,
                         fontSize = 21.sp,
                         fontWeight = FontWeight.Bold,

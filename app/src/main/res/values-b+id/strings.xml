@@ -1,5 +1,5 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <string name="app_name">melonDualDS</string>
+    <string name="app_name">Watermelon Thor</string>
 
     <string name="ok">OKE</string>
     <string name="yes">Ya</string>
@@ -15,16 +15,11 @@
     <string name="options">Pilihan</string>
     <string name="preview">Pratinjau</string>
     <string name="undo">Batalkan</string>
-    <string name="update">Perbarui</string>
     <string name="close">Tutup</string>
     <string name="play">Mainkan</string>
     <string name="save">Simpan</string>
     <string name="ellipsis">…</string>
     <string name="navigate_back">Kembali</string>
-
-    <string name="version_alpha">Alfa</string>
-    <string name="version_beta">Beta</string>
-    <string name="version_nightly">Tiap malam</string>
 
     <string name="console_ds">DS</string>
     <string name="console_dsi">DSi (Eksperimental)</string>
@@ -52,15 +47,7 @@
     <string name="action_boot_firmware">Nyalakan firmware</string>
     <string name="action_refresh_rom_list">Segarkan daftar ROM</string>
     <string name="hint_search_roms">Mencari ROM…</string>
-    <string name="update_available">Pembaruan tersedia: %1$s</string>
-    <string name="nightly_update_available">Pembaruan tiap malam tersedia</string>
-    <string name="nightly_update_available_message">Apakah anda ingin mengunduhnya sekarang?</string>
-    <string name="skip_update">Lewati</string>
-    <string name="remind_later_update">Lain Waktu</string>
-    <string name="downloading_update">Mengunduh pembaruan…</string>
     <string name="starting_download">Starting download…</string>
-    <string name="download_progress_sizes">%1$.1fMB/%2$.1fMB</string>
-    <string name="update_download_failed">Gagal mengunduh pembaruan</string>
 
     <string name="dsiware_manager">Manajer DSiWare</string>
     <string name="no_dsiware_titles_installed">Anda tidak memiliki judul DSiWare apapun yang terpasang</string>
@@ -174,8 +161,6 @@
     <string name="rewind_memory_usage_above_recommended_limit">Penggunaan memori melebihi batas rekomendasi</string>
     <string name="sustained_performance_mode">Moda performa berkelanjutan</string>
     <string name="sustained_performance_mode_summary">Ketika diaktifkan, kinerja puncak akan lebih rendah namun pembatasan panas akan kurang terasa.</string>
-    <string name="check_for_updates">Periksa pembaruan</string>
-    <string name="check_for_updates_summary">Ketika diaktifkan, aplikasi akan secara berkala mengecek ketersediaan pembaruan</string>
     <string name="rom_icon_filtering">Penyaringan ikon</string>
     <string name="max_rom_cache_size">Maks. ukuran tembolok ROM</string>
     <string name="clear_extracted_rom_cache">Bersihkan tembolok ROM terekstraksi</string>

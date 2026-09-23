@@ -93,4 +93,4 @@ native image at full resolution (thumbnails hide the difference).
 - While a colour effect (BLDCNT fade/blend) targets a layer, that layer deliberately keeps its
   native art; HD returns when the effect ends. Sample frames across a transition.
 - Packs only apply under the Vulkan (default) or Compute renderer.
-- Force-stop the app when done: `adb -s <dev> shell am force-stop me.magnum.melondualds.dev`.
+- Force-stop the app when done: `adb -s <dev> shell am force-stop app.watermelonthor.dev`.
