@@ -105,6 +105,13 @@ and [melonDS-android](https://github.com/rafaelvcaetano/melonDS-android) →
 [SapphireRhodonite/melonDS-android-lib](https://github.com/SapphireRhodonite/melonDS-android-lib)
 and [WatermelonDS](https://github.com/SapphireRhodonite/WatermelonDS) → this fork.
 
+It also carries fixes from further up the chain that WatermelonDS 0.7.0 doesn't have yet:
+
+* From rafaelvcaetano's port: a crash when sorting the ROM list with more than one never-played ROM.
+* From the melonDS core: an SPU output buffer leak, loud pops when booting firmware, sanity
+  checks that reject ROMs with broken headers, a VRAMSTAT fix, and touchscreen output clamped to
+  12 bits.
+
 <details>
 <summary>Merge notes for contributors</summary>
 
