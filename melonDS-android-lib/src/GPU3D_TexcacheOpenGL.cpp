@@ -28,7 +28,7 @@ void TexcacheOpenGLLoader::SetTexPackScale(u32 scale)
     UploadBuffer.clear();
 }
 
-GLuint TexcacheOpenGLLoader::GenerateTexture(u32 width, u32 height, u32 layers)
+GLuint TexcacheOpenGLLoader::GenerateTexture(u32 width, u32 height, u32 layers, u32 /*scale*/)
 {
     const u32 storageScale = GetStorageScale();
     GLuint texarray;

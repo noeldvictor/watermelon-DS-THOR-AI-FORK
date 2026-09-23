@@ -290,7 +290,15 @@ void TexcacheVulkanLoader::WaitForPendingUploads()
     }
 }
 
-TexcacheVulkanLoader::TextureHandle TexcacheVulkanLoader::GenerateTexture(u32 width, u32 height, u32 layers)
+u32 TexcacheVulkanLoader::GetTextureScale(TextureHandle handle) const
+{
+    if (State == nullptr)
+        return 1u;
+    auto it = State->TextureArrays.find(handle);
+    return it == State->TextureArrays.end() ? 1u : it->second.Scale;
+}
+
+TexcacheVulkanLoader::TextureHandle TexcacheVulkanLoader::GenerateTexture(u32 width, u32 height, u32 layers, u32 scale)
 {
     if (width == 0 || height == 0 || layers == 0)
         return 0;
@@ -298,7 +306,7 @@ TexcacheVulkanLoader::TextureHandle TexcacheVulkanLoader::GenerateTexture(u32 wi
     if (!EnsureVulkanState())
         return 0;
 
-    const u32 storageScale = GetStorageScale();
+    const u32 storageScale = scale > 0u ? scale : 1u;
 
     TextureArray textureArray{};
     textureArray.Width = width;

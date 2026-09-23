@@ -529,7 +529,10 @@ Color6A5 sampleTexture(uint polyAttr)
     }
 #endif
 
-    if (HD_TEXTURE_SAMPLING != 0u && texelScale > 1u)
+    // HD_TEXTURE_SAMPLING: 0 no HD textures, 1 HD sampled nearest (power-of-two scales),
+    // 2 HD filtered (a texture filter is chosen, or the scale is 3). Only 2 pays for the
+    // 4-tap filter below.
+    if (HD_TEXTURE_SAMPLING == 2u && texelScale > 1u)
     {
         int scale = int(texelScale);
         vec2 hdCoord = (texcoord * float(scale)) - vec2(0.5);
@@ -564,15 +567,22 @@ Color6A5 sampleTexture(uint polyAttr)
         return hdColor;
     }
 
-    int sampleS = int(floor(texcoord.x));
-    int sampleT = int(floor(texcoord.y));
+    // Unfiltered HD textures are native sampling in scaled texel space: the same wrap and the
+    // same single fetch. A separate HD fetch path with integer-modulo wraps cost about 4 ms of
+    // GPU time per frame on the Thor at 4x, and a 4-tap filter about 5 ms more, even for draws
+    // that never touched an HD texture.
+    const int sampleScale = (HD_TEXTURE_SAMPLING == 1u && texelScale > 1u) ? int(texelScale) : 1;
+    int sampleS = int(floor(texcoord.x * float(sampleScale)));
+    int sampleT = int(floor(texcoord.y * float(sampleScale)));
 
-    sampleS = wrapTexelCoord(sampleS, int(texWidth), repeatS, mirrorS);
-    sampleT = wrapTexelCoord(sampleT, int(texHeight), repeatT, mirrorT);
+    // sampleScale is a power of two here (mode 1), so the scaled size keeps the bitmask wrap
+    sampleS = wrapTexelCoord(sampleS, int(texWidth) * sampleScale, repeatS, mirrorS);
+    sampleT = wrapTexelCoord(sampleT, int(texHeight) * sampleScale, repeatT, mirrorT);
 
     uvec4 texel = fetchTextureArrayTexel(texArrayIndex, ivec3(sampleS, sampleT, int(texLayer)));
 #if MELONDS_FAST_OPAQUE_MODULATE == 0
-    if (usesPaletteUiAlphaHoleFill(flags, polyAttr, texParam)
+    if (sampleScale == 1
+        && usesPaletteUiAlphaHoleFill(flags, polyAttr, texParam)
         && (texel.a & 0x1Fu) == 0u)
     {
         int leftS = wrapTexelCoord(sampleS - 1, int(texWidth), repeatS, mirrorS);

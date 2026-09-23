@@ -148,7 +148,7 @@ public:
                 if (invalidatedAny != nullptr)
                     *invalidatedAny = true;
                 std::forward<InvalidatedKeyT>(onInvalidatedKey)(it->first);
-                FreeTextures[entry.WidthLog2][entry.HeightLog2].push_back(entry.Texture);
+                FreeTextures[entry.WidthLog2][entry.HeightLog2][entry.Pool].push_back(entry.Texture);
 
                 //printf("invalidating texture %d\n", entry.ImageDescriptor);
 
@@ -485,21 +485,26 @@ public:
                 TexPack->ReportTextureMiss(width, height, packTexHash, packPalHash, hasPal, fmt);
         }
 
-        auto& texArrays = TexArrays[widthLog2][heightLog2];
-        auto& freeTextures = FreeTextures[widthLog2][heightLog2];
+        // Scaled content (a pack replacement, or anything the HD filter upscales) lives in
+        // arrays at the storage scale; everything else stays native. Storing native textures
+        // at a pack's scale would make every draw take the HD sampling path for nothing.
+        const bool scaledContent = replacement != nullptr || TexLoader.GetHDTextureFilterMode() != 0;
+        const u32 pool = scaledContent ? 1u : 0u;
+        auto& texArrays = TexArrays[widthLog2][heightLog2][pool];
+        auto& freeTextures = FreeTextures[widthLog2][heightLog2][pool];
 
         if (freeTextures.size() == 0)
         {
             texArrays.resize(texArrays.size()+1);
             TexHandleT& array = texArrays[texArrays.size()-1];
 
-            const u32 storageScale = TexLoader.GetStorageScale();
+            const u32 storageScale = TexLoader.PoolStorageScale(scaledContent);
             u32 layers = std::min<u32>((8*1024*1024) / (width*height*4*storageScale*storageScale), 64);
             layers = std::max<u32>(layers, 1);
 
             // allocate new array texture
             //printf("allocating new layer set for %d %d %d %d\n", width, height, texArrays.size()-1, array.ImageDescriptor);
-            array = TexLoader.GenerateTexture(width, height, layers);
+            array = TexLoader.GenerateTexture(width, height, layers, storageScale);
 
             for (u32 i = 0; i < layers; i++)
             {
@@ -511,6 +516,7 @@ public:
         freeTextures.pop_back();
 
         entry.Texture = storagePlace;
+        entry.Pool = static_cast<u8>(pool);
 
         if (replacement)
         {
@@ -564,10 +570,13 @@ public:
         {
             for (u32 j = 0; j < 8; j++)
             {
-                for (u32 k = 0; k < TexArrays[i][j].size(); k++)
-                    TexLoader.DeleteTexture(TexArrays[i][j][k]);
-                TexArrays[i][j].clear();
-                FreeTextures[i][j].clear();
+                for (u32 pool = 0; pool < 2; pool++)
+                {
+                    for (u32 k = 0; k < TexArrays[i][j][pool].size(); k++)
+                        TexLoader.DeleteTexture(TexArrays[i][j][pool][k]);
+                    TexArrays[i][j][pool].clear();
+                    FreeTextures[i][j][pool].clear();
+                }
             }
         }
         Cache.clear();
@@ -586,6 +595,7 @@ private:
         u32 TextureRAMStart[2], TextureRAMSize[2];
         u32 TexPalStart, TexPalSize;
         u8 WidthLog2, HeightLog2;
+        u8 Pool; // 0 native scale, 1 storage scale (see GetTexture)
         TexArrayEntry Texture;
 
         u64 TextureHash[2];
@@ -598,8 +608,8 @@ private:
 
     TexLoaderT TexLoader;
 
-    std::vector<TexArrayEntry> FreeTextures[8][8];
-    std::vector<TexHandleT> TexArrays[8][8];
+    std::vector<TexArrayEntry> FreeTextures[8][8][2];
+    std::vector<TexHandleT> TexArrays[8][8][2];
 
     u32 DecodingBuffer[1024*1024];
     std::vector<u32> FilteredBuffer;

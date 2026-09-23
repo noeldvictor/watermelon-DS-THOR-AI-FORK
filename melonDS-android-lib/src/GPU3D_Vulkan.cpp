@@ -2826,10 +2826,18 @@ void VulkanRenderer3D::SetHDTextureFilter(int scale, int mode)
 void VulkanRenderer3D::refreshHDTextureSampling()
 {
     const bool hdSampling = Texcache.GetHDTextureScale() > 1;
-    if (hdSampling == PipelinesUseHDSampling)
+    // unfiltered HD textures sample nearest through the native path (1); a chosen texture
+    // filter, or a scale the native bitmask wrap can't take, uses the 4-tap variant (2)
+    const u32 hdScale = Texcache.GetHDTextureScale();
+    const bool powerOfTwoScale = (hdScale & (hdScale - 1u)) == 0u;
+    const u32 hdSamplingMode = !hdSampling
+        ? 0u
+        : ((Texcache.GetHDTextureFilterMode() != 0 || !powerOfTwoScale) ? 2u : 1u);
+    if (hdSampling == PipelinesUseHDSampling && hdSamplingMode == PipelinesHDSamplingMode)
         return;
 
     PipelinesUseHDSampling = hdSampling;
+    PipelinesHDSamplingMode = hdSamplingMode;
     if (!Initialized)
         return;
 
@@ -5656,7 +5664,7 @@ bool VulkanRenderer3D::createTriRasterPipelines()
             rasterSpecializationData.expectShadeMode = rasterShadeMode;
             rasterSpecializationData.expectTextureMode = rasterTextureMode;
             rasterSpecializationData.expectTranslucencyMode = rasterTranslucencyMode;
-            rasterSpecializationData.hdTextureSampling = PipelinesUseHDSampling ? 1u : 0u;
+            rasterSpecializationData.hdTextureSampling = PipelinesHDSamplingMode;
 
             VkSpecializationInfo rasterSpecializationInfo{};
             rasterSpecializationInfo.mapEntryCount = static_cast<u32>(rasterSpecializationEntries.size());
@@ -7162,7 +7170,7 @@ bool VulkanRenderer3D::createGraphicsPipelines()
             opaqueSpecializationData.depthInterpolationMode = wMode;
             opaqueSpecializationData.translucentPass = 0u;
             opaqueSpecializationData.edgeMarkPass = 0u;
-            opaqueSpecializationData.hdTextureSampling = PipelinesUseHDSampling ? 1u : 0u;
+            opaqueSpecializationData.hdTextureSampling = PipelinesHDSamplingMode;
 
             VkSpecializationInfo opaqueSpecializationInfo{};
             opaqueSpecializationInfo.mapEntryCount = static_cast<u32>(rasterSpecializationEntries.size());
@@ -7666,7 +7674,7 @@ bool VulkanRenderer3D::createGraphicsPipelines()
                     translucentSpecializationData.depthInterpolationMode = wMode;
                     translucentSpecializationData.translucentPass = 1u;
                     translucentSpecializationData.edgeMarkPass = 0u;
-                    translucentSpecializationData.hdTextureSampling = PipelinesUseHDSampling ? 1u : 0u;
+                    translucentSpecializationData.hdTextureSampling = PipelinesHDSamplingMode;
 
                     VkSpecializationInfo translucentSpecializationInfo{};
                     translucentSpecializationInfo.mapEntryCount = static_cast<u32>(rasterSpecializationEntries.size());
@@ -7824,7 +7832,7 @@ bool VulkanRenderer3D::createGraphicsPipelines()
         edgeMarkSpecializationData.depthInterpolationMode = wMode;
         edgeMarkSpecializationData.translucentPass = 0u;
         edgeMarkSpecializationData.edgeMarkPass = 1u;
-        edgeMarkSpecializationData.hdTextureSampling = PipelinesUseHDSampling ? 1u : 0u;
+        edgeMarkSpecializationData.hdTextureSampling = PipelinesHDSamplingMode;
 
         VkSpecializationInfo edgeMarkSpecializationInfo{};
         edgeMarkSpecializationInfo.mapEntryCount = static_cast<u32>(rasterSpecializationEntries.size());
@@ -13352,6 +13360,15 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
     u32 colorOnlyOpaqueDrawCount = 0u;
     bool colorOnlyDepthWriteSeen = false;
     constexpr bool kEnableColorOnlyOpaquePrepass = false;
+    // HD sampling is specialized into the regular raster pipelines only. Textures a pack
+    // doesn't replace stay at native scale (Texcache pools), so their draws can keep the fast
+    // variants; only a draw whose texture carries an HD texel scale needs the regular path.
+    const auto drawSamplesHDTexture = [&](const GraphicsPolygonDraw& draw) {
+        return PipelinesUseHDSampling
+            && draw.firstTriangle < Triangles.size()
+            && (Triangles[draw.firstTriangle].texWidth >> 12u) > 1u;
+    };
+
     if (fastPathResourceGraph && kEnableColorOnlyOpaquePrepass && !useBitmapClear)
     {
         for (u32 drawIndex : GraphicsOpaqueDrawIndices)
@@ -13380,7 +13397,7 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
                 const u32 wMode = wBuffer ? 1u : 0u;
                 const u32 depthCompareMode = (draw.polyAttr & (1u << 14u)) != 0u ? 1u : 0u;
                 const u32 pipelineIndex = (wMode * GraphicsDepthCompareModeCount) + depthCompareMode;
-                if (!PipelinesUseHDSampling
+                if (!drawSamplesHDTexture(draw)
                     && pipelineIndex < GraphicsOpaqueFastModulateOpaqueAlphaPlainColorOnlyPipelines.size()
                     && GraphicsOpaqueFastModulateOpaqueAlphaPlainColorOnlyPipelines[pipelineIndex] != VK_NULL_HANDLE)
                 {
@@ -13916,11 +13933,10 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
     bool graphicsFogWriteObserved = false;
     const auto fastOpaqueModulatePipelineFor = [&](const GraphicsPolygonDraw& draw, u32 pipelineIndex, bool noAttr, bool noDepthNoAttr = false) -> VkPipeline {
         // The fast modulate variants sample through sampleFastNormalizedTexel,
-        // which knows nothing about HD textures: it has no texel scale, no
-        // nearest mode 15 for native texels sitting under a pack, and it reads
-        // a normalized view of data the HD path stores as integers. Fall back
-        // to the regular raster path whenever HD sampling is specialized in.
-        if (PipelinesUseHDSampling)
+        // which knows nothing about HD textures: it has no texel scale and it
+        // reads a normalized view of data the HD path stores as integers. Fall
+        // back to the regular raster path for draws with an HD texture.
+        if (drawSamplesHDTexture(draw))
             return VK_NULL_HANDLE;
 
         if ((dispCnt & (1u << 0u)) == 0u
@@ -14007,9 +14023,8 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
     };
     const auto fastOpaqueModulateOcclusionNoAttrPipelineFor = [&](const GraphicsPolygonDraw& draw, u32 pipelineIndex, bool noDepth = false) -> VkPipeline {
         // Same reason as fastOpaqueModulatePipelineFor: these variants sample
-        // through sampleFastNormalizedTexel, which has no HD texel scale and
-        // no nearest mode 15 for native texels under a pack.
-        if (PipelinesUseHDSampling)
+        // through sampleFastNormalizedTexel, which has no HD texel scale.
+        if (drawSamplesHDTexture(draw))
             return VK_NULL_HANDLE;
 
         if ((dispCnt & (1u << 0u)) == 0u
@@ -17680,7 +17695,7 @@ void VulkanRenderer3D::buildGraphicsTriangleListCompatibility(GPU& gpu)
                 {
                     textureLayerOpaque = Texcache.GetLoader().IsTextureLayerOpaque(textureHandle, textureLayer);
 
-                    const u32 hdTexelScale = Texcache.GetHDTextureScale();
+                    const u32 hdTexelScale = Texcache.GetLoader().GetTextureScale(textureHandle);
                     if (hdTexelScale > 1u)
                     {
                         // bits 12+ of the size fields carry the HD texel scale and
@@ -19001,7 +19016,7 @@ void VulkanRenderer3D::buildGraphicsTriangleList(GPU& gpu)
                 }
                 if (!textureFallbackUsed)
                 {
-                    const u32 hdTexelScale = Texcache.GetHDTextureScale();
+                    const u32 hdTexelScale = Texcache.GetLoader().GetTextureScale(textureHandle);
                     if (hdTexelScale > 1u)
                     {
                         // bits 12+ of the size fields carry the HD texel scale and
@@ -20323,7 +20338,7 @@ void VulkanRenderer3D::buildTriangleList(GPU& gpu)
 
                 if (!textureFallbackUsed)
                 {
-                    const u32 hdTexelScale = Texcache.GetHDTextureScale();
+                    const u32 hdTexelScale = Texcache.GetLoader().GetTextureScale(textureHandle);
                     if (hdTexelScale > 1u)
                     {
                         // bits 12+ of the size fields carry the HD texel scale and

@@ -29,7 +29,9 @@ public:
     void UploadPrefiltered(GLuint handle, u32 width, u32 height, u32 layer, const u32* data);
     [[nodiscard]] u32 GetTexPackScale() const { return TexPackScale; }
 
-    GLuint GenerateTexture(u32 width, u32 height, u32 layers);
+    // one scale for every array: the OpenGL shaders take the texel scale as a uniform
+    [[nodiscard]] u32 PoolStorageScale(bool) const { return GetStorageScale(); }
+    GLuint GenerateTexture(u32 width, u32 height, u32 layers, u32 scale);
     void UploadTexture(GLuint handle, u32 width, u32 height, u32 layer, void* data);
     void UploadReplacement(GLuint handle, u32 width, u32 height, u32 layer, const HDTexPackImage& img);
     void DeleteTexture(GLuint handle);
