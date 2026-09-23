@@ -1222,9 +1222,11 @@ private:
 
     // HD 2D replacement overlay: instances land on the filtered plane images
     // through a small compute pass sampling a shared replacement atlas
-    static constexpr u32 kOverlayAtlasSize = 2048;
+    // 4096 at 4x holds 1024x1024 native pixels, several screens' worth, so the art of any
+    // one frame fits and a full atlas can simply start over (see recordPlaneOverlayPasses)
+    static constexpr u32 kOverlayAtlasSize = 4096;
     static constexpr size_t kOverlayMaxInstances = 4096;
-    static constexpr VkDeviceSize kOverlayStagingSize = 1024 * 1024;
+    static constexpr VkDeviceSize kOverlayStagingSize = 4 * 1024 * 1024;
     bool replacement2DActive{false};
     VkDescriptorSetLayout overlayDescriptorSetLayout{VK_NULL_HANDLE};
     VkDescriptorPool overlayDescriptorPool{VK_NULL_HANDLE};

@@ -2724,10 +2724,8 @@ bool VulkanOutput::acquireOverlayAtlasSlot(const melonDS::HDTexPackImage* image,
         }
         if (overlayAtlasShelfY + slotH > kOverlayAtlasSize)
         {
-            // KNOWN LIMITATION: the shelf atlas has no eviction; once full,
-            // new replacement art falls back to native detail until the
-            // pack is reloaded or replacement is toggled (both reset the
-            // atlas). At 8x this can happen with a few dozen large sprites.
+            // the shelf atlas has no per-slot eviction: the next frame starts it over
+            // (recordPlaneOverlayPasses), and this art waits a frame
             if (!overlayAtlasFull)
             {
                 overlayAtlasFull = true;
@@ -2737,7 +2735,7 @@ bool VulkanOutput::acquireOverlayAtlasSlot(const melonDS::HDTexPackImage* image,
                     lastOverlayAtlasFullLogNs = nowNs;
                     melonDS::Platform::Log(
                         melonDS::Platform::LogLevel::Warn,
-                        "VulkanOutput: replacement atlas full (%u entries), further art keeps native detail",
+                        "VulkanOutput: replacement atlas full (%u entries), starting it over next frame",
                         static_cast<u32>(overlayAtlasSlots.size()));
                 }
             }
@@ -2796,7 +2794,11 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
     if (pipeline == VK_NULL_HANDLE)
         return;
 
-    if (overlayAtlasScale != scale)
+    // A full atlas starts over and uploads just the art on screen. It used to stay full
+    // for the session, so every portrait met after enough other art (logos, credits,
+    // glyphs) stayed native. Frames still in flight are safe: the upload barrier below
+    // waits for earlier reads of the atlas on this queue.
+    if (overlayAtlasScale != scale || overlayAtlasFull)
     {
         overlayAtlasSlots.clear();
         overlayAtlasShelfX = 0;
