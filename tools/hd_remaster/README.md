@@ -23,6 +23,18 @@ it are for personal use). Any ESRGAN-family model spandrel can load works with `
 
 ## Remaster a game
 
+One command sets up on first run, builds the pack and installs it on the attached device:
+
+```
+powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 path\to\game.nds -Push
+```
+
+If the game has a recipe in [`games/`](games/README.md), it's applied automatically: the
+models, scale and game-specific rules that were verified for it, plus a check that your ROM and
+the key counts match. Games without one run with the defaults.
+
+The individual steps, run with the venv's python:
+
 ```
 .venv\Scripts\python hd_remaster.py all  path\to\game.nds     # extract + upscale + build
 .venv\Scripts\python hd_remaster.py push packs\<GAMECODE>       # install on the device

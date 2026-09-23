@@ -27,11 +27,11 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import nitro  # noqa: E402
+import recipes  # noqa: E402
 import tex3d  # noqa: E402
 
 WORK = HERE / "work"
 PACKS = HERE / "packs"
-DEFAULT_MODEL = HERE / "models" / "4x-UltraSharp.safetensors"
 PACKAGE = "me.magnum.melondualds.dev"
 
 
@@ -58,9 +58,12 @@ def cmd_extract(args) -> Path:
     tex_dir.mkdir(parents=True, exist_ok=True)
 
     t0 = time.time()
+    recipe = recipes.load(code, rom)
+    log(f"{code} ({nitro.game_title(rom)}): {recipes.describe(recipe)}")
+    (out / "recipe.json").write_text(json.dumps(recipe, indent=1), encoding="utf-8")
     files = nitro.files(rom)
     blobs = [nitro.Blob(name, data) for name, data in files.items()]
-    log(f"{code} ({nitro.game_title(rom)}): {len(blobs)} files after unpacking, {time.time() - t0:.0f}s")
+    log(f"{len(blobs)} files after unpacking, {time.time() - t0:.0f}s")
     blocks = tex3d.scan(blobs)
     ents = tex3d.entries(blocks)
     ntex = sum(len(b.textures) for b in blocks)
@@ -77,23 +80,28 @@ def cmd_extract(args) -> Path:
             if not path.exists():
                 Image.fromarray(img, "RGBA").save(path, optimize=False, compress_level=1)
             mf.write(json.dumps({
-                "kind": "tex1", "key": e.key, "legacy_key": e.legacy_key,
+                "kind": "tex1", "category": "textures", "key": e.key, "legacy_key": e.legacy_key,
                 "w": e.tex.w, "h": e.tex.h, "fmt": e.tex.fmt,
                 "texture": e.tex.name, "palette": e.pal_name, "pairing": e.pairing,
                 "source": e.source, "wrap": e.tex.wrap, "alpha": alpha_kind(img),
             }) + "\n")
         log(f"wrote {len(ents)} textures to {tex_dir} in {time.time() - t0:.0f}s")
-        extract_2d(files, code, out, mf)
+        n_obj, n_bg = extract_2d(files, out, mf, recipe["twod"])
     log(f"done in {time.time() - t0:.0f}s")
+    recipes.check_baseline(recipe, {"textures": len(ents), "sprites": n_obj, "backgrounds": n_bg})
     return out
 
 
-def extract_2d(files: dict[str, bytes], code: str, out: Path, mf) -> None:
-    """Sprites and BG tiles: whole cells and screens, each with the crops its keys cut out."""
+def extract_2d(files: dict[str, bytes], out: Path, mf, rules: dict) -> tuple[int, int]:
+    """Sprites and BG tiles: whole cells and screens, each with the crops its keys cut out.
+
+    rules: the recipe's game-specific 2D load rules (see twod.py). Returns the sprite and BG
+    tile key counts.
+    """
     import twod
 
     lib = twod.Library(files)
-    profile = twod.PROFILES.get(code)
+    profile = rules or None
     adir = out / "native" / "assets2d"
     adir.mkdir(parents=True, exist_ok=True)
     seen: set[str] = set()
@@ -102,7 +110,8 @@ def extract_2d(files: dict[str, bytes], code: str, out: Path, mf) -> None:
     def write_asset(name: str, img: np.ndarray, entries: list[dict], asset: dict) -> None:
         Image.fromarray(img, "RGBA").save(adir / f"{name}.png", compress_level=1)
         mf.write(json.dumps({
-            "kind": "asset2d", "key": name, "w": int(img.shape[1]), "h": int(img.shape[0]),
+            "kind": "asset2d", "category": "sprites" if asset["kind"] == "cell" else "backgrounds",
+            "key": name, "w": int(img.shape[1]), "h": int(img.shape[0]),
             "source": asset["name"], "palette": asset.get("nclr"), "pairing": asset["pairing"],
             "entries": [{k: en[k] for k in ("key", "x", "y", "w", "h", "hflip", "vflip", "pal_guess")}
                         for en in entries],
@@ -137,6 +146,7 @@ def extract_2d(files: dict[str, bytes], code: str, out: Path, mf) -> None:
                 n_assets += 1
                 write_asset(f"a{n_assets:05d}", asset["image"], keep, asset)
     log(f"2D: {n_assets} cells/screens + {n_solo} standalone sprites -> {n_obj} sprite keys, {n_bg} BG tile keys")
+    return n_obj, n_bg
 
 
 # ---------------------------------------------------------------------------- verify
@@ -243,13 +253,31 @@ def cmd_upscale(args) -> None:
 
     work = Path(args.work)
     items = read_manifest(work / "manifest.jsonl")
-    up = upscale.Upscaler(Path(args.model), args.tile, fp16=not args.fp32)
-    if args.scale > up.scale:
-        raise SystemExit(f"--scale {args.scale} needs a {args.scale}x model; {Path(args.model).name} is {up.scale}x")
-    log(f"{Path(args.model).name}: {up.arch} {up.scale}x on {up.device}"
-        f"{' fp16' if up.fp16 is not None else ' fp32'}; output {args.scale}x")
-    if up.device.type != "cuda":
-        log("warning: no CUDA device, this will be very slow")
+    recipe = work_recipe(work)
+    # the pack has one scale (the emulator requires it); each category may use its own model
+    scale = args.scale or recipe["scale"]
+    names = {c: args.model or recipe["models"][c] for c in recipes.CATEGORIES}
+    info_path = work / "upscaled" / "upscale.json"
+    if info_path.exists() and not args.force:
+        before = json.loads(info_path.read_text())
+        if before.get("scale") != scale or before.get("models", names) != names:
+            log(f"note: images already upscaled with {before.get('models')} at {before.get('scale')}x are "
+                f"kept; pass --force to redo them with {names} at {scale}x")
+    ups: dict[str, object] = {}
+
+    def upscaler(category: str):
+        name = names[category]
+        if name not in ups:
+            path = recipes.model_path(name)
+            up = upscale.Upscaler(path, args.tile, fp16=not args.fp32)
+            if scale > up.scale:
+                raise SystemExit(f"scale {scale} needs a {scale}x model; {name} is {up.scale}x")
+            log(f"{category}: {name} ({up.arch} {up.scale}x) on {up.device}"
+                f"{' fp16' if up.fp16 is not None else ' fp32'}, output {scale}x")
+            if up.device.type != "cuda":
+                log("warning: no CUDA device, this will be very slow")
+            ups[name] = up
+        return ups[name]
 
     t0 = last = time.perf_counter()
     done = skipped = failed = 0
@@ -264,7 +292,8 @@ def cmd_upscale(args) -> None:
             try:
                 rgba = np.asarray(Image.open(src).convert("RGBA"))
                 wrap = m.get("wrap") if m["kind"] == "tex1" else EDGE
-                out = upscale.upscale_texture(rgba, up, args.scale, args.pad, args.alpha, wrap=wrap)
+                category = m.get("category", "textures")
+                out = upscale.upscale_texture(rgba, upscaler(category), scale, args.pad, args.alpha, wrap=wrap)
                 tmp = dst.with_name(dst.name + ".tmp")
                 Image.fromarray(out, "RGBA").save(tmp, format="PNG")
                 os.replace(tmp, dst)
@@ -278,9 +307,17 @@ def cmd_upscale(args) -> None:
             log(f"[{i}/{len(items)}] {done} upscaled, {skipped} already done, {failed} failed, "
                 f"{rate:.1f}/s, eta {(len(items) - i) / rate if rate else 0:.0f}s")
             last = now
-    (work / "upscaled" / "upscale.json").write_text(json.dumps({
-        "scale": args.scale, "model": Path(args.model).name, "model_scale": up.scale,
-        "alpha": args.alpha, "pad": args.pad}, indent=1))
+    info_path.parent.mkdir(parents=True, exist_ok=True)
+    info_path.write_text(json.dumps({"scale": scale, "models": names, "alpha": args.alpha, "pad": args.pad},
+                                    indent=1))
+
+
+def work_recipe(work: Path) -> dict:
+    """The recipe snapshot extract saved (the ROM isn't needed after extract)."""
+    snap = work / "recipe.json"
+    if snap.exists():
+        return json.loads(snap.read_text(encoding="utf-8"))
+    return recipes.load(work.name)
 
 
 # ---------------------------------------------------------------------------- build
@@ -382,6 +419,7 @@ def cmd_all(args) -> None:
     args.work = str(work)
     cmd_upscale(args)
     args.native = False
+    args.out = None          # --out named the work root; the pack goes to the default packs root
     cmd_build(args)
 
 
@@ -403,8 +441,9 @@ def main() -> None:
     p.set_defaults(fn=cmd_verify)
 
     def upscale_opts(p):
-        p.add_argument("--model", default=str(DEFAULT_MODEL), help="model file (default 4x-UltraSharp)")
-        p.add_argument("--scale", type=int, default=4, choices=(2, 4), help="output scale (default 4)")
+        p.add_argument("--model", help="model name from models.json or a model file, for every category "
+                                       "(default: the game's recipe, else 4x-UltraSharp)")
+        p.add_argument("--scale", type=int, choices=(2, 4), help="output scale (default: the recipe's, else 4)")
         p.add_argument("--tile", type=int, default=512, help="tile size in native pixels, 0 = never")
         p.add_argument("--pad", type=int, default=16, help="seam margin in native pixels")
         p.add_argument("--alpha", choices=("model", "resize"), default="model")

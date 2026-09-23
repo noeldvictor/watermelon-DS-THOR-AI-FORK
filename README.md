@@ -43,10 +43,12 @@ Making an HD pack used to mean playing the whole game with texture dumping on, t
 whatever got dumped. [`tools/hd_remaster`](tools/hd_remaster/README.md) skips the playthrough:
 
 ```
-powershell -ExecutionPolicy Bypass -File tools\hd_remaster\setup.ps1     # once
-tools\hd_remaster\.venv\Scripts\python tools\hd_remaster\hd_remaster.py all game.nds
-tools\hd_remaster\.venv\Scripts\python tools\hd_remaster\hd_remaster.py push tools\hd_remaster\packs\<GAMECODE>
+powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 game.nds -Push
 ```
+
+Games with a [recipe](tools/hd_remaster/games/README.md) (Lufia: Curse of the Sinistrals, The
+Legend of Zelda: Phantom Hourglass so far) get the settings and game-specific rules that were
+verified for them, so anyone with the same ROM gets the same pack.
 
 It decodes every 3D texture, sprite and background in the ROM exactly as the emulator does,
 names each one by the key the emulator looks it up by, upscales them with an AI model

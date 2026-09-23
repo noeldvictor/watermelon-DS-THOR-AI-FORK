@@ -1,0 +1,34 @@
+{
+  "game": "AZEE",
+  "title": "The Legend of Zelda: Phantom Hourglass",
+  "roms": [
+    {
+      "sha256": "7f0caa9d4a071584057ef5c3609d0ed2dfa760fbadd94e1aa431fbdd6dd741fb",
+      "name": "USA with the D-pad control patch (as tested)"
+    }
+  ],
+  "scale": 4,
+  "models": {
+    "textures": "4x-UltraSharp",
+    "sprites": "4x-UltraSharp",
+    "backgrounds": "4x-UltraSharp"
+  },
+  "twod": {},
+  "baseline": {
+    "textures": 1934,
+    "sprites": 4608,
+    "backgrounds": 7811
+  },
+  "verified": {
+    "date": "2026-09-22",
+    "textures": "not yet checked against in-game dumps",
+    "sprites": "not yet checked against in-game dumps",
+    "backgrounds": "not yet checked against in-game dumps",
+    "on_device": "not yet"
+  },
+  "notes": [
+    "All assets are standard Nitro files in NARC archives, so no game-specific reader is needed and 1773 of the 1934 texture keys come from model materials.",
+    "Only the D-pad patched ROM has been tested. The retail ROM should give the same keys wherever the patch didn't touch the graphics; run it and compare the counts with the baseline.",
+    "Phantom Hourglass renders both screens in 3D using display capture, so captured frames can't be replaced, but the textures drawn into them can."
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "game": "BSDE",
+  "title": "Lufia: Curse of the Sinistrals",
+  "roms": [
+    {
+      "sha256": "79bd4dde6434c55935fb11084e85bb75efb4c949a0e04042396fe5e4a40914cf",
+      "name": "USA (as tested)"
+    }
+  ],
+  "scale": 4,
+  "models": {
+    "textures": "4x-UltraSharp",
+    "sprites": "4x-UltraSharp",
+    "backgrounds": "4x-UltraSharp"
+  },
+  "twod": {
+    "obj": [
+      {
+        "dir": "2d/bustup/",
+        "bpp": 8,
+        "index_shift": 48,
+        "palram": [
+          [
+            "mcd:2d/etc/font.nclr",
+            0,
+            16
+          ],
+          [
+            "mcd:2d/interface/talk_win.nclr",
+            0,
+            16
+          ],
+          [
+            "mcd:2d/interface/talk_name_p.nclr",
+            0,
+            16
+          ],
+          [
+            "@self",
+            0,
+            208
+          ]
+        ],
+        "why": "Dialogue portraits are uploaded with every non-zero colour index shifted by 48, into a 256-colour palette built from the font, window and name-plate palettes followed by the portrait's own first 208 colours. Found by matching in-game sprite dumps."
+      }
+    ]
+  },
+  "baseline": {
+    "textures": 1777,
+    "sprites": 9574,
+    "backgrounds": 26064
+  },
+  "verified": {
+    "date": "2026-09-22",
+    "textures": "181 of 223 textures dumped during play reproduced, all pixel-identical",
+    "sprites": "324 of 587 sprites dumped during play reproduced, all pixel-identical",
+    "backgrounds": "not yet checked against in-game dumps",
+    "on_device": "2026-09-22, AYN Thor: 37415 entries indexed at game start; 3D textures and sprites render in HD (publisher logos, credits, town) at 60 fps; fades keep the native art"
+  },
+  "notes": [
+    "Every asset lives in the indexed archive mcd.dat (mcd_compact.bin + mcd_path.bin), which the tool reads directly.",
+    "Not in the ROM, so not in the pack: dialogue text (drawn into sprite memory at runtime), 64x64 bitmap sprites captured from the 3D scene, and character parts the game assembles into one texture. The per-layer filters still apply to those."
+  ]
+}

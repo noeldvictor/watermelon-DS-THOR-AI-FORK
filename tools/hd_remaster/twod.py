@@ -46,7 +46,7 @@ File layouts parsed (offsets from file start, standard 0x10 NITRO header):
        RLE) + 24-bit size, or raw.
 
 usage:
-  python rom2d.py <rom.nds> [--manifest DIR/manifest.jsonl --dumps DIR]
+  python twod.py <rom.nds> [--manifest DIR/manifest.jsonl --dumps DIR]
                   [--out OUTDIR [--crops]] [--no-profile]
   --out writes OUTDIR/assets/*.png (assembled cell / screen, native res) and
   OUTDIR/keys.jsonl (one line per asset: source files, pairing, and entries
@@ -64,6 +64,7 @@ import numpy as np
 import xxhash
 
 import nitro
+import recipes
 
 
 def u16(b, o): return struct.unpack_from("<H", b, o)[0]
@@ -296,23 +297,13 @@ def obj_palette(nclr, oam, extpal=False):
     return nclr.raw[a:a + 512]
 
 
-# ============================================================ game profiles
-# Runtime load recipes that cannot be read from the file headers. Found by
-# matching Lufia's gameplay dumps: bustup portraits are uploaded with every
-# non-zero 8bpp index shifted +48, and the 256-colour OBJ palette RAM they
-# hash against is font row0 | talk_win row0 | talk_name_p row0 | portrait
-# NCLR colours 0..207.
-PROFILES = {
-    "BSDE": {
-        "obj": [
-            {"dir": "2d/bustup/", "bpp": 8, "index_shift": 48,
-             "palram": [["mcd:2d/etc/font.nclr", 0, 16],
-                        ["mcd:2d/interface/talk_win.nclr", 0, 16],
-                        ["mcd:2d/interface/talk_name_p.nclr", 0, 16],
-                        ["@self", 0, 208]]},
-        ],
-    },
-}
+# ============================================================ game rules
+# Load rules that can't be read from the file headers come from the game's recipe
+# (games/<GAMECODE>/recipe.json, "twod"). Each "obj" rule applies to NCERs whose path contains
+# "dir" at the given "bpp":
+#   index_shift  every non-zero colour index is uploaded shifted by this much
+#   palram       the 256-colour palette memory the key hashes, as [file, first colour, count]
+#                pieces ("@self" = the cell's own NCLR)
 
 
 # ============================================================ pairing
@@ -689,12 +680,12 @@ def main():
     ap.add_argument("--dumps", help="folder with the dumped obj1_*.png (pixel check)")
     ap.add_argument("--out", help="write assembled PNGs + keys.jsonl here")
     ap.add_argument("--crops", action="store_true", help="also write native per-key PNGs (named by key)")
-    ap.add_argument("--no-profile", action="store_true", help="ignore the built-in per-game profile")
+    ap.add_argument("--no-profile", action="store_true", help="ignore the game recipe's 2D rules")
     a = ap.parse_args()
 
     rom = open(a.rom, "rb").read()
     code = rom[0x0C:0x10].decode("latin1")
-    profile = None if a.no_profile else PROFILES.get(code)
+    profile = None if a.no_profile else (recipes.load(code)["twod"] or None)
     leaves = collect_files(rom)
     lib = Library(leaves)
     kc = Counter(b[:4] for b in leaves.values() if b[:4] in Library.KINDS)

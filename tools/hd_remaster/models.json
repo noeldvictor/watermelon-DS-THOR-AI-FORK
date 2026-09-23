@@ -1,0 +1,10 @@
+{
+  "4x-UltraSharp": {
+    "file": "4x-UltraSharp.safetensors",
+    "url": "https://huggingface.co/Kim2091/UltraSharp/resolve/main/4x-UltraSharp.safetensors",
+    "sha256": "36a340b5509b699d2c06cb445ddc1d3d39199ac734d889ed6d7915f60e05bcbc",
+    "scale": 4,
+    "license": "CC BY-NC-SA 4.0 (Kim2091): personal, non-commercial use",
+    "notes": "ESRGAN. Sharp and detailed on painted and pre-rendered game art."
+  }
+}

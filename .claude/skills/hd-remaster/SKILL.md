@@ -20,6 +20,14 @@ Build steps and adb recipes for this machine are in the workspace AGENTS.md.
 - The model is `models/4x-UltraSharp.safetensors` (CC BY-NC-SA: personal use only). Prefer
   .safetensors models; .pth files are pickles that can run code when loaded.
 
+## Recipes
+
+`games/<GAMECODE>/recipe.json` holds what was verified for a game (ROM checksums, scale, model
+per category, 2D rules, baseline key counts, verification notes); see `games/README.md`.
+`extract` applies it automatically and prints whether the ROM matches. When a game's pack is
+verified, write or update its recipe and README - that is what lets other users reproduce it
+with `remaster.ps1 game.nds -Push`. Recipes never contain game images.
+
 ## 1. Extract
 
 `hd_remaster.py extract <rom.nds>` writes `work/<GAMECODE>/native/textures/*.png` (3D, named by
@@ -64,8 +72,15 @@ native image at full resolution (thumbnails hide the difference).
 - Follow the SHARED DEVICE RULE in AGENTS.md: the Thor is shared, check the foreground app
   first and never fight another session for it. Pass `-s <serial>` (find it with
   `adb devices -l`, model:AYN_Thor).
-- Launch the game, then check logcat for `HDTexPack: indexed N entries ... (scale 4x)` and
-  `HDTexPack: K of N images loaded`. Capture BOTH displays (bottom: `--display-id
-  4630946482288158084`).
+- Launch the game, then check logcat (Warn level; release builds drop Info) for
+  `HDTexPack: indexed N entries ... (scale 4x)` and the once-a-second
+  `HDTexPack[Stats]: textures h/l sprites h/l bg h/l (hits/lookups) 2dInstances=N`. Pair it
+  with `VulkanOutput[Stats]`: `overlays` must follow `2dInstances` (x frames), or 2D
+  replacements are being dropped between the latch and the compositor. Capture BOTH displays
+  (bottom: `--display-id 4630946482288158084`).
+- Test with the per-layer filters off (`video_hd_texture_filter`, `video_obj_sprite_filter`,
+  `video_bg_layer_filter` = 0) so the pack's effect is what you see.
+- While a colour effect (BLDCNT fade/blend) targets a layer, that layer deliberately keeps its
+  native art; HD returns when the effect ends. Sample frames across a transition.
 - Packs only apply under the Vulkan (default) or Compute renderer.
 - Force-stop the app when done: `adb -s <dev> shell am force-stop me.magnum.melondualds.dev`.
