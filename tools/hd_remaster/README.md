@@ -60,6 +60,11 @@ those bytes, so the key of every texture can be computed from the ROM.
   pairs are written. Textures no material names fall back to the palettes in their own file.
 - **Decoding** matches melonDS bit for bit, including the RGB5 to RGB6 expansion and all seven
   texture formats.
+- **Pictures smaller than their texture.** DS texture sizes are powers of two, so a 256x192
+  screen picture (Phantom Hourglass's storybook pages) is uploaded into a 256x256 texture whose
+  last 64 rows hold whatever video memory held before. Its key ends in `_rows192` and hashes
+  only the rows the picture fills; the emulator retries a missed texture with that shorter hash
+  for the sizes a pack has such entries for.
 - **Upscaling** pads each texture before inference so the model doesn't invent a border that
   shows as a seam when the texture repeats. The material states whether each axis repeats,
   mirrors or clamps, and the padding follows it per axis. Transparent pixels are filled from

@@ -20,6 +20,7 @@
 #include "HDTexPack.h"
 #include "Platform.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -53,6 +54,18 @@ u64 MapKey(u32 width, u32 height, u64 hash1, u64 hash2, u32 disc, bool hasPal)
 {
     KeyFields f = { width, height, hash1, hash2, disc, hasPal ? 1u : 0u };
     return XXH64(&f, sizeof(f), 0x484454455850414BULL); // "HDTEXPAK"
+}
+
+// A partial texture entry keys its row count into the discriminator, above the format bits,
+// so it never collides with a full-texture key (rows 0)
+u32 TexDisc(u32 fmt, u32 rows)
+{
+    return fmt | (rows << 8);
+}
+
+u32 PartialRowsKey(u32 width, u32 height, u32 fmt)
+{
+    return (width << 16) | (height << 4) | fmt;
 }
 
 // DumpedKeys spans all asset kinds while MapKey does not encode the kind;
@@ -172,9 +185,10 @@ void HDTexPack::LoadDir(const std::string& dir, const char* kind)
 
 bool HDTexPack::AddEntry(const std::string& path, const std::string& name, const char* kind)
 {
-    // <kind>_<W>x<H>_<hash16>_<palhash16|none|$>_<disc>
+    // <kind>_<W>x<H>_<hash16>_<palhash16|none|$>_<disc>, and for textures optionally _rows<N>:
+    // hash16 then covers only the first N rows (see PartialRows)
     auto parts = SplitStem(name);
-    if (parts.size() != 5 || parts[0] != kind) return false;
+    if ((parts.size() != 5 && parts.size() != 6) || parts[0] != kind) return false;
 
     u32 w = 0, h = 0;
     if (sscanf(parts[1].c_str(), "%ux%u", &w, &h) != 2 || !w || !h) return false;
@@ -185,12 +199,20 @@ bool HDTexPack::AddEntry(const std::string& path, const std::string& name, const
     if (!ParseHash16(parts[3], palHash, wcPal, nonePal)) return false;
 
     u32 disc;
+    u32 rows = 0;
     bool isTex = !strcmp(kind, "tex1");
     bool isBG = !strcmp(kind, "bg1");
+    if (parts.size() == 6)
+    {
+        if (!isTex || sscanf(parts[5].c_str(), "rows%u", &rows) != 1 || !rows || rows >= h)
+            return false;
+    }
     if (isTex)
     {
         if (parts[4].size() != 1 || parts[4][0] < '1' || parts[4][0] > '7') return false;
         disc = parts[4][0] - '0';
+        // the compressed format keeps its texels in two VRAM slots; a row prefix isn't defined
+        if (rows && disc == 5) return false;
     }
     else if (isBG)
     {
@@ -237,6 +259,13 @@ bool HDTexPack::AddEntry(const std::string& path, const std::string& name, const
     PackScale = scale;
 
     bool hasPal = !nonePal;
+    if (rows)
+    {
+        auto& known = TexPartialRows[PartialRowsKey(w, h, disc)];
+        if (std::find(known.begin(), known.end(), rows) == known.end())
+            known.push_back(rows);
+        disc = TexDisc(disc, rows);
+    }
     u64 key = MapKey(w, h, hash1, wcPal ? 0 : palHash, disc, hasPal && !wcPal);
     auto& exact = isTex ? TexIndex : isBG ? BGIndex : SpriteIndex;
     auto& wild = isTex ? TexWildIndex : isBG ? BGWildIndex : SpriteWildIndex;
@@ -289,15 +318,34 @@ const HDTexPackImage* HDTexPack::Find(const Index& exactIndex, const Index& wild
 }
 
 const HDTexPackImage* HDTexPack::LookupTexture(u32 width, u32 height, u64 texHash,
-                                               u64 palHash, bool hasPal, u32 fmt) const
+                                               u64 palHash, bool hasPal, u32 fmt, u32 rows) const
 {
     if (!LoadActive()) return nullptr;
+    u32 disc = TexDisc(fmt, rows);
     const HDTexPackImage* img = Find(TexIndex, TexWildIndex, TexEntries, TexWildcard,
-                MapKey(width, height, texHash, hasPal ? palHash : 0, fmt, hasPal),
-                MapKey(width, height, texHash, 0, fmt, false));
-    Lookups[0].fetch_add(1, std::memory_order_relaxed);
+                MapKey(width, height, texHash, hasPal ? palHash : 0, disc, hasPal),
+                MapKey(width, height, texHash, 0, disc, false));
+    // a partial retry is the same texture as the full lookup before it, not another lookup
+    if (!rows) Lookups[0].fetch_add(1, std::memory_order_relaxed);
     if (img) Hits[0].fetch_add(1, std::memory_order_relaxed);
     return img;
+}
+
+const std::vector<u32>* HDTexPack::PartialRows(u32 width, u32 height, u32 fmt) const
+{
+    if (TexPartialRows.empty()) return nullptr;
+    auto it = TexPartialRows.find(PartialRowsKey(width, height, fmt));
+    return it == TexPartialRows.end() ? nullptr : &it->second;
+}
+
+void HDTexPack::ReportTextureMiss(u32 width, u32 height, u64 texHash,
+                                  u64 palHash, bool hasPal, u32 fmt) const
+{
+    if (!LoadActive()) return;
+    if (ShouldLogMiss(0, MapKey(width, height, texHash, hasPal ? palHash : 0, fmt, hasPal)))
+        Platform::Log(Platform::LogLevel::Warn, "HDTexPack[Miss]: tex1_%ux%u_%s_%s_%u\n",
+                      width, height, Hash16(texHash).c_str(),
+                      hasPal ? Hash16(palHash).c_str() : "none", fmt);
 }
 
 const HDTexPackImage* HDTexPack::LookupSprite(u32 width, u32 height, u64 tileHash,
@@ -310,6 +358,10 @@ const HDTexPackImage* HDTexPack::LookupSprite(u32 width, u32 height, u64 tileHas
                 MapKey(width, height, tileHash, 0, disc, false));
     Lookups[1].fetch_add(1, std::memory_order_relaxed);
     if (img) Hits[1].fetch_add(1, std::memory_order_relaxed);
+    else if (ShouldLogMiss(1, MapKey(width, height, tileHash, hasPal ? palHash : 0, disc, hasPal)))
+        Platform::Log(Platform::LogLevel::Warn, "HDTexPack[Miss]: obj1_%ux%u_%s_%s_%s\n",
+                      width, height, Hash16(tileHash).c_str(),
+                      hasPal ? Hash16(palHash).c_str() : "none", bppTag);
     return img;
 }
 
@@ -322,6 +374,15 @@ const HDTexPackImage* HDTexPack::LookupBGTile(u64 tileHash, u64 palHash, bool ha
     Lookups[2].fetch_add(1, std::memory_order_relaxed);
     if (img) Hits[2].fetch_add(1, std::memory_order_relaxed);
     return img;
+}
+
+bool HDTexPack::ShouldLogMiss(int kind, u64 key) const
+{
+    std::lock_guard<std::mutex> lock(CacheLock);
+    if (MissesLogged[kind] >= MaxLoggedMisses) return false;
+    if (!MissKeys[kind].insert(key).second) return false;
+    MissesLogged[kind]++;
+    return true;
 }
 
 void HDTexPack::LogStats(size_t instances2D) const

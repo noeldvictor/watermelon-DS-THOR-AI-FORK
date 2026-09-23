@@ -3,12 +3,14 @@
 A DS game uploads a TEX0 block's texel and palette bytes to VRAM unchanged, and the pack key
 is a content hash of those bytes, so every key can be computed from the ROM:
 
-    tex1_<W>x<H>_<texhash>_<palhash|none>_<fmt>
+    tex1_<W>x<H>_<texhash>_<palhash|none>_<fmt>[_rows<N>]
 
 texhash is XXH64 of the texel bytes (for 4x4-compressed textures, XXH64 over the two slot
 hashes). palhash is XXH64 of the palette entries the format can address, salted when color 0
 is transparent for formats 2-4, and for compressed textures a chained XXH64 over only the
-entries the blocks reference. This mirrors Texcache::PackPalHash in GPU3D_Texcache.h; the
+entries the blocks reference. A picture whose height isn't a power of two (a 256x192 screen)
+is uploaded into the next power-of-two texture, whose remaining rows hold whatever VRAM had
+before; its key ends in _rows<N> and texhash covers only the N rows the picture fills. This mirrors Texcache::PackPalHash in GPU3D_Texcache.h; the
 `legacy` variant reproduces keys dumped before that scheme changed, for verification only.
 
 Which palette goes with which texture is decided by the model's materials (MDL0), so pairs
@@ -17,7 +19,7 @@ are read from there. Textures no material names fall back to the palettes in the
 from __future__ import annotations
 
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import xxhash
@@ -50,6 +52,7 @@ class Texture:
     aux: bytes = b""     # fmt 5 only: palette-index data from slot 1
     wrap: tuple[bool, bool, bool, bool] | None = None   # repeat S/T, flip S/T, from a material
     raw_palette: int = -1   # raw SDK texture: byte length of its .ntfp; -1 for TEX0 textures
+    rows: int = 0        # > 0: only the first `rows` of h are defined; texel holds just those
 
     @property
     def texhash(self) -> int:
@@ -170,6 +173,16 @@ def _pow2(n: int) -> bool:
     return 8 <= n <= 1024 and n & (n - 1) == 0
 
 
+def _next_pow2(n: int) -> int:
+    p = 8
+    while p < n:
+        p *= 2
+    return p
+
+
+CLAMP = (False, False, False, False)   # a picture, not a tiling texture: pad by edge when upscaling
+
+
 def _raw_formats(texel: bytes, colours: int, has_index: bool) -> list[int]:
     """Formats a raw texture could be. The byte count fits several (a 1 KB file is 32x128 at
     2 bits or 32x32 at 8), so every format the palette and texel values allow is a candidate
@@ -211,7 +224,9 @@ def scan_raw(blobs: list[Blob]) -> list[TexBlock]:
     """Raw SDK texture files: .ntft texels, .ntfp palette, .ntfi 4x4 index data, no header.
 
     Pairing is by file stem. The size isn't stored, so every power-of-two width and height that
-    fits the byte count is decoded and the one whose rows join up best is kept. A palette file
+    fits the byte count is decoded and the one whose rows join up best is kept. A power-of-two
+    width with a height that isn't one (a 256x192 screen picture) becomes a partial texture:
+    the next power-of-two height with a _rows<N> key. A palette file
     shorter than what the key hashes (all 256 colours for 8-bit textures) gets the '$' wildcard:
     the rest of that palette memory holds whatever else is loaded there, which the ROM can't
     say, and the picture only uses the colours in its own file.
@@ -234,10 +249,14 @@ def scan_raw(blobs: list[Blob]) -> list[TexBlock]:
             pixels = int(len(texel) / TEXEL_BYTES[fmt])
             for w in (8, 16, 32, 64, 128, 256, 512, 1024):
                 h = pixels // w
-                if not _pow2(h) or w * h != pixels or max(w, h) > 8 * min(w, h):
+                if w * h != pixels or h < 8 or h > 1024:
                     continue
-                tex = Texture(stem.rsplit("/", 1)[-1], fmt, w, h, False, texel,
-                              index[:w * h // 8] if index else b"")
+                full = h if _pow2(h) else _next_pow2(h)
+                if max(w, full) > 8 * min(w, full) or (full != h and fmt == 5):
+                    continue
+                tex = Texture(stem.rsplit("/", 1)[-1], fmt, w, full, False, texel,
+                              index[:w * h // 8] if index else b"",
+                              rows=0 if full == h else h, wrap=None if full == h else CLAMP)
                 try:
                     score = _row_break(decode(tex, palette if fmt != 7 else None))
                 except (IndexError, ValueError):
@@ -257,8 +276,7 @@ def scan_raw(blobs: list[Blob]) -> list[TexBlock]:
             # the game uses matches. A '$' key can only be one of them: guess transparent when
             # index 0 covers most of the border, as it does around a cut-out like a logo.
             if len(pal) >= PAL_ENTRIES[fmt] * 2:
-                alt = Texture(tex.name, fmt, tex.w, tex.h, True, tex.texel, tex.aux,
-                              raw_palette=len(pal))
+                alt = replace(tex, color0=True, raw_palette=len(pal))
                 blk.textures[tex.name + "#c0"] = alt
             else:
                 tex.color0 = _border_index0(tex) >= 0.5
@@ -273,7 +291,7 @@ def _border_index0(tex: Texture) -> float:
     bits = {2: 2, 3: 4, 4: 8}[tex.fmt]
     raw = np.frombuffer(tex.texel, np.uint8)
     idx = np.stack([(raw >> (bits * k)) & ((1 << bits) - 1) for k in range(8 // bits)], axis=1)
-    idx = idx.reshape(tex.h, tex.w)
+    idx = idx.reshape(tex.rows or tex.h, tex.w)
     border = np.concatenate([idx[0], idx[-1], idx[:, 0], idx[:, -1]])
     return float((border == 0).mean())
 
@@ -328,7 +346,8 @@ WILDCARD = -1   # palette part of the key is '$': matches any palette
 
 def key_name(tex: Texture, ph: int) -> str:
     pal = "none" if tex.fmt == 7 else ("$" if ph == WILDCARD else f"{ph:016x}")
-    return f"tex1_{tex.w}x{tex.h}_{tex.texhash:016x}_{pal}_{tex.fmt}"
+    rows = f"_rows{tex.rows}" if tex.rows else ""
+    return f"tex1_{tex.w}x{tex.h}_{tex.texhash:016x}_{pal}_{tex.fmt}{rows}"
 
 
 # ---------------------------------------------------------------------------- decoding
@@ -350,6 +369,11 @@ def _rgb5_to_rgba8(c: np.ndarray, alpha5: np.ndarray) -> np.ndarray:
 
 def decode(tex: Texture, pal: Palette | None) -> np.ndarray:
     """RGBA8 image (h, w, 4) identical to what the emulator dumps for this texture."""
+    if tex.rows:
+        # the undefined rows repeat the last real one, so filtering at the picture's bottom
+        # edge (bilinear, or the upscaler's neighbourhood) doesn't pick up a foreign colour
+        part = decode(replace(tex, h=tex.rows, rows=0), pal)
+        return np.concatenate([part, np.repeat(part[-1:], tex.h - tex.rows, axis=0)])
     w, h, fmt = tex.w, tex.h, tex.fmt
     if fmt == 7:
         c = np.frombuffer(tex.texel, "<u2").reshape(h, w)
@@ -432,7 +456,7 @@ def entries(blocks_: list[TexBlock]) -> list[Entry]:
     out: dict[str, Entry] = {}
     for blk in blocks_:
         for tex in blk.textures.values():
-            tex.wrap = wraps.get(tex.name)
+            tex.wrap = wraps.get(tex.name, tex.wrap)
             if tex.fmt == 7:
                 cands = [(None, "", "none")]
             else:

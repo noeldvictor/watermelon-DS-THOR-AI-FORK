@@ -68,9 +68,17 @@ public:
         return !TexIndex.empty() || !TexWildIndex.empty();
     }
 
-    // 3D textures. hasPal is false for fmt 7 (direct bitmap).
+    // 3D textures. hasPal is false for fmt 7 (direct bitmap). rows > 0 looks up a partial entry
+    // (file name ending in _rows<N>), whose texHash covers only the texture's first N rows.
     const HDTexPackImage* LookupTexture(u32 width, u32 height, u64 texHash,
-                                        u64 palHash, bool hasPal, u32 fmt) const;
+                                        u64 palHash, bool hasPal, u32 fmt, u32 rows = 0) const;
+    // Row counts the pack has partial entries for at this size and format, or nullptr. A game
+    // that uploads a 256x192 picture into a 256x256 texture leaves the last 64 rows as whatever
+    // VRAM held before, so its full-texture hash differs from play to play; a partial entry
+    // hashes only the rows the picture fills.
+    const std::vector<u32>* PartialRows(u32 width, u32 height, u32 fmt) const;
+    // Logs a texture key once (Warn) after every lookup for it failed; see ShouldLogMiss.
+    void ReportTextureMiss(u32 width, u32 height, u64 texHash, u64 palHash, bool hasPal, u32 fmt) const;
     // rgb6a5 spans width*scale x height*scale texels; scale > 1 dumps a
     // pre-filtered image that loads back as a scaled entry (scale 1 = plain
     // native-res dump).
@@ -129,6 +137,7 @@ private:
     // never move, so cache entries are never evicted. A whole-game pack therefore costs only
     // what the game actually shows, not everything in the folder.
     Index TexIndex, TexWildIndex;
+    std::unordered_map<u32, std::vector<u32>> TexPartialRows;   // PartialRowsKey -> row counts
     Index SpriteIndex, SpriteWildIndex;
     Index BGIndex, BGWildIndex;
     mutable Cache TexEntries, TexWildcard;
@@ -139,6 +148,14 @@ private:
     mutable u32 LoadedCount = 0;
     // lookups and hits since the last LogStats: [0] textures, [1] sprites, [2] BG tiles
     mutable std::atomic<u32> Lookups[3]{}, Hits[3]{};
+    // Each distinct texture or sprite key that misses is logged once, by its pack file name, so
+    // a scene that stays native shows which keys it asked for. Capped per kind: dialogue text
+    // alone produces hundreds of sprite misses. Texture misses are reported by the texcache
+    // (ReportTextureMiss) because the filter disk cache shares LookupTexture and misses by design.
+    bool ShouldLogMiss(int kind, u64 key) const;
+    static constexpr u32 MaxLoggedMisses = 200;
+    mutable std::unordered_set<u64> MissKeys[2];
+    mutable u32 MissesLogged[2]{};
 
     std::unordered_set<u64> DumpedKeys;
     std::unordered_set<u64> LoggedSpriteInstances;

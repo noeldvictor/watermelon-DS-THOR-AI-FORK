@@ -15,7 +15,7 @@
   },
   "twod": {},
   "baseline": {
-    "textures": 2101,
+    "textures": 2135,
     "sprites": 4608,
     "backgrounds": 7811
   },
@@ -24,12 +24,14 @@
     "textures": "33 of 41 textures dumped during play reproduced, all pixel-identical (incl. the title logo, a raw .ntft texture)",
     "sprites": "67 of 78 sprites dumped during play reproduced, all pixel-identical",
     "backgrounds": "1683 of 1683 BG tiles dumped during play reproduced",
-    "on_device": "2026-09-23, AYN Thor: BG tiles (92160/92160 lookups), sprites and 3D textures render in HD, title logo HD"
+    "on_device": "2026-09-23, AYN Thor: BG tiles (92160/92160 lookups), sprites and 3D textures render in HD, title logo HD; storybook (Kamishibai) pages HD after the partial-row keys, 34/34 texture lookups hit on the prologue"
   },
   "notes": [
     "All assets are standard Nitro files in NARC archives, so no game-specific reader is needed and 1773 of the 1934 texture keys come from model materials.",
     "Only the D-pad patched ROM has been tested. The retail ROM should give the same keys wherever the patch didn't touch the graphics; run it and compare the counts with the baseline.",
     "Phantom Hourglass renders both screens in 3D using display capture, so captured frames can't be replaced, but the textures drawn into them can.",
-    "The title logo is a raw SDK texture (Menu/Tex2D/title.ntft + .ntfp) whose palette file is shorter than the 256 colours the key hashes, so it gets the '$' palette wildcard."
+    "The title logo is a raw SDK texture (Menu/Tex2D/title.ntft + .ntfp) whose palette file is shorter than the 256 colours the key hashes, so it gets the '$' palette wildcard.",
+    "The storybook pages (Event/Kamishibai/*.ntft) are 256x192 pictures uploaded into 256x256 textures; the last 64 rows hold leftover VRAM, so their keys end in _rows192 and hash only the rows the picture fills. Their palettes are also often one colour short, so most get the '$' wildcard.",
+    "In-game text is drawn at runtime from the NFTR fonts in Font/, one glyph at a time, so text sprites can't be keyed from the ROM."
   ]
 }

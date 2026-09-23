@@ -465,6 +465,24 @@ public:
             replacement = TexPack->LookupTexture(width, height, packTexHash, packPalHash, hasPal, fmt);
             if (!replacement && packPalHashLegacy != packPalHash)
                 replacement = TexPack->LookupTexture(width, height, packTexHash, packPalHashLegacy, hasPal, fmt);
+            // a picture smaller than its texture: hash only the rows it fills (see PartialRows)
+            if (!replacement && !entry.TextureRAMSize[1])
+            {
+                if (const std::vector<u32>* partial = TexPack->PartialRows(width, height, fmt))
+                {
+                    u32 rowBytes = entry.TextureRAMSize[0] / height;
+                    for (u32 rows : *partial)
+                    {
+                        u64 prefixHash = MaskedHash(gpu.VRAMFlat_Texture, sizeof(gpu.VRAMFlat_Texture),
+                                                    entry.TextureRAMStart[0], rowBytes * rows);
+                        replacement = TexPack->LookupTexture(width, height, prefixHash, packPalHash,
+                                                             hasPal, fmt, rows);
+                        if (replacement) break;
+                    }
+                }
+            }
+            if (!replacement)
+                TexPack->ReportTextureMiss(width, height, packTexHash, packPalHash, hasPal, fmt);
         }
 
         auto& texArrays = TexArrays[widthLog2][heightLog2];
