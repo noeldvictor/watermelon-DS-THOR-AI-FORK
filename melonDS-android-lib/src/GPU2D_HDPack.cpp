@@ -162,6 +162,11 @@ void HDPack2D::ProcessFrame(GPU& gpu, HDTexPack* pack)
         std::swap(PrevBitmapKeys, CurBitmapKeys);
         CurBitmapKeys.clear();
     }
+    if (load)
+    {
+        std::swap(PrevLookedUpBitmaps, CurLookedUpBitmaps);
+        CurLookedUpBitmaps.clear();
+    }
 }
 
 void HDPack2D::EmitSpriteInstance(const HDTexPackImage* img, int num, u8 flip,
@@ -387,8 +392,15 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
         // semi-transparent OBJs, or all of them while a colour effect targets the OBJ layer
         if (load && !(sprtype & 1) && sprmode != 2 && sprmode != 1 && !objEffect)
         {
-            const HDTexPackImage* img =
-                pack->LookupSprite((u32)width, (u32)height, tileHash, palHash, hasPal, bppTag);
+            bool logMiss = true;
+            if (type == 2)
+            {
+                u64 k = tileHash ^ ((u64)width << 32) ^ (u64)height;
+                logMiss = PrevLookedUpBitmaps.count(k) != 0;
+                CurLookedUpBitmaps.insert(k);
+            }
+            const HDTexPackImage* img = pack->LookupSprite((u32)width, (u32)height, tileHash,
+                                                           palHash, hasPal, bppTag, logMiss);
             u8 flip = (u8)(((attrib[1] & (1 << 12)) ? 1 : 0)
                            | ((attrib[1] & (1 << 13)) ? 2 : 0));
             if (img)

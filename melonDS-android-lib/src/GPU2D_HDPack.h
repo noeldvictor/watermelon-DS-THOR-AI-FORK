@@ -101,6 +101,9 @@ private:
     // bitmap sprites can alias volatile display-capture VRAM; only dump
     // content whose hash survives across two sampled walks
     std::unordered_set<u64> PrevBitmapKeys, CurBitmapKeys;
+    // the same for the miss log: bitmaps looked up this frame and the frame before, so a
+    // bitmap streamed anew every frame (a scrolling sky) never floods it
+    std::unordered_set<u64> PrevLookedUpBitmaps, CurLookedUpBitmaps;
 
     std::vector<u32> PixelScratch;
 

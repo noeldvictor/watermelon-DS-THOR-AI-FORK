@@ -89,9 +89,11 @@ public:
                      u64 palHash, bool hasPal, u32 fmt, const u32* rgb6a5,
                      u32 scale = 1);
 
-    // 2D OBJ sprites. bppTag: "4", "8" or "bmp".
+    // 2D OBJ sprites. bppTag: "4", "8" or "bmp". logMiss=false keeps a miss out of the
+    // HDTexPack[Miss] log.
     const HDTexPackImage* LookupSprite(u32 width, u32 height, u64 tileHash,
-                                       u64 palHash, bool hasPal, const char* bppTag) const;
+                                       u64 palHash, bool hasPal, const char* bppTag,
+                                       bool logMiss = true) const;
     // rgba8: assembled sprite pixels, 8-bit channels.
     void DumpSprite(u32 width, u32 height, u64 tileHash,
                     u64 palHash, bool hasPal, const char* bppTag, const u32* rgba8,

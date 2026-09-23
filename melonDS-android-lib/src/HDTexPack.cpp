@@ -350,7 +350,8 @@ void HDTexPack::ReportTextureMiss(u32 width, u32 height, u64 texHash,
 }
 
 const HDTexPackImage* HDTexPack::LookupSprite(u32 width, u32 height, u64 tileHash,
-                                              u64 palHash, bool hasPal, const char* bppTag) const
+                                              u64 palHash, bool hasPal, const char* bppTag,
+                                              bool logMiss) const
 {
     if (!LoadActive()) return nullptr;
     u32 disc = !strcmp(bppTag, "bmp") ? 0xB : (u32)atoi(bppTag);
@@ -359,7 +360,8 @@ const HDTexPackImage* HDTexPack::LookupSprite(u32 width, u32 height, u64 tileHas
                 MapKey(width, height, tileHash, 0, disc, false));
     Lookups[1].fetch_add(1, std::memory_order_relaxed);
     if (img) Hits[1].fetch_add(1, std::memory_order_relaxed);
-    else if (ShouldLogMiss(1, MapKey(width, height, tileHash, hasPal ? palHash : 0, disc, hasPal)))
+    else if (logMiss
+             && ShouldLogMiss(1, MapKey(width, height, tileHash, hasPal ? palHash : 0, disc, hasPal)))
         Platform::Log(Platform::LogLevel::Warn, "HDTexPack[Miss]: obj1_%ux%u_%s_%s_%s\n",
                       width, height, Hash16(tileHash).c_str(),
                       hasPal ? Hash16(palHash).c_str() : "none", bppTag);
