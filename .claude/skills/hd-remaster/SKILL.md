@@ -69,6 +69,12 @@ native image at full resolution (thumbnails hide the difference).
 
 ## 5. Test on the Thor
 
+- Use the `thor` MCP tools (tools/thor_mcp) when they're loaded: `status` first, then
+  `settings_set` (filters off: video_hd_texture_filter / video_obj_sprite_filter /
+  video_bg_layer_filter = "0"), `launch`, `stats`, `screenshot`, `pack` on/off for A/B, and
+  `close` when done. Without them, the adb recipes below do the same.
+- Match the internal resolution to the pack scale (`video_internal_resolution` = "4" for a 4x
+  pack): at 3x each rendered pixel picks the nearest texel of a 4x texture and edges alias.
 - Follow the SHARED DEVICE RULE in AGENTS.md: the Thor is shared, check the foreground app
   first and never fight another session for it. Pass `-s <serial>` (find it with
   `adb devices -l`, model:AYN_Thor).
