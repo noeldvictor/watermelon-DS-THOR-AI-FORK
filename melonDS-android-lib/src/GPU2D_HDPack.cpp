@@ -147,8 +147,7 @@ void HDPack2D::ProcessFrame(GPU& gpu, HDTexPack* pack)
     for (int num = 0; num < 2; num++)
     {
         const GPU2D::Unit& unit = num ? (const GPU2D::Unit&)gpu.GPU2D_B : gpu.GPU2D_A;
-        u32 dispmode = (unit.DispCnt >> 16) & (num ? 0x1 : 0x3);
-        if (dispmode != 1)
+        if (unit.RenderDisplayMode() != 1)
             continue;
 
         if (load || dumpSprites)

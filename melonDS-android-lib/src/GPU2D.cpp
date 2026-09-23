@@ -137,6 +137,7 @@ void Unit::Reset()
 
     CaptureCnt = 0;
     CaptureLatch = false;
+    CapturePassthrough = false;
 
     MasterBrightness = 0;
 }
@@ -590,6 +591,32 @@ void Unit::UpdateMosaicCounters(u32 line)
         OBJMosaicYCount++;
         OBJMosaicYCount &= 0xF;
     }
+}
+
+void Unit::LatchCapturePassthrough()
+{
+    const u32 cap = CaptureCnt;
+    const u32 capMode = (cap >> 29) & 0x3;
+    // source A alone: mode 0, or a blend weighing A fully and B not at all
+    const bool sourceAOnly = capMode == 0
+        || (capMode >= 2 && (cap & 0x1F) >= 16 && ((cap >> 8) & 0x1F) == 0);
+    const u32 bank = (cap >> 16) & 0x3;
+    CapturePassthrough = Num == 0
+        && CaptureLatch
+        && ((DispCnt >> 16) & 0x3) == 2
+        && bank == ((DispCnt >> 18) & 0x3)
+        && ((cap >> 20) & 0x3) == 3        // 256x192
+        && ((cap >> 18) & 0x3) == 0        // written from the start of the bank
+        && (cap & (1 << 24)) == 0          // source A is the 2D+3D picture, not 3D alone
+        && sourceAOnly
+        && (GPU.VRAMMap_LCDC & (1 << bank)) != 0;
+}
+
+u32 Unit::RenderDisplayMode() const
+{
+    if (CapturePassthrough)
+        return 1;
+    return (DispCnt >> 16) & (Num ? 0x1 : 0x3);
 }
 
 void Unit::VBlank()

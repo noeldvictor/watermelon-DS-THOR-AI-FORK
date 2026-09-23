@@ -3466,6 +3466,8 @@ void SoftRenderer::DrawScanlineActivePipeline(u32 line, Unit* unit)
 
     if (line == 0 && CurUnit->CaptureCnt & (1 << 31) && !forceblank)
         CurUnit->CaptureLatch = true;
+    if (line == 0)
+        CurUnit->LatchCapturePassthrough();
 
     if (CurUnit->Num == 0)
     {
@@ -3488,8 +3490,7 @@ void SoftRenderer::DrawScanlineActivePipeline(u32 line, Unit* unit)
         return;
     }
 
-    u32 dispmode = CurUnit->DispCnt >> 16;
-    dispmode &= (CurUnit->Num ? 0x1 : 0x3);
+    u32 dispmode = CurUnit->RenderDisplayMode();
     u32 masterBrightness = CurUnit->MasterBrightness;
 
     const u32 directSinkCaptureCnt = CurUnit->CaptureCnt;
@@ -3835,7 +3836,7 @@ void SoftRenderer::DrawScanlineActivePipeline(u32 line, Unit* unit)
         }
 
         dst[256*3] = masterBrightness |
-                     (CurUnit->DispCnt & 0x30000) |
+                     (CurUnit->CapturePassthrough ? 0x10000u : (CurUnit->DispCnt & 0x30000)) |
                      rendererMetaFlags |
                      (xpos << 24) | ((xpos & 0x100) << 15);
         return;

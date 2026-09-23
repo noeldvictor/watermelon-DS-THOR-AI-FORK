@@ -67,6 +67,11 @@ public:
     void VBlank();
     virtual void VBlankEnd();
 
+    // Line 0 of each frame: sets CapturePassthrough. RenderDisplayMode() is the display mode
+    // the renderers draw with: DISPCNT's, or 1 (regular) for a passthrough frame.
+    void LatchCapturePassthrough();
+    u32 RenderDisplayMode() const;
+
     void CheckWindows(u32 line);
 
     u16* GetBGExtPal(u32 slot, u32 pal);
@@ -120,6 +125,13 @@ public:
 
     bool CaptureLatch;
     u32 CaptureCnt;
+    // This frame shows (VRAM display) the bank its own capture overwrites with the full,
+    // unblended 2D+3D picture: the screen is this engine's output one frame late. Lufia's
+    // event scenes present the bottom screen this way. The flat 256x192 capture loses every
+    // HD path (internal resolution, pack replacements, filters), so it is drawn as regular
+    // display instead: the same picture, a frame sooner. Kept until the next line 0, so the
+    // pack walk after the frame sees it too.
+    bool CapturePassthrough = false;
 
     u16 MasterBrightness;
 private:
