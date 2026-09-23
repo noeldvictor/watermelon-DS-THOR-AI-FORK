@@ -2415,15 +2415,19 @@ void VulkanRenderer3D::PrepareCaptureFrameCompatibilityBackend()
     {
         if (finalizeCaptureLineFrame(exactCaptureOnly))
         {
-            const bool readyMatchesHint =
-                !exactCaptureOnly
-                || !HasCurrentCaptureScreenSwapHint
-                || ReadyCaptureLineScreenSwap == CurrentCaptureScreenSwapHint;
-            HasCpuFrame = readyMatchesHint && copyReadyCaptureLineToLineCache();
+            // copyReadyCaptureLineToLineCache banks an export that belongs to
+            // the other swap phase instead of serving it; gating on the swap
+            // hint first would drop it before it could be banked
+            HasCpuFrame = copyReadyCaptureLineToLineCache();
+            if (HasCpuFrame || !exactCaptureOnly)
+                return;
+            // graphics_hw: the finished export belonged to the other swap
+            // phase and was banked; fall through to the per-swap hold
+        }
+        else if (CaptureLinePending)
+        {
             return;
         }
-        if (CaptureLinePending)
-            return;
     }
 
     if (!HasCpuFrame && CaptureReadbackPending)
