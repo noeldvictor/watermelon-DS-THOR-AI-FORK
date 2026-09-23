@@ -15,20 +15,21 @@
   },
   "twod": {},
   "baseline": {
-    "textures": 1934,
+    "textures": 2101,
     "sprites": 4608,
     "backgrounds": 7811
   },
   "verified": {
-    "date": "2026-09-22",
-    "textures": "not yet checked against in-game dumps",
-    "sprites": "not yet checked against in-game dumps",
-    "backgrounds": "not yet checked against in-game dumps",
-    "on_device": "not yet"
+    "date": "2026-09-23",
+    "textures": "33 of 41 textures dumped during play reproduced, all pixel-identical (incl. the title logo, a raw .ntft texture)",
+    "sprites": "67 of 78 sprites dumped during play reproduced, all pixel-identical",
+    "backgrounds": "1683 of 1683 BG tiles dumped during play reproduced",
+    "on_device": "2026-09-23, AYN Thor: BG tiles (92160/92160 lookups), sprites and 3D textures render in HD, title logo HD"
   },
   "notes": [
     "All assets are standard Nitro files in NARC archives, so no game-specific reader is needed and 1773 of the 1934 texture keys come from model materials.",
     "Only the D-pad patched ROM has been tested. The retail ROM should give the same keys wherever the patch didn't touch the graphics; run it and compare the counts with the baseline.",
-    "Phantom Hourglass renders both screens in 3D using display capture, so captured frames can't be replaced, but the textures drawn into them can."
+    "Phantom Hourglass renders both screens in 3D using display capture, so captured frames can't be replaced, but the textures drawn into them can.",
+    "The title logo is a raw SDK texture (Menu/Tex2D/title.ntft + .ntfp) whose palette file is shorter than the 256 colours the key hashes, so it gets the '$' palette wildcard."
   ]
 }

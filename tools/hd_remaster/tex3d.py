@@ -49,6 +49,7 @@ class Texture:
     texel: bytes         # slot 0 bytes (w*h*bpp)
     aux: bytes = b""     # fmt 5 only: palette-index data from slot 1
     wrap: tuple[bool, bool, bool, bool] | None = None   # repeat S/T, flip S/T, from a material
+    raw_palette: int = -1   # raw SDK texture: byte length of its .ntfp; -1 for TEX0 textures
 
     @property
     def texhash(self) -> int:
@@ -163,6 +164,120 @@ def scan(blobs: list[Blob]) -> list[TexBlock]:
     return out
 
 
+# ---------------------------------------------------------------------------- raw SDK textures
+
+def _pow2(n: int) -> bool:
+    return 8 <= n <= 1024 and n & (n - 1) == 0
+
+
+def _raw_formats(texel: bytes, colours: int, has_index: bool) -> list[int]:
+    """Formats a raw texture could be. The byte count fits several (a 1 KB file is 32x128 at
+    2 bits or 32x32 at 8), so every format the palette and texel values allow is a candidate
+    and the decode that looks most like a picture wins (see scan_raw)."""
+    if has_index:
+        return [5]
+    if colours == 0:
+        return [7]
+    raw = np.frombuffer(texel, np.uint8)
+    # the largest colour index each reading would use; a texture only uses colours its own
+    # palette file defines, which rules most readings out (a one-colour shadow whose shape
+    # lives in A5I3's alpha bits reads as garbage indices at 2 or 8 bits per pixel)
+    top = {
+        2: max(int(((raw >> s) & 3).max()) for s in (0, 2, 4, 6)),
+        3: max(int((raw & 15).max()), int((raw >> 4).max())),
+        4: int(raw.max()),
+        6: int((raw & 7).max()),
+        1: int((raw & 31).max()),
+    }
+    limit = {2: 4, 3: 16, 4: 256, 6: 8, 1: 32}
+    fits = [f for f in (2, 3, 4, 6, 1) if colours <= limit[f] or f == 4]
+    inside = [f for f in fits if top[f] < colours]
+    return inside or fits
+
+
+def _row_break(img: np.ndarray) -> float:
+    """How badly neighbouring pixels disagree, down and across, colour and alpha: low for the
+    right format and width, high for a wrong one (a wrong width shears rows apart, a wrong
+    bit depth scrambles pixels within a row). Alpha counts because formats 1 and 6 keep the
+    shape in it."""
+    px = img.astype(np.int32)
+    px[..., :3] = px[..., :3] * (px[..., 3:4] > 0)      # colour under alpha 0 doesn't show
+    down = np.abs(px[1:] - px[:-1]).mean() if img.shape[0] > 1 else 0.0
+    across = np.abs(px[:, 1:] - px[:, :-1]).mean() if img.shape[1] > 1 else 0.0
+    return float(down + across)
+
+
+def scan_raw(blobs: list[Blob]) -> list[TexBlock]:
+    """Raw SDK texture files: .ntft texels, .ntfp palette, .ntfi 4x4 index data, no header.
+
+    Pairing is by file stem. The size isn't stored, so every power-of-two width and height that
+    fits the byte count is decoded and the one whose rows join up best is kept. A palette file
+    shorter than what the key hashes (all 256 colours for 8-bit textures) gets the '$' wildcard:
+    the rest of that palette memory holds whatever else is loaded there, which the ROM can't
+    say, and the picture only uses the colours in its own file.
+    """
+    by_stem: dict[str, dict[str, bytes]] = {}
+    for blob in blobs:
+        stem, dot, ext = blob.path.rpartition(".")
+        if dot and ext in ("ntft", "ntfp", "ntfi"):
+            by_stem.setdefault(stem, {})[ext] = blob.data
+    out: list[TexBlock] = []
+    for stem, parts in sorted(by_stem.items()):
+        texel = parts.get("ntft")
+        if not texel:
+            continue
+        pal = parts.get("ntfp", b"")
+        index = parts.get("ntfi")
+        palette = Palette("raw", pal.ljust(512, b"\0"))
+        best = None
+        for fmt in _raw_formats(texel, len(pal) // 2, index is not None):
+            pixels = int(len(texel) / TEXEL_BYTES[fmt])
+            for w in (8, 16, 32, 64, 128, 256, 512, 1024):
+                h = pixels // w
+                if not _pow2(h) or w * h != pixels or max(w, h) > 8 * min(w, h):
+                    continue
+                tex = Texture(stem.rsplit("/", 1)[-1], fmt, w, h, False, texel,
+                              index[:w * h // 8] if index else b"")
+                try:
+                    score = _row_break(decode(tex, palette if fmt != 7 else None))
+                except (IndexError, ValueError):
+                    continue
+                if best is None or score < best[0]:
+                    best = (score, tex)
+        if best is None:
+            continue
+        tex = best[1]
+        fmt = tex.fmt
+        tex.raw_palette = len(pal)
+        blk = TexBlock(f"{stem}.ntft")
+        blk.textures[tex.name] = tex
+        if fmt in (2, 3, 4):
+            # Whether colour 0 is transparent is set by the game's code, not the file. With an
+            # exact palette the key differs between the two, so both are written and the one
+            # the game uses matches. A '$' key can only be one of them: guess transparent when
+            # index 0 covers most of the border, as it does around a cut-out like a logo.
+            if len(pal) >= PAL_ENTRIES[fmt] * 2:
+                alt = Texture(tex.name, fmt, tex.w, tex.h, True, tex.texel, tex.aux,
+                              raw_palette=len(pal))
+                blk.textures[tex.name + "#c0"] = alt
+            else:
+                tex.color0 = _border_index0(tex) >= 0.5
+        if pal:
+            blk.palettes[tex.name + "_pl"] = Palette(tex.name + "_pl", pal)
+        out.append(blk)
+    return out
+
+
+def _border_index0(tex: Texture) -> float:
+    """Share of border pixels that use palette index 0 (formats 2-4)."""
+    bits = {2: 2, 3: 4, 4: 8}[tex.fmt]
+    raw = np.frombuffer(tex.texel, np.uint8)
+    idx = np.stack([(raw >> (bits * k)) & ((1 << bits) - 1) for k in range(8 // bits)], axis=1)
+    idx = idx.reshape(tex.h, tex.w)
+    border = np.concatenate([idx[0], idx[-1], idx[:, 0], idx[:, -1]])
+    return float((border == 0).mean())
+
+
 # ---------------------------------------------------------------------------- keys
 
 def _palette_words(pal: Palette, n: int) -> bytes | None:
@@ -208,8 +323,11 @@ def palhash(tex: Texture, pal: Palette | None, legacy: bool = False) -> int | No
     return h
 
 
+WILDCARD = -1   # palette part of the key is '$': matches any palette
+
+
 def key_name(tex: Texture, ph: int) -> str:
-    pal = "none" if tex.fmt == 7 else f"{ph:016x}"
+    pal = "none" if tex.fmt == 7 else ("$" if ph == WILDCARD else f"{ph:016x}")
     return f"tex1_{tex.w}x{tex.h}_{tex.texhash:016x}_{pal}_{tex.fmt}"
 
 
@@ -236,7 +354,8 @@ def decode(tex: Texture, pal: Palette | None) -> np.ndarray:
     if fmt == 7:
         c = np.frombuffer(tex.texel, "<u2").reshape(h, w)
         return _rgb5_to_rgba8(c, np.where(c & 0x8000, 31, 0))
-    palw = np.frombuffer(pal.data[:len(pal.data) & ~1], "<u2")
+    data = pal.data[:len(pal.data) & ~1]
+    palw = np.frombuffer(data.ljust(512, b"\0") if len(data) < 512 else data, "<u2")
     if fmt == 5:
         return _decode_4x4(tex, palw)
     raw = np.frombuffer(tex.texel, np.uint8)
@@ -328,11 +447,15 @@ def entries(blocks_: list[TexBlock]) -> list[Entry]:
                              for p in list(blk.palettes.values())[:FALLBACK_PALETTE_CAP]]
             for pal, pname, how in cands:
                 ph = palhash(tex, pal)
+                lph = palhash(tex, pal, legacy=True)
+                if ph is None and tex.raw_palette >= 0 and pal is not None and tex.fmt not in (5, 7):
+                    # a raw palette file shorter than what the key hashes (see scan_raw)
+                    ph = lph = WILDCARD
+                    how = "raw-wildcard"
                 if ph is None:
                     continue
                 key = key_name(tex, ph)
                 if key in out:
                     continue
-                lph = palhash(tex, pal, legacy=True)
                 out[key] = Entry(key, key_name(tex, lph), tex, pal, pname, blk.source, how)
     return list(out.values())

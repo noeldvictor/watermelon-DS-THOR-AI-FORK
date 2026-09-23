@@ -64,7 +64,7 @@ def cmd_extract(args) -> Path:
     files = nitro.files(rom)
     blobs = [nitro.Blob(name, data) for name, data in files.items()]
     log(f"{len(blobs)} files after unpacking, {time.time() - t0:.0f}s")
-    blocks = tex3d.scan(blobs)
+    blocks = tex3d.scan(blobs) + tex3d.scan_raw(blobs)
     ents = tex3d.entries(blocks)
     ntex = sum(len(b.textures) for b in blocks)
     by = {}
@@ -76,9 +76,7 @@ def cmd_extract(args) -> Path:
     with open(out / "manifest.jsonl", "w", encoding="utf-8") as mf:
         for e in ents:
             img = tex3d.decode(e.tex, e.pal)
-            path = tex_dir / f"{e.key}.png"
-            if not path.exists():
-                Image.fromarray(img, "RGBA").save(path, optimize=False, compress_level=1)
+            write_native(out, "textures", e.key, img)
             mf.write(json.dumps({
                 "kind": "tex1", "category": "textures", "key": e.key, "legacy_key": e.legacy_key,
                 "w": e.tex.w, "h": e.tex.h, "fmt": e.tex.fmt,
@@ -90,6 +88,21 @@ def cmd_extract(args) -> Path:
     log(f"done in {time.time() - t0:.0f}s")
     recipes.check_baseline(recipe, {"textures": len(ents), "sprites": n_obj, "backgrounds": n_bg})
     return out
+
+
+def write_native(work: Path, sub: str, name: str, img: np.ndarray) -> None:
+    """Write a native image, and drop its upscaled copy if the pixels changed since last time.
+
+    A key names the texture, not every detail of how it's decoded (a '$' key covers any
+    palette, and transparency guesses can change), so an unchanged name can still need a new
+    image; upscale skips files that exist, so the stale one has to go.
+    """
+    path = work / "native" / sub / f"{name}.png"
+    if path.exists():
+        if np.array_equal(np.asarray(Image.open(path).convert("RGBA")), img):
+            return
+        (work / "upscaled" / sub / f"{name}.png").unlink(missing_ok=True)
+    Image.fromarray(img, "RGBA").save(path, optimize=False, compress_level=1)
 
 
 def extract_2d(files: dict[str, bytes], out: Path, mf, rules: dict) -> tuple[int, int]:
@@ -108,7 +121,7 @@ def extract_2d(files: dict[str, bytes], out: Path, mf, rules: dict) -> tuple[int
     n_assets = n_solo = n_obj = n_bg = 0
 
     def write_asset(name: str, img: np.ndarray, entries: list[dict], asset: dict) -> None:
-        Image.fromarray(img, "RGBA").save(adir / f"{name}.png", compress_level=1)
+        write_native(out, "assets2d", name, img)
         mf.write(json.dumps({
             "kind": "asset2d", "category": "sprites" if asset["kind"] == "cell" else "backgrounds",
             "key": name, "w": int(img.shape[1]), "h": int(img.shape[0]),
@@ -166,18 +179,25 @@ def cmd_verify(args) -> None:
     ours = [m for m in read_manifest(work / "manifest.jsonl") if m["kind"] == "tex1"]
     by_key = {m["key"]: m for m in ours}
     by_legacy = {m["legacy_key"]: m for m in ours}
+    # a '$' key matches the same texture with any palette
+    wild = {k.replace("_$_", "_"): m for k, m in by_key.items() if "_$_" in k}
     dumps = Path(args.dumps)
     dumped = {dump_key(j) for j in read_manifest(dumps / "manifest.jsonl") if j.get("kind") == "tex1"}
 
+    def no_pal(k: str) -> str:
+        p = k.split("_")
+        return "_".join(p[:3] + p[4:])
+
     cur = [k for k in dumped if k in by_key]
     leg = [k for k in dumped if k not in by_key and k in by_legacy]
-    log(f"dumped keys: {len(dumped)} | reproduced: {len(cur) + len(leg)} "
-        f"({100 * (len(cur) + len(leg)) / max(1, len(dumped)):.0f}%) "
-        f"[{len(cur)} current-scheme, {len(leg)} legacy-scheme]")
+    wc = [k for k in dumped if k not in by_key and k not in by_legacy and no_pal(k) in wild]
+    total = len(cur) + len(leg) + len(wc)
+    log(f"dumped keys: {len(dumped)} | reproduced: {total} ({100 * total / max(1, len(dumped)):.0f}%) "
+        f"[{len(cur)} current-scheme, {len(leg)} legacy-scheme, {len(wc)} by palette wildcard]")
 
     same = diff = missing = 0
-    for k in cur + leg:
-        m = by_key.get(k) or by_legacy[k]
+    for k in cur + leg + wc:
+        m = by_key.get(k) or by_legacy.get(k) or wild[no_pal(k)]
         dump_png = dumps / f"{k}.png"
         if not dump_png.exists():
             missing += 1
