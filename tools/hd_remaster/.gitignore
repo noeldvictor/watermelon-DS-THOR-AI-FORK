@@ -1,0 +1,7 @@
+# local environment, downloaded model and generated output (packs contain game assets)
+.venv/
+models/
+work/
+packs/
+__pycache__/
+*.pyc

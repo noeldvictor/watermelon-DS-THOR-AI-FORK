@@ -1,0 +1,7 @@
+# extract / verify / build / push
+numpy
+pillow
+xxhash
+
+# upscale: install torch from the CUDA index first (see README.md), then these
+spandrel

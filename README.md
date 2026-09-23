@@ -20,6 +20,7 @@ external display support, RetroAchievements, RetroArch shader presets. On top of
 | --- | --- | --- |
 | Target device | Any Android device | Tuned and tested on the AYN Thor (Snapdragon 8 Gen 2, two panels) |
 | HD texture packs | — | Dump and replace 3D textures, 2D sprites and BG tiles |
+| HD remastering | — | Build an AI-upscaled pack for a whole game straight from its ROM, no playthrough needed |
 | Upscaling | Full-screen RetroArch shaders | Also per-layer filters for 3D, sprites and BG separately (ScaleFX, Anime4K, HQ2x, ...) with a disk cache |
 | In-game overlay | Pause menu | Adds a turbo speed picker, live texture-filter switching, and "stretch to fit both screens" |
 | Input | Single-button hotkeys | Adds modifier combos, so a hotkey can sit behind a chord |
@@ -36,6 +37,26 @@ This repository is self-contained: the emulator core (`melonDS-android-lib/`, de
 [melonDS](https://github.com/melonDS-emu/melonDS) core) is part of the tree, with no core submodule.
 
 ## What this fork adds
+
+### HD remastering from the ROM
+Making an HD pack used to mean playing the whole game with texture dumping on, then upscaling
+whatever got dumped. [`tools/hd_remaster`](tools/hd_remaster/README.md) skips the playthrough:
+
+```
+powershell -ExecutionPolicy Bypass -File tools\hd_remaster\setup.ps1     # once
+tools\hd_remaster\.venv\Scripts\python tools\hd_remaster\hd_remaster.py all game.nds
+tools\hd_remaster\.venv\Scripts\python tools\hd_remaster\hd_remaster.py push tools\hd_remaster\packs\<GAMECODE>
+```
+
+It decodes every 3D texture, sprite and background in the ROM exactly as the emulator does,
+names each one by the key the emulator looks it up by, upscales them with an AI model
+(4x-UltraSharp by default) on an NVIDIA GPU, and installs the pack over adb. Sprites and
+backgrounds are upscaled as whole cells and screens, then cut apart, so they stay seamless.
+Verified against what was dumped during real play of Lufia: Curse of the Sinistrals: 81% of
+the 3D textures and every sprite that comes from the ROM's graphics are reproduced, all
+pixel-identical. What's left is built by the game at runtime (dialogue text, captured scenes)
+and still gets the per-layer filters. On the device, pack images load the first time the game
+shows them, so a whole-game pack only costs memory for what is on screen.
 
 ### HD texture packs
 * **3D texture dump & replace**: content-hash keyed (texture hash + palette hash), compatible
@@ -163,5 +184,9 @@ Shader binaries are checked in. After editing any `.comp`/`.frag`/`.vert`, regen
   and [#12](https://github.com/rafaelvcaetano/melonDS-android-lib/pull/12); the save-safety issue
   was also identified in Umberto-DEV's fork, and the audio volume bug by jojodogm-ctrl.
 * HD pack format inspired by the texture replacement systems of Dolphin and DuckStation
+* HD remastering: the upscaler and its seam, alpha and tiling handling come from the ARMSX2
+  Thor fork's disc-texture tooling; models load through
+  [spandrel](https://github.com/chaiNNer-org/spandrel); the default model is
+  [4x-UltraSharp](https://huggingface.co/Kim2091/UltraSharp) by Kim2091 (CC BY-NC-SA 4.0)
 
 melonDS is free software licensed under the GPLv3; this fork retains that license.
