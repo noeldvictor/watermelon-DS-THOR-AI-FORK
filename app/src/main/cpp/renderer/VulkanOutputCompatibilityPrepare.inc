@@ -418,25 +418,31 @@ bool VulkanOutput::prepareFrameForPresentationCompatibility(
         && softPackedSnapshot.bottomScreenStats.VramCaptureUses3dLines == 0u
         && softPackedSnapshot.bottomScreenStats.ForceLive3dCompMode7Lines == 0u;
     bool liveSourceScreenSwap = resource.screenSwap;
+    bool liveOwnerFromTunedBranch = false;
     if (topStructuredSlotUsesPreviousWhileBottom2dOnly)
     {
         liveSourceScreenSwap = false;
+        liveOwnerFromTunedBranch = true;
     }
     else if (bottomStructuredSlotUsesPreviousWhileTop2dOnly)
     {
         liveSourceScreenSwap = true;
+        liveOwnerFromTunedBranch = true;
     }
     else if (preservePackedOwnerForTopVramBottomPlainStructuredComp7)
     {
         liveSourceScreenSwap = resource.screenSwap;
+        liveOwnerFromTunedBranch = true;
     }
     else if (class4VramStructuredPair)
     {
         liveSourceScreenSwap = topUsesVramCapture3d;
+        liveOwnerFromTunedBranch = true;
     }
     else if (preservePackedOwnerForAlternatingPlainStructuredComp7)
     {
         liveSourceScreenSwap = resource.screenSwap;
+        liveOwnerFromTunedBranch = true;
     }
     else if (asymmetricFullRegularComp7
         && !preservePackedOwnerForPlainRegularComp7Pair)
@@ -459,6 +465,23 @@ bool VulkanOutput::prepareFrameForPresentationCompatibility(
         && topUsesRegularCapture3d)
     {
         liveSourceScreenSwap = true;
+    }
+    // the stats-driven owner chain can hand the live 3D to a screen that is
+    // DISPLAYING A CAPTURE this frame while the 3D unit actually rendered
+    // for the other screen. A capture-displaying screen shows past content
+    // by definition, so sampling the live image there paints the other
+    // screen's picture onto it (title sequence: the logo on the bottom
+    // display every other frame). When the unit's render swap disagrees and
+    // the heuristic's owner is capture-backed, trust the unit.
+    if (currentBackendIsGraphics
+        && !liveOwnerFromTunedBranch
+        && liveSourceScreenSwap != backendRenderScreenSwap)
+    {
+        const bool actualOwnerShowsCapture = backendRenderScreenSwap
+            ? topUsesCurrentCapture3d
+            : bottomUsesCurrentCapture3d;
+        if (!actualOwnerShowsCapture)
+            liveSourceScreenSwap = backendRenderScreenSwap;
     }
     const bool topPlainStructuredComp7UsesOppositeLive3d =
         currentBackendIsGraphics
@@ -693,14 +716,23 @@ bool VulkanOutput::prepareFrameForPresentationCompatibility(
                 || asymmetricFullRegularComp7
                 || liveOwnerUsesScreenWideRegularCapture
                 || structuredHandoffLiveOwnerNeedsReplace);
+        // the snapshot tag keeps the slot-sampling heuristic, but the
+        // accumulators store CONTENT: the live 3D image must merge into the
+        // LCD the 3D unit actually rendered it for. Keying the merge off the
+        // heuristic poisons the other screen's accumulator whenever the two
+        // disagree (per-frame swap alternation), and the held-content path
+        // then presents the top screen's image on the bottom display.
+        const bool accumulateParityIsTop = currentBackendIsGraphics
+            ? backendRenderScreenSwap
+            : liveSourceScreenSwap;
         if (!recordDirectPresentationPrep(
                 frame,
                 resource,
                 renderer3D,
                 liveSourceScreenSwap,
                 false,
-                liveSourceScreenSwap,
-                !liveSourceScreenSwap,
+                accumulateParityIsTop,
+                !accumulateParityIsTop,
                 replaceAccumulatedHighres,
                 -1,
                 false,
@@ -771,6 +803,17 @@ bool VulkanOutput::prepareFrameForPresentationCompatibility(
         && topUsesStructured3d
         && topUsesPlainStructuredComp7Slot
         && !live3dOwnerIsTop;
+    // a screen whose packed content is 3D-backed (vram capture, regular
+    // capture or a structured slot) while the live 3D belongs to the other
+    // LCD has no source unless it holds previous 3D content: the compositor
+    // otherwise composes the packed placeholder, which is black, and the
+    // master-brightness "up" register turns alternate frames white — the
+    // every-other-frame title strobe on plain (non-class4) alternating
+    // vram/structured pairs
+    const bool topShows3dBackedContent =
+        topUsesVramCapture3d || topUsesRegularCapture3d || topUsesStructured3d;
+    const bool bottomShows3dBackedContent =
+        bottomUsesVramCapture3d || bottomUsesRegularCapture3d || bottomUsesStructured3d;
     const bool topNeedsAccumulatedHighres =
         topCanUseAccumulatedHighres
         && (!topStructuredHandoffNoCurrent3d || live3dOwnerIsTop)
@@ -781,7 +824,7 @@ bool VulkanOutput::prepareFrameForPresentationCompatibility(
             || topPlainStructuredComp7PureAlternatingVramCadenceCarry
             || (topPlainStructuredComp7UsesOppositeLive3d
                 && !topPlainStructuredComp7PureAlternatingVramPair)
-            || (class4VramStructuredPair
+            || (topShows3dBackedContent
                 && !live3dOwnerIsTop
                 && !topPlainStructuredComp7PureAlternatingVramPair));
     const bool bottomNeedsAccumulatedHighres =
@@ -793,7 +836,7 @@ bool VulkanOutput::prepareFrameForPresentationCompatibility(
             || bottomStructuredSlotUsesPreviousWhileTop2dOnly
             || (bottomPlainStructuredComp7UsesOppositeLive3d
                 && !bottomPlainStructuredComp7PureAlternatingVramPair)
-            || (class4VramStructuredPair
+            || (bottomShows3dBackedContent
                 && live3dOwnerIsTop
                 && !bottomPlainStructuredComp7PureAlternatingVramPair));
     resource.previousTopRendererSourceImage = currentSourceImage;
@@ -827,6 +870,15 @@ bool VulkanOutput::prepareFrameForPresentationCompatibility(
             && previousResource.snapshotHeight == currentSourceHeight;
         if (!previousSnapshotCompatible)
             return;
+        // frames are pooled: since this pointer was recorded as the LCD's
+        // last live source, the frame may have been re-prepared with the
+        // other LCD's snapshot; serving it would put the other screen's
+        // content on this display
+        if (previousResource.renderer3dSnapshotScreenSwap != topLcd)
+        {
+            statsPrevLatchOwnershipRejects++;
+            return;
+        }
 
         if (topLcd)
         {
@@ -850,6 +902,10 @@ bool VulkanOutput::prepareFrameForPresentationCompatibility(
         latchPreviousLcdSource(lastTopRendererSourceFrame, true);
     if (bottomNeedsAccumulatedHighres)
         latchPreviousLcdSource(lastBottomRendererSourceFrame, false);
+    if (resource.previousTopRendererSourceValid)
+        statsPrevTopFromLatch++;
+    if (resource.previousBottomRendererSourceValid)
+        statsPrevBottomFromLatch++;
 
     const bool useAccumulators = resource.snapshotFromGraphicsBackend
         && accumulatedHighresWidth == currentSourceWidth
@@ -1009,6 +1065,7 @@ bool VulkanOutput::prepareFrameForPresentationCompatibility(
         resource.previousTopRendererSourceImage = accumulatedTopHighresImage;
         resource.previousTopRendererSourceImageView = accumulatedTopHighresView;
         resource.previousTopRendererSourceValid = true;
+        statsPrevTopFromAccum++;
     }
     if (bottomNeedsAccumulatedHighres
         && bottomAccumulatorAvailable
@@ -1017,6 +1074,7 @@ bool VulkanOutput::prepareFrameForPresentationCompatibility(
         resource.previousBottomRendererSourceImage = accumulatedBottomHighresImage;
         resource.previousBottomRendererSourceImageView = accumulatedBottomHighresView;
         resource.previousBottomRendererSourceValid = true;
+        statsPrevBottomFromAccum++;
     }
 
     const bool topStructuredHandoffIncomplete =
