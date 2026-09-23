@@ -22,6 +22,7 @@
 
 #include "types.h"
 
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -58,12 +59,12 @@ public:
     u32 Scale() const { return PackScale; }
     bool Has2DEntries() const
     {
-        return !SpriteEntries.empty() || !SpriteWildcard.empty()
-            || !BGEntries.empty() || !BGWildcard.empty();
+        return !SpriteIndex.empty() || !SpriteWildIndex.empty()
+            || !BGIndex.empty() || !BGWildIndex.empty();
     }
     bool Has3DEntries() const
     {
-        return !TexEntries.empty() || !TexWildcard.empty();
+        return !TexIndex.empty() || !TexWildIndex.empty();
     }
 
     // 3D textures. hasPal is false for fmt 7 (direct bitmap).
@@ -96,9 +97,17 @@ public:
 private:
     void LoadDir(const std::string& dir, const char* kind);
     bool AddEntry(const std::string& path, const std::string& name, const char* kind);
-    const HDTexPackImage* Find(const std::unordered_map<u64, HDTexPackImage>& exact,
-                               const std::unordered_map<u64, HDTexPackImage>& wildcard,
+    struct Ref
+    {
+        std::string Path;
+        u32 Width = 0, Height = 0, Scale = 1;   // from the PNG header, checked again on decode
+    };
+    using Index = std::unordered_map<u64, Ref>;
+    using Cache = std::unordered_map<u64, HDTexPackImage>;
+    const HDTexPackImage* Find(const Index& exactIndex, const Index& wildIndex,
+                               Cache& exactCache, Cache& wildCache,
                                u64 exactKey, u64 wildcardKey) const;
+    const HDTexPackImage* Load(const Index& index, Cache& cache, u64 key) const;
     void WriteDumpPNG(const char* subdir, const std::string& name,
                       u32 width, u32 height, const u32* rgba8);
     void AppendManifest(const char* subdir, const std::string& line);
@@ -108,10 +117,21 @@ private:
     u32 PackScale = 1;
     u32 EntryCount = 0;
 
-    // keyed by XXH64 over the canonical key fields; wildcard maps ignore the palette hash
-    std::unordered_map<u64, HDTexPackImage> TexEntries, TexWildcard;
-    std::unordered_map<u64, HDTexPackImage> SpriteEntries, SpriteWildcard;
-    std::unordered_map<u64, HDTexPackImage> BGEntries, BGWildcard;
+    // Keyed by XXH64 over the canonical key fields; wildcard maps ignore the palette hash.
+    // The index (key -> PNG path) is built at startup from file names and headers only. An
+    // image is decoded the first time it is looked up and then stays resident for the pack's
+    // lifetime: callers keep the returned pointers across the frame, and unordered_map nodes
+    // never move, so cache entries are never evicted. A whole-game pack therefore costs only
+    // what the game actually shows, not everything in the folder.
+    Index TexIndex, TexWildIndex;
+    Index SpriteIndex, SpriteWildIndex;
+    Index BGIndex, BGWildIndex;
+    mutable Cache TexEntries, TexWildcard;
+    mutable Cache SpriteEntries, SpriteWildcard;
+    mutable Cache BGEntries, BGWildcard;
+    mutable std::unordered_set<const void*> FailedLoads;   // node addresses of index entries
+    mutable std::mutex CacheLock;                           // 2D and 3D look up from different threads
+    mutable u32 LoadedCount = 0;
 
     std::unordered_set<u64> DumpedKeys;
     std::unordered_set<u64> LoggedSpriteInstances;

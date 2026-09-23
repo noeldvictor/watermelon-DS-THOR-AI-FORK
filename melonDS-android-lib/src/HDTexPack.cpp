@@ -130,7 +130,7 @@ HDTexPack::HDTexPack(const std::string& packDir, const std::string& dumpDir,
         LoadDir(PackDir + "/bgtiles", "bg1");
         if (EntryCount > 0)
             Platform::Log(Platform::LogLevel::Info,
-                          "HDTexPack: loaded %u entries from %s (scale %ux)\n",
+                          "HDTexPack: indexed %u entries from %s (scale %ux), images load on first use\n",
                           EntryCount, PackDir.c_str(), PackScale);
     }
     if (DumpEnabled)
@@ -202,16 +202,13 @@ bool HDTexPack::AddEntry(const std::string& path, const std::string& name, const
         else return false;
     }
 
+    // only the header is read here; pixels are decoded on first lookup (see Load)
     int pw = 0, ph = 0, pc = 0;
-    stbi_uc* pixels = stbi_load(path.c_str(), &pw, &ph, &pc, 4);
-    if (!pixels) return false;
+    if (!stbi_info(path.c_str(), &pw, &ph, &pc)) return false;
 
     // scale must be a positive integer and identical on both axes
     if (pw <= 0 || ph <= 0 || pw % (int)w || ph % (int)h || pw / (int)w != ph / (int)h)
-    {
-        stbi_image_free(pixels);
         return false;
-    }
     u32 scale = pw / w;
 
     // renderers store replacements at most at 8x; larger factors would only
@@ -219,7 +216,6 @@ bool HDTexPack::AddEntry(const std::string& path, const std::string& name, const
     // at 8x is already a 256 MiB image)
     if (scale > 8)
     {
-        stbi_image_free(pixels);
         Platform::Log(Platform::LogLevel::Warn,
                       "HDTexPack: %s has scale %ux, maximum is 8x — skipped\n",
                       name.c_str(), scale);
@@ -228,7 +224,6 @@ bool HDTexPack::AddEntry(const std::string& path, const std::string& name, const
 
     if (EntryCount > 0 && scale != PackScale)
     {
-        stbi_image_free(pixels);
         Platform::Log(Platform::LogLevel::Warn,
                       "HDTexPack: %s has scale %ux, pack is %ux — skipped\n",
                       name.c_str(), scale, PackScale);
@@ -236,37 +231,63 @@ bool HDTexPack::AddEntry(const std::string& path, const std::string& name, const
     }
     PackScale = scale;
 
-    HDTexPackImage img;
-    img.Width = pw; img.Height = ph; img.Scale = scale;
-    img.RGBA.resize((size_t)pw * ph);
-    memcpy(img.RGBA.data(), pixels, (size_t)pw * ph * 4);
-    stbi_image_free(pixels);
-
     bool hasPal = !nonePal;
     u64 key = MapKey(w, h, hash1, wcPal ? 0 : palHash, disc, hasPal && !wcPal);
-    auto& exact = isTex ? TexEntries : isBG ? BGEntries : SpriteEntries;
-    auto& wild = isTex ? TexWildcard : isBG ? BGWildcard : SpriteWildcard;
-    (wcPal ? wild : exact)[key] = std::move(img);
+    auto& exact = isTex ? TexIndex : isBG ? BGIndex : SpriteIndex;
+    auto& wild = isTex ? TexWildIndex : isBG ? BGWildIndex : SpriteWildIndex;
+    (wcPal ? wild : exact)[key] = Ref{path, (u32)pw, (u32)ph, scale};
     EntryCount++;
     return true;
 }
 
-const HDTexPackImage* HDTexPack::Find(const std::unordered_map<u64, HDTexPackImage>& exact,
-                                      const std::unordered_map<u64, HDTexPackImage>& wildcard,
+const HDTexPackImage* HDTexPack::Load(const Index& index, Cache& cache, u64 key) const
+{
+    auto ref = index.find(key);
+    if (ref == index.end() || FailedLoads.count(&ref->second))
+        return nullptr;
+
+    int pw = 0, ph = 0, pc = 0;
+    stbi_uc* pixels = stbi_load(ref->second.Path.c_str(), &pw, &ph, &pc, 4);
+    if (!pixels || (u32)pw != ref->second.Width || (u32)ph != ref->second.Height)
+    {
+        // missing, unreadable or replaced with a different size since startup; don't retry
+        if (pixels) stbi_image_free(pixels);
+        FailedLoads.insert(&ref->second);
+        Platform::Log(Platform::LogLevel::Warn, "HDTexPack: could not load %s\n",
+                      ref->second.Path.c_str());
+        return nullptr;
+    }
+
+    HDTexPackImage& img = cache[key];
+    img.Width = pw; img.Height = ph; img.Scale = ref->second.Scale;
+    img.RGBA.resize((size_t)pw * ph);
+    memcpy(img.RGBA.data(), pixels, (size_t)pw * ph * 4);
+    stbi_image_free(pixels);
+
+    if ((++LoadedCount & 0xFF) == 1)
+        Platform::Log(Platform::LogLevel::Info, "HDTexPack: %u of %u images loaded\n",
+                      LoadedCount, EntryCount);
+    return &img;
+}
+
+const HDTexPackImage* HDTexPack::Find(const Index& exactIndex, const Index& wildIndex,
+                                      Cache& exactCache, Cache& wildCache,
                                       u64 exactKey, u64 wildcardKey) const
 {
-    auto it = exact.find(exactKey);
-    if (it != exact.end()) return &it->second;
-    auto wit = wildcard.find(wildcardKey);
-    if (wit != wildcard.end()) return &wit->second;
-    return nullptr;
+    std::lock_guard<std::mutex> lock(CacheLock);
+    auto it = exactCache.find(exactKey);
+    if (it != exactCache.end()) return &it->second;
+    if (const HDTexPackImage* img = Load(exactIndex, exactCache, exactKey)) return img;
+    auto wit = wildCache.find(wildcardKey);
+    if (wit != wildCache.end()) return &wit->second;
+    return Load(wildIndex, wildCache, wildcardKey);
 }
 
 const HDTexPackImage* HDTexPack::LookupTexture(u32 width, u32 height, u64 texHash,
                                                u64 palHash, bool hasPal, u32 fmt) const
 {
     if (!LoadActive()) return nullptr;
-    return Find(TexEntries, TexWildcard,
+    return Find(TexIndex, TexWildIndex, TexEntries, TexWildcard,
                 MapKey(width, height, texHash, hasPal ? palHash : 0, fmt, hasPal),
                 MapKey(width, height, texHash, 0, fmt, false));
 }
@@ -276,7 +297,7 @@ const HDTexPackImage* HDTexPack::LookupSprite(u32 width, u32 height, u64 tileHas
 {
     if (!LoadActive()) return nullptr;
     u32 disc = !strcmp(bppTag, "bmp") ? 0xB : (u32)atoi(bppTag);
-    return Find(SpriteEntries, SpriteWildcard,
+    return Find(SpriteIndex, SpriteWildIndex, SpriteEntries, SpriteWildcard,
                 MapKey(width, height, tileHash, hasPal ? palHash : 0, disc, hasPal),
                 MapKey(width, height, tileHash, 0, disc, false));
 }
@@ -284,7 +305,7 @@ const HDTexPackImage* HDTexPack::LookupSprite(u32 width, u32 height, u64 tileHas
 const HDTexPackImage* HDTexPack::LookupBGTile(u64 tileHash, u64 palHash, bool hasPal, u32 bpp) const
 {
     if (!LoadActive()) return nullptr;
-    return Find(BGEntries, BGWildcard,
+    return Find(BGIndex, BGWildIndex, BGEntries, BGWildcard,
                 MapKey(8, 8, tileHash, hasPal ? palHash : 0, bpp, hasPal),
                 MapKey(8, 8, tileHash, 0, bpp, false));
 }
