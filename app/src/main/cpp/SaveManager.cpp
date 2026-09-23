@@ -29,6 +29,7 @@ SaveManager::SaveManager(std::string path)
     SecondaryBufferLock = Platform::Mutex_Create();
 
     Running = false;
+    Thread = nullptr;
 
     Path = path;
 
@@ -39,6 +40,7 @@ SaveManager::SaveManager(std::string path)
     FlushVersion = 0;
     PreviousFlushVersion = 0;
     TimeAtLastFlushRequest = 0;
+    ConsecutiveFlushFailures = 0;
 
     if (!path.empty())
     {
@@ -53,13 +55,16 @@ SaveManager::~SaveManager()
     {
         Running = false;
         Platform::Thread_Wait(Thread);
-        FlushSecondaryBuffer();
+        if (!FlushSecondaryBuffer())
+            Log(LogLevel::Error, "SaveManager: final flush to %s failed, latest save data was not written\n", Path.c_str());
     }
 
     SecondaryBuffer = nullptr;
 
     Platform::Mutex_Free(SecondaryBufferLock);
-    Platform::Thread_Free(Thread);
+    // No worker thread is created for an empty path
+    if (Thread)
+        Platform::Thread_Free(Thread);
 
     Buffer = nullptr;
 }
@@ -161,14 +166,14 @@ void SaveManager::run()
     }
 }
 
-void SaveManager::FlushSecondaryBuffer(u8* dst, u32 dstLength)
+bool SaveManager::FlushSecondaryBuffer(u8* dst, u32 dstLength)
 {
-    if (!SecondaryBuffer) return;
+    if (!SecondaryBuffer) return dst == nullptr;
 
     // When flushing to a file, there's no point in re-writing the exact same data.
-    if (!dst && !NeedsFlush()) return;
+    if (!dst && !NeedsFlush()) return true;
     // When flushing to memory, we don't know if dst already has any data so we only check that we CAN flush.
-    if (dst && dstLength < SecondaryBufferLength) return;
+    if (dst && dstLength < SecondaryBufferLength) return false;
 
     Platform::Mutex_Lock(SecondaryBufferLock);
     if (dst)
@@ -177,17 +182,48 @@ void SaveManager::FlushSecondaryBuffer(u8* dst, u32 dstLength)
     }
     else
     {
-        FileHandle* f = Platform::OpenFile(Path, FileMode::Write);
-        if (f)
+        if (!WriteSaveFile())
         {
-            FileWrite(SecondaryBuffer.get(), SecondaryBufferLength, 1, f);
-            Log(LogLevel::Info, "SaveManager: Wrote %u bytes to %s\n", SecondaryBufferLength, Path.c_str());
-            CloseFile(f);
+            // Keep this version pending. Pushing the request time forward makes the worker
+            // retry after the usual two second debounce instead of on every tick.
+            TimeAtLastFlushRequest = time(nullptr);
+            if (++ConsecutiveFlushFailures == 1 || ConsecutiveFlushFailures % 30 == 0)
+                Log(LogLevel::Error, "SaveManager: failed to write %s (%u attempts), will retry\n", Path.c_str(), ConsecutiveFlushFailures);
+
+            Platform::Mutex_Unlock(SecondaryBufferLock);
+            return false;
         }
+
+        Log(LogLevel::Info, "SaveManager: Wrote %u bytes to %s\n", SecondaryBufferLength, Path.c_str());
+        ConsecutiveFlushFailures = 0;
     }
     PreviousFlushVersion = FlushVersion;
     TimeAtLastFlushRequest = 0;
     Platform::Mutex_Unlock(SecondaryBufferLock);
+    return true;
+}
+
+bool SaveManager::WriteSaveFile()
+{
+    // Write over the existing file instead of truncating it first. If the process is killed
+    // mid-write, the save is left full length with a mix of old and new data (which games'
+    // checksums and backup banks can recover from) rather than empty. A file that has to
+    // shrink, or one that doesn't exist yet, still goes through the truncating open.
+    FileHandle* f = Platform::OpenFile(Path, FileMode::ReadWriteExisting);
+    if (f && Platform::FileLength(f) > SecondaryBufferLength)
+    {
+        CloseFile(f);
+        f = nullptr;
+    }
+    if (!f)
+        f = Platform::OpenFile(Path, FileMode::Write);
+    if (!f)
+        return false;
+
+    bool written = FileWrite(SecondaryBuffer.get(), SecondaryBufferLength, 1, f) == 1;
+    // Always close, even after a short write
+    bool closed = CloseFile(f);
+    return written && closed;
 }
 
 bool SaveManager::NeedsFlush()

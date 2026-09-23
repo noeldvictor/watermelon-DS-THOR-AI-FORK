@@ -42,11 +42,13 @@ public:
     void CheckFlush();
 
     bool NeedsFlush();
-    void FlushSecondaryBuffer(u8* dst = nullptr, u32 dstLength = 0);
+    // Returns false if the data could not be written. A failed file flush stays pending and is retried.
+    bool FlushSecondaryBuffer(u8* dst = nullptr, u32 dstLength = 0);
 
 private:
 
     void run();
+    bool WriteSaveFile();
 
     std::string Path;
 
@@ -67,6 +69,9 @@ private:
     // a flush cycle is finished.
     u32 PreviousFlushVersion;
     u32 FlushVersion;
+
+    // Only touched while holding SecondaryBufferLock
+    u32 ConsecutiveFlushFailures;
 };
 
 #endif // SAVEMANAGER_H
