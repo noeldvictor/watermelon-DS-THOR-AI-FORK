@@ -18,6 +18,10 @@
                 <action android:name="${applicationId}.SAVE_STATE" />
                 <action android:name="${applicationId}.LOAD_STATE" />
                 <action android:name="${applicationId}.DUMP_RENDERER_CAPTURE" />
+                <action android:name="${applicationId}.GET_PREFERENCES" />
+                <action android:name="${applicationId}.SET_PREFERENCE" />
+                <action android:name="${applicationId}.LIST_ROMS" />
+                <action android:name="${applicationId}.GET_FPS" />
             </intent-filter>
         </receiver>
 

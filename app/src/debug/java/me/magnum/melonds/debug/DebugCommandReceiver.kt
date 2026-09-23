@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import me.magnum.melonds.MelonDSAndroidInterface
 import me.magnum.melonds.MelonEmulator
@@ -26,11 +27,18 @@ import me.magnum.melonds.impl.emulator.debug.RendererDebugCaptureLogger
 import me.magnum.melonds.impl.emulator.debug.RendererDebugBridge
 import me.magnum.melonds.impl.emulator.debug.RendererDebugCaptureResult
 import me.magnum.melonds.ui.emulator.EmulatorActivity
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.util.LinkedHashSet
 import java.util.Locale
 
 internal class DebugCommandReceiver : BroadcastReceiver() {
+    // Returned to the caller instead of success=0/1 when a command produces data (a new
+    // receiver instance handles each broadcast, so this is per command). `adb shell am
+    // broadcast` prints it as the result data; tools/thor_mcp reads it from there.
+    private var resultData: String? = null
+
     override fun onReceive(context: Context, intent: Intent) {
         val pendingResult = goAsync()
         receiverScope.launch {
@@ -39,7 +47,7 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
                     handleIntent(context.applicationContext, intent)
                 }
                 pendingResult.setResultCode(if (success) RESULT_SUCCESS else RESULT_FAILURE)
-                pendingResult.setResultData("success=${if (success) 1 else 0}")
+                pendingResult.setResultData(resultData ?: "success=${if (success) 1 else 0}")
             } catch (error: Exception) {
                 Log.w(TAG, "Debug command failed: action=${intent.action}", error)
                 pendingResult.setResultCode(RESULT_FAILURE)
@@ -71,6 +79,10 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
             context.debugCommandAction(ACTION_STEP_FRAME_SUFFIX) -> handleStepFrame(entryPoint, intent)
             context.debugCommandAction(ACTION_STEP_FRAMES_SUFFIX) -> handleStepFrame(entryPoint, intent)
             context.debugCommandAction(ACTION_DUMP_RENDERER_CAPTURE_SUFFIX) -> handleDumpRendererCapture(context, entryPoint, intent)
+            context.debugCommandAction(ACTION_GET_PREFERENCES_SUFFIX) -> handleGetPreferences(entryPoint, intent)
+            context.debugCommandAction(ACTION_SET_PREFERENCE_SUFFIX) -> handleSetPreference(entryPoint, intent)
+            context.debugCommandAction(ACTION_LIST_ROMS_SUFFIX) -> handleListRoms(entryPoint, intent)
+            context.debugCommandAction(ACTION_GET_FPS_SUFFIX) -> handleGetFps()
             else -> {
                 Log.w(TAG, "Ignored unknown action=${intent.action}")
                 false
@@ -221,6 +233,86 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         MelonEmulator.onInputUp(Input.TOUCHSCREEN)
         MelonEmulator.onScreenRelease()
         Log.w(TAG, "action=touch_screen x=$x y=$y durationMs=$durationMs")
+    }
+
+    /** All preferences as a JSON object, optionally only keys containing `filter`. */
+    private fun handleGetPreferences(entryPoint: DebugCommandEntryPoint, intent: Intent): Boolean {
+        val filter = intent.getStringExtra(EXTRA_FILTER).orEmpty()
+        val json = JSONObject()
+        entryPoint.sharedPreferences().all.toSortedMap().forEach { (key, value) ->
+            if (filter.isEmpty() || key.contains(filter, ignoreCase = true)) {
+                json.put(key, if (value is Set<*>) JSONArray(value.toList()) else value ?: JSONObject.NULL)
+            }
+        }
+        resultData = json.toString()
+        return true
+    }
+
+    /**
+     * Sets one preference. The stored value's type decides how `value` is parsed; a key that
+     * doesn't exist yet needs `type` (boolean, int, long, float, set, string). Written through
+     * SharedPreferences, so the settings listeners apply it to a running game the same way the
+     * settings screen does.
+     */
+    private fun handleSetPreference(entryPoint: DebugCommandEntryPoint, intent: Intent): Boolean {
+        val key = intent.getStringExtra(EXTRA_KEY) ?: throw IllegalArgumentException("Missing key")
+        val raw = intent.getStringExtra(EXTRA_VALUE) ?: throw IllegalArgumentException("Missing value")
+        val preferences = entryPoint.sharedPreferences()
+        val old = preferences.all[key]
+        val type = intent.getStringExtra(EXTRA_TYPE) ?: when (old) {
+            is Boolean -> "boolean"
+            is Int -> "int"
+            is Long -> "long"
+            is Float -> "float"
+            is Set<*> -> "set"
+            null -> throw IllegalArgumentException("Unknown preference $key: pass type to create it")
+            else -> "string"
+        }
+        preferences.edit(commit = true) {
+            when (type) {
+                "boolean" -> putBoolean(key, raw.toBooleanStrict())
+                "int" -> putInt(key, raw.toInt())
+                "long" -> putLong(key, raw.toLong())
+                "float" -> putFloat(key, raw.toFloat())
+                "set" -> putStringSet(key, raw.split(',').filter { it.isNotEmpty() }.toSet())
+                "string" -> putString(key, raw)
+                else -> throw IllegalArgumentException("Unknown type $type")
+            }
+        }
+        val new = preferences.all[key]
+        // push the change into a running game, as the other setting commands do
+        val refreshed = DebugCommandStateStore.requestSettingsRefresh()
+        resultData = JSONObject()
+            .put("key", key)
+            .put("type", type)
+            .put("old", (old as? Set<*>)?.let { JSONArray(it.toList()) } ?: old ?: JSONObject.NULL)
+            .put("new", (new as? Set<*>)?.let { JSONArray(it.toList()) } ?: new ?: JSONObject.NULL)
+            .put("appliedToRunningGame", refreshed)
+            .toString()
+        Log.w(TAG, "action=set_preference key=$key old=$old new=$new refreshed=${if (refreshed) 1 else 0}")
+        return true
+    }
+
+    private fun handleGetFps(): Boolean {
+        resultData = JSONObject()
+            .put("fps", MelonEmulator.getFPS())
+            .put("running", DebugCommandStateStore.isRunningRom())
+            .toString()
+        return true
+    }
+
+    /** The ROM library as JSON: name, file and the URI LAUNCH_ROM takes. Optional `query`. */
+    private suspend fun handleListRoms(entryPoint: DebugCommandEntryPoint, intent: Intent): Boolean {
+        val query = intent.getStringExtra(EXTRA_QUERY).orEmpty()
+        val roms = JSONArray()
+        entryPoint.romsRepository().getRoms().first()
+            .filter { query.isEmpty() || it.name.contains(query, true) || it.fileName.contains(query, true) }
+            .sortedBy { it.name }
+            .forEach { rom ->
+                roms.put(JSONObject().put("name", rom.name).put("file", rom.fileName).put("uri", rom.uri.toString()))
+            }
+        resultData = roms.toString()
+        return true
     }
 
     private suspend fun handleLaunchRom(context: Context, intent: Intent): Boolean {
@@ -1190,6 +1282,14 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         private const val ACTION_STEP_FRAME_SUFFIX = "STEP_FRAME"
         private const val ACTION_STEP_FRAMES_SUFFIX = "STEP_FRAMES"
         private const val ACTION_DUMP_RENDERER_CAPTURE_SUFFIX = "DUMP_RENDERER_CAPTURE"
+        private const val ACTION_GET_PREFERENCES_SUFFIX = "GET_PREFERENCES"
+        private const val ACTION_SET_PREFERENCE_SUFFIX = "SET_PREFERENCE"
+        private const val ACTION_LIST_ROMS_SUFFIX = "LIST_ROMS"
+        private const val ACTION_GET_FPS_SUFFIX = "GET_FPS"
+        private const val EXTRA_KEY = "key"
+        private const val EXTRA_TYPE = "type"
+        private const val EXTRA_FILTER = "filter"
+        private const val EXTRA_QUERY = "query"
     }
 
     private fun Context.debugCommandAction(suffix: String): String {

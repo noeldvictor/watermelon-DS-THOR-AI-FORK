@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "thor": {
+      "command": "python",
+      "args": ["tools/thor_mcp/thor_mcp.py"]
+    }
+  }
+}
