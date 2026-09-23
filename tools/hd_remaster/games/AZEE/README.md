@@ -4,7 +4,8 @@
 powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 "Phantom Hourglass.nds" -Push
 ```
 
-1934 textures, 4608 sprites and 7811 background tiles.
+1934 textures, 4608 sprites and 7811 background tiles: a 281 MB pack at 4x, built in about
+23 minutes on an RTX 3060.
 
 Everything is stored as standard Nitro files, so no game-specific reader or rule is needed, and
 1773 of the 1934 textures are paired with their palettes through the models' own materials.
