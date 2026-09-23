@@ -101,6 +101,59 @@ u64 SpriteTileHash(const u8* vram, u32 vrammask, int type,
     return hash;
 }
 
+// Marks the native pixels a sprite draws with its rank, keeping the lowest (topmost) rank
+// where sprites overlap. Affine sprites cover their whole bounding box: their pixels would
+// need the matrix, and they are never replaced, only possibly on top of something that is.
+void MarkSpriteCoverage(u8* rankMap, u8 rank, const u8* vram, u32 vrammask, int type,
+                        int tileOffset, int tileStride, s32 xpos, s32 ypos, int width,
+                        int height, bool affine, s32 boundWidth, s32 boundHeight,
+                        bool hflip, bool vflip)
+{
+    if (rank == kNoObjRank)
+        return;
+    const int w = affine ? boundWidth : width;
+    const int h = affine ? boundHeight : height;
+    for (int y = 0; y < h; y++)
+    {
+        const s32 sy = (ypos + y) & 0xFF;
+        if (sy >= 192)
+            continue;
+        u8* row = &rankMap[(size_t)sy * 256];
+        const int ty = vflip ? height - 1 - y : y;
+        for (int x = 0; x < w; x++)
+        {
+            const s32 sx = xpos + x;
+            if (sx < 0 || sx >= 256 || row[sx] <= rank)
+                continue;
+            bool opaque = true;
+            if (!affine)
+            {
+                const int tx = hflip ? width - 1 - x : x;
+                if (type == 0)
+                {
+                    u32 addr = (u32)(tileOffset + ((tx >> 3) * 32) + ((ty >> 3) * tileStride)
+                                     + ((tx & 0x7) >> 1) + ((ty & 0x7) << 2));
+                    u8 byte = vram[addr & vrammask];
+                    opaque = ((tx & 1) ? (byte >> 4) : (byte & 0xF)) != 0;
+                }
+                else if (type == 1)
+                {
+                    u32 addr = (u32)(tileOffset + ((tx >> 3) * 64) + ((ty >> 3) * tileStride)
+                                     + (tx & 0x7) + ((ty & 0x7) << 3));
+                    opaque = vram[addr & vrammask] != 0;
+                }
+                else
+                {
+                    u32 addr = (u32)(tileOffset + (tx * 2) + (ty * tileStride)) & vrammask;
+                    opaque = (vram[(addr + 1) & vrammask] & 0x80) != 0;
+                }
+            }
+            if (opaque)
+                row[sx] = rank;
+        }
+    }
+}
+
 // hash of the palette range the sprite can address; matches the desktop
 // dumper's SpritePalHash
 u64 SpritePalHash(const u16* stdPal, const u16* extPal, int type, int palOffset, bool& hasPal)
@@ -143,6 +196,7 @@ void HDPack2D::ProcessFrame(GPU& gpu, HDTexPack* pack)
         WalkBatch++;
     if (dumpSprites)
         CurBitmapKeys.clear();
+    ObjRank.assign(2 * kObjRankEngineSize, kNoObjRank);
 
     for (int num = 0; num < 2; num++)
     {
@@ -169,7 +223,7 @@ void HDPack2D::ProcessFrame(GPU& gpu, HDTexPack* pack)
 }
 
 void HDPack2D::EmitSpriteInstance(const HDTexPackImage* img, int num, u8 flip,
-                                  s32 xpos, s32 ypos, int width, int height)
+                                  s32 xpos, s32 ypos, int width, int height, u8 rank)
 {
     // the renderer draws sprite row r at scanline (ypos + r) & 0xFF, so a
     // sprite near the bottom edge also wraps to the top of the screen
@@ -191,6 +245,7 @@ void HDPack2D::EmitSpriteInstance(const HDTexPackImage* img, int num, u8 flip,
         inst.Y = (s16)y;
         inst.W = (u16)width;
         inst.H = (u16)height;
+        inst.Rank = rank;
         Instances.push_back(inst);
     }
 }
@@ -236,6 +291,26 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
         32, 16, 32, 8,
         64, 32, 64, 8
     };
+
+    // the drawing order: lower OBJ priority value first, then lower OAM index. Window
+    // sprites draw nothing and don't get a rank.
+    u8 rankOf[128];
+    {
+        u16 order[128];
+        int n = 0;
+        for (int i = 0; i < 128; i++)
+        {
+            const u16* attrib = &oam[i * 4];
+            rankOf[i] = kNoObjRank;
+            if (((attrib[0] >> 8) & 0x3) == 2 || ((attrib[0] >> 10) & 0x3) == 2)
+                continue;
+            order[n++] = (u16)((((attrib[2] >> 10) & 0x3) << 7) | i);
+        }
+        std::sort(order, order + n);
+        for (int r = 0; r < n; r++)
+            rankOf[order[r] & 0x7F] = (u8)r;
+    }
+    u8* rankMap = &ObjRank[(size_t)num * kObjRankEngineSize];
 
     for (int i = 0; i < 128; i++)
     {
@@ -331,6 +406,12 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
         if (width <= 0 || height <= 0 || width > 64 || height > 64)
             continue;
 
+        if (sprmode != 2)
+            MarkSpriteCoverage(rankMap, rankOf[i], objvram, objvrammask, type, tileOffset,
+                               tileStride, xpos, ypos, width, height,
+                               (sprtype & 1) != 0, boundwidth, boundheight,
+                               (attrib[1] & (1 << 12)) != 0, (attrib[1] & (1 << 13)) != 0);
+
         u64 tileHash = SpriteTileHash(objvram, objvrammask, type,
                                       tileOffset, tileStride, width, height);
         bool hasPal = false;
@@ -403,7 +484,7 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
             u8 flip = (u8)(((attrib[1] & (1 << 12)) ? 1 : 0)
                            | ((attrib[1] & (1 << 13)) ? 2 : 0));
             if (img)
-                EmitSpriteInstance(img, num, flip, xpos, ypos, width, height);
+                EmitSpriteInstance(img, num, flip, xpos, ypos, width, height, rankOf[i]);
             else if (fonts && type != 2)
                 Missed.push_back({ xpos, ypos, width, height, type, tileOffset, tileStride,
                                    palOffset, flip, tileHash });

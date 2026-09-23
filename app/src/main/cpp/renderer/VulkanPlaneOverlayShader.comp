@@ -19,6 +19,12 @@
 //    native pixel was transparent and a neighbouring pixel is the producer's;
 //    where its native pixel was opaque the producer was occluded, and the
 //    occluder is kept
+//
+// Sprites share one producer flag, so for them "the producer won" is decided
+// by the ownership map (HDPack2D::ObjRank): the rank of the sprite drawn at
+// each native pixel. A sprite's art lands only where that sprite won, never on
+// a sprite above it, even one without replacement art (a name plate's art
+// used to paint over the unreplaced name drawn on it).
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -29,6 +35,8 @@ struct OverlayInstance
     uvec2 atlasPos;     // scaled atlas texel origin
     uint masks;         // bits 0-7 required flag bits, bits 8-15 rejected bits
     uint flags;         // bit 0 flipH, bit 1 flipV
+    uint rank;          // bits 0-7 sprite rank (0xFF: BG tile or glyph), bit 8 engine
+    uint pad;
 };
 
 layout(set = 0, binding = 0, std430) readonly buffer InstanceBuffer
@@ -38,6 +46,12 @@ layout(set = 0, binding = 0, std430) readonly buffer InstanceBuffer
 
 layout(set = 0, binding = 1, rgba8) uniform readonly image2D hdAtlas;
 layout(set = 0, binding = 2, rgba8) uniform image2D planes;
+
+// per engine, per native pixel: rank of the sprite drawn there, 0xFF none (4 per word)
+layout(set = 0, binding = 3, std430) readonly buffer RankBuffer
+{
+    uint rankWords[];
+};
 
 layout(push_constant) uniform PushConsts
 {
@@ -54,6 +68,13 @@ bool ownedBy(uint producer, uint requireMask, uint rejectMask)
 uint producerAt(ivec2 coord)
 {
     return uint(imageLoad(planes, coord).a * 255.0 + 0.5);
+}
+
+uint rankAt(uint engine, ivec2 scaledCoord)
+{
+    ivec2 native = scaledCoord / int(pc.scale);
+    uint index = engine * (256u * 192u) + uint(native.y) * 256u + uint(native.x);
+    return (rankWords[index >> 2u] >> ((index & 3u) * 8u)) & 0xFFu;
 }
 
 void main()
@@ -90,6 +111,12 @@ void main()
 
     uint requireMask = inst.masks & 0xFFu;
     uint rejectMask = (inst.masks >> 8u) & 0xFFu;
+    uint myRank = inst.rank & 0xFFu;
+    uint engine = (inst.rank >> 8u) & 1u;
+    bool ranked = myRank != 0xFFu;
+    uint winner = ranked ? rankAt(engine, ivec2(px, py)) : 0xFFu;
+    if (ranked)
+        nativeInk = winner == myRank;
     for (int plane = 0; plane < 2; plane++)
     {
         ivec2 coord = ivec2(px, py + plane * planeHeight);
@@ -99,7 +126,7 @@ void main()
             continue;
 
         vec3 base = existing.rgb;
-        if (ownedBy(producer, requireMask, rejectMask))
+        if (ownedBy(producer, requireMask, rejectMask) && (!ranked || winner == myRank))
         {
             if (nativeInk && plane == 0)
             {
@@ -116,7 +143,9 @@ void main()
         }
         else
         {
-            if (plane != 0 || nativeInk || hd.a <= 0.0)
+            // occluded: the sprite's own pixel is under something else, or (ranked) a
+            // sprite above it won here
+            if (plane != 0 || nativeInk || hd.a <= 0.0 || (ranked && winner < myRank))
                 continue;
             bool besideOwn = false;
             int step = int(pc.scale);
@@ -127,7 +156,8 @@ void main()
                     ivec2 n = ivec2(px + dx * step, py + dy * step);
                     if ((dx == 0 && dy == 0) || n.x < 0 || n.x >= planeWidth || n.y < 0 || n.y >= planeHeight)
                         continue;
-                    if (ownedBy(producerAt(n), requireMask, rejectMask))
+                    if (ownedBy(producerAt(n), requireMask, rejectMask)
+                        && (!ranked || rankAt(engine, n) == myRank))
                     {
                         besideOwn = true;
                         break;

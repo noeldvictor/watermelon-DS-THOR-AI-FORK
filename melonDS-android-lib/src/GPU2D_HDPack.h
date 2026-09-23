@@ -47,7 +47,13 @@ struct HDPack2DInstance
     u8 Flip;         // bit 0 horizontal, bit 1 vertical
     s16 X, Y;        // native screen coordinates, may be negative
     u16 W, H;        // native pixel size
+    // sprites: the sprite's place in the hardware drawing order (see HDPack2D::ObjRank);
+    // kNoObjRank for BG tiles and glyphs, which don't use the ownership map
+    u8 Rank = 0xFF;
 };
+
+constexpr u8 kNoObjRank = 0xFF;
+constexpr size_t kObjRankEngineSize = 256 * 192;
 
 // CPU-side 2D asset walker: decodes active OBJ sprites and text BG tiles
 // straight from OAM/VRAM after a frame has been rendered, dumping them
@@ -62,9 +68,8 @@ struct HDPack2DInstance
 //    that rewrite BG scroll in HBlank or use mosaic get replacements
 //    positioned from the final register state, which can misplace them on
 //    such frames (they are not detected and do not fall back)
-//  - overlapping OBJ replacements share the generic OBJ producer mask; the
-//    instance carries no OAM slot or priority, so where two sprites overlap
-//    the presenter cannot tell which sprite actually won a pixel
+//  - overlapping sprites all carry the generic OBJ producer mask, so ObjRank
+//    records which sprite won each native pixel
 class HDPack2D
 {
 public:
@@ -72,6 +77,11 @@ public:
     void ProcessFrame(GPU& gpu, HDTexPack* pack);
 
     std::vector<HDPack2DInstance> Instances;
+    // Per engine, per native pixel: the rank (place in the hardware drawing order: OBJ
+    // priority bits, then OAM index) of the sprite drawn there, kNoObjRank if none. A
+    // replacement is only drawn where its own sprite won, never over a sprite above it,
+    // even one the pack has no art for. 2 * kObjRankEngineSize bytes.
+    std::vector<u8> ObjRank;
 
 private:
     // a sprite the pack had no image for; text is looked for in these (see HDFont.h)
@@ -93,7 +103,7 @@ private:
     void ReplaceText(GPU& gpu, int num, HDTexPack* pack, size_t spriteStart);
     void WalkBGLayers(GPU& gpu, int num, HDTexPack* pack, bool dump, bool load);
     void EmitSpriteInstance(const HDTexPackImage* img, int num, u8 flip,
-                            s32 xpos, s32 ypos, int width, int height);
+                            s32 xpos, s32 ypos, int width, int height, u8 rank);
 
     u32 FrameCounter = 0;
     u32 WalkBatch = 0;

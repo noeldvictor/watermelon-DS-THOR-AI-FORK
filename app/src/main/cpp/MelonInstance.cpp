@@ -6438,6 +6438,7 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
     // HD pack 2D replacements ride the snapshot to the compositor; both latch paths
     // (this one and the FastPath one) and both compositor updates must carry them
     lastSoftPackedFrameSnapshot.replacementInstances = hdPack2D.Instances;
+    lastSoftPackedFrameSnapshot.replacementObjRank = hdPack2D.ObjRank;
     const bool renderer2dDebugControlsActive = areRenderer2DDebugControlsActive();
     if (renderer2dDebugControlsActive)
     {
@@ -9969,6 +9970,7 @@ bool MelonInstance::latchSoftPackedFrameSnapshotFastPath(
     lastSoftPackedFrameSnapshot.frontBufferLatched = frontBuffer;
     lastSoftPackedFrameSnapshot.screenSwapLatched = screenSwap;
     lastSoftPackedFrameSnapshot.replacementInstances = hdPack2D.Instances;
+    lastSoftPackedFrameSnapshot.replacementObjRank = hdPack2D.ObjRank;
     const bool renderer2dDebugControlsActive = areRenderer2DDebugControlsActive();
     if (renderer2dDebugControlsActive)
     {

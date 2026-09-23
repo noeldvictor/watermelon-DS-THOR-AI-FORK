@@ -2391,6 +2391,7 @@ void VulkanOutput::flushInFlightFrames()
             allFenceWaitsSucceeded = false;
         std::scoped_lock instanceLock(replacementInstanceLock);
         frameResource.replacementInstances.clear();
+        frameResource.replacementObjRank.clear();
     }
     if (!allFenceWaitsSucceeded)
     {
@@ -2408,7 +2409,7 @@ bool VulkanOutput::ensurePlaneOverlayResources(FrameResource& resource)
 {
     if (overlayDescriptorSetLayout == VK_NULL_HANDLE)
     {
-        std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
+        std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
         bindings[0].binding = 0;
         bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[0].descriptorCount = 1;
@@ -2421,6 +2422,10 @@ bool VulkanOutput::ensurePlaneOverlayResources(FrameResource& resource)
         bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         bindings[2].descriptorCount = 1;
         bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[3].binding = 3;
+        bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[3].descriptorCount = 1;
+        bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
         VkDescriptorSetLayoutCreateInfo layoutCreateInfo{};
         layoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -2433,7 +2438,7 @@ bool VulkanOutput::ensurePlaneOverlayResources(FrameResource& resource)
     if (overlayDescriptorPool == VK_NULL_HANDLE)
     {
         std::array<VkDescriptorPoolSize, 2> poolSizes{};
-        poolSizes[0] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, FRAME_QUEUE_SIZE * 2};
+        poolSizes[0] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, FRAME_QUEUE_SIZE * 4};
         poolSizes[1] = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, FRAME_QUEUE_SIZE * 4};
 
         VkDescriptorPoolCreateInfo poolCreateInfo{};
@@ -2569,6 +2574,15 @@ bool VulkanOutput::ensurePlaneOverlayResources(FrameResource& resource)
                              kOverlayStagingSize,
                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
         return false;
+    if (resource.overlayRankBuffer == VK_NULL_HANDLE)
+    {
+        if (!createHostBuffer(resource.overlayRankBuffer, resource.overlayRankMemory,
+                              resource.overlayRankMapped,
+                              2 * melonDS::kObjRankEngineSize,
+                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
+            return false;
+        resource.overlayDescriptorsReady = false;
+    }
 
     if (resource.overlayDescriptorsReady
         && (resource.cachedOverlayTopPlaneView != topFilteredPlaneView
@@ -2602,29 +2616,38 @@ bool VulkanOutput::ensurePlaneOverlayResources(FrameResource& resource)
         planeInfos[0] = {VK_NULL_HANDLE, topFilteredPlaneView, VK_IMAGE_LAYOUT_GENERAL};
         planeInfos[1] = {VK_NULL_HANDLE, bottomFilteredPlaneView, VK_IMAGE_LAYOUT_GENERAL};
 
-        std::array<VkWriteDescriptorSet, 6> writes{};
+        VkDescriptorBufferInfo rankInfo{resource.overlayRankBuffer, 0, 2 * melonDS::kObjRankEngineSize};
+
+        std::array<VkWriteDescriptorSet, 8> writes{};
         for (u32 screen = 0; screen < 2; screen++)
         {
-            writes[screen * 3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[screen * 3].dstSet = resource.overlayDescriptorSets[screen];
-            writes[screen * 3].dstBinding = 0;
-            writes[screen * 3].descriptorCount = 1;
-            writes[screen * 3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[screen * 3].pBufferInfo = &instanceInfo;
+            writes[screen * 4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[screen * 4].dstSet = resource.overlayDescriptorSets[screen];
+            writes[screen * 4].dstBinding = 0;
+            writes[screen * 4].descriptorCount = 1;
+            writes[screen * 4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[screen * 4].pBufferInfo = &instanceInfo;
 
-            writes[screen * 3 + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[screen * 3 + 1].dstSet = resource.overlayDescriptorSets[screen];
-            writes[screen * 3 + 1].dstBinding = 1;
-            writes[screen * 3 + 1].descriptorCount = 1;
-            writes[screen * 3 + 1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-            writes[screen * 3 + 1].pImageInfo = &atlasInfo;
+            writes[screen * 4 + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[screen * 4 + 1].dstSet = resource.overlayDescriptorSets[screen];
+            writes[screen * 4 + 1].dstBinding = 1;
+            writes[screen * 4 + 1].descriptorCount = 1;
+            writes[screen * 4 + 1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            writes[screen * 4 + 1].pImageInfo = &atlasInfo;
 
-            writes[screen * 3 + 2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[screen * 3 + 2].dstSet = resource.overlayDescriptorSets[screen];
-            writes[screen * 3 + 2].dstBinding = 2;
-            writes[screen * 3 + 2].descriptorCount = 1;
-            writes[screen * 3 + 2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-            writes[screen * 3 + 2].pImageInfo = &planeInfos[screen];
+            writes[screen * 4 + 2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[screen * 4 + 2].dstSet = resource.overlayDescriptorSets[screen];
+            writes[screen * 4 + 2].dstBinding = 2;
+            writes[screen * 4 + 2].descriptorCount = 1;
+            writes[screen * 4 + 2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            writes[screen * 4 + 2].pImageInfo = &planeInfos[screen];
+
+            writes[screen * 4 + 3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[screen * 4 + 3].dstSet = resource.overlayDescriptorSets[screen];
+            writes[screen * 4 + 3].dstBinding = 3;
+            writes[screen * 4 + 3].descriptorCount = 1;
+            writes[screen * 4 + 3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[screen * 4 + 3].pBufferInfo = &rankInfo;
         }
         vkUpdateDescriptorSets(device, static_cast<u32>(writes.size()), writes.data(), 0, nullptr);
         resource.cachedOverlayTopPlaneView = topFilteredPlaneView;
@@ -2818,6 +2841,7 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
         out.gpu.atlasY = slot.y;
         out.gpu.masks = static_cast<u32>(inst.RequireMask) | (static_cast<u32>(inst.RejectMask) << 8);
         out.gpu.flags = inst.Flip;
+        out.gpu.rank = static_cast<u32>(inst.Rank) | (static_cast<u32>(inst.Engine & 1u) << 8);
         out.screen = ((inst.Engine == 0) == engineAOnTop) ? 0 : 1;
         out.isSprite = inst.RequireMask == 0x90;
         prepared.push_back(out);
@@ -2840,6 +2864,16 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
     auto* instanceData = static_cast<PlaneOverlayGpuInstance*>(resource.overlayInstanceMapped);
     for (size_t i = 0; i < prepared.size(); i++)
         instanceData[i] = prepared[i].gpu;
+    {
+        // which sprite won each native pixel (HDPack2D::ObjRank); without one no sprite owns
+        // anything, which only costs the replacements, never shows them over the wrong sprite
+        std::scoped_lock rankLock(replacementInstanceLock);
+        auto* rankData = static_cast<u8*>(resource.overlayRankMapped);
+        if (resource.replacementObjRank.size() == 2 * melonDS::kObjRankEngineSize)
+            std::memcpy(rankData, resource.replacementObjRank.data(), 2 * melonDS::kObjRankEngineSize);
+        else
+            std::memset(rankData, melonDS::kNoObjRank, 2 * melonDS::kObjRankEngineSize);
+    }
     statsOverlayInstances += static_cast<u32>(prepared.size());
 
     // atlas: transition on first use, then order transfer uploads against
@@ -5292,6 +5326,15 @@ void VulkanOutput::destroyFrameResource(Frame* frame)
         }
     }
 
+    if (resource.overlayRankMapped != nullptr)
+    {
+        vkUnmapMemory(device, resource.overlayRankMemory);
+        resource.overlayRankMapped = nullptr;
+    }
+    if (resource.overlayRankBuffer != VK_NULL_HANDLE)
+        vkDestroyBuffer(device, resource.overlayRankBuffer, nullptr);
+    if (resource.overlayRankMemory != VK_NULL_HANDLE)
+        vkFreeMemory(device, resource.overlayRankMemory, nullptr);
     if (resource.overlayInstanceMapped != nullptr)
     {
         vkUnmapMemory(device, resource.overlayInstanceMemory);
@@ -5681,6 +5724,7 @@ bool VulkanOutput::updateCompositorPackedBuffersCompatibility(
     {
         std::scoped_lock instanceLock(replacementInstanceLock);
         resource.replacementInstances = softPackedSnapshot.replacementInstances;
+        resource.replacementObjRank = softPackedSnapshot.replacementObjRank;
     }
     resource.frontBufferLatched = softPackedSnapshot.frontBufferLatched;
     resource.captureBackedClass4Only =
@@ -6272,6 +6316,7 @@ bool VulkanOutput::updateCompositorPackedBuffersFastPath(
         // HD pack 2D replacements; the Compatibility update carries them the same way
         std::scoped_lock instanceLock(replacementInstanceLock);
         resource.replacementInstances = softPackedSnapshot.replacementInstances;
+        resource.replacementObjRank = softPackedSnapshot.replacementObjRank;
     }
     resource.frontBufferLatched = softPackedSnapshot.frontBufferLatched;
     resource.captureCntLatched = softPackedSnapshot.captureCntLatched;

@@ -178,10 +178,12 @@ struct SoftPackedFrameSnapshot
     SoftPackedScreenStats topScreenStats{};
     SoftPackedScreenStats bottomScreenStats{};
     std::vector<melonDS::HDPack2DInstance> replacementInstances;
+    std::vector<u8> replacementObjRank;   // HDPack2D::ObjRank of the same frame
 
     void clear()
     {
         replacementInstances.clear();
+        replacementObjRank.clear();
         frameId = 0;
         frontBufferLatched = -1;
         screenSwapLatched = false;
@@ -689,6 +691,8 @@ private:
         u32 atlasX, atlasY;
         u32 masks;  // bits 0-7 require, bits 8-15 reject
         u32 flags;  // bit 0 flipH, bit 1 flipV
+        u32 rank;   // bits 0-7 sprite rank (0xFF: BG tile or glyph), bit 8 engine
+        u32 pad;
     };
 
     struct OverlayAtlasSlot
@@ -884,6 +888,10 @@ private:
         VkImageView cachedScaleFXTopPlaneView{VK_NULL_HANDLE};
         VkImageView cachedScaleFXBottomPlaneView{VK_NULL_HANDLE};
         std::vector<melonDS::HDPack2DInstance> replacementInstances;
+        std::vector<u8> replacementObjRank;
+        VkBuffer overlayRankBuffer{VK_NULL_HANDLE};
+        VkDeviceMemory overlayRankMemory{VK_NULL_HANDLE};
+        void* overlayRankMapped{};
         VkBuffer overlayInstanceBuffer{VK_NULL_HANDLE};
         VkDeviceMemory overlayInstanceMemory{VK_NULL_HANDLE};
         void* overlayInstanceMapped{};
