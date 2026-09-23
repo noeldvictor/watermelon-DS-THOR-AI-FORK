@@ -128,10 +128,15 @@ HDTexPack::HDTexPack(const std::string& packDir, const std::string& dumpDir,
         LoadDir(PackDir + "/textures", "tex1");
         LoadDir(PackDir + "/sprites", "obj1");
         LoadDir(PackDir + "/bgtiles", "bg1");
+        // Warn so it shows in release builds: once per game start, and the only way to tell
+        // from a log whether a pack was found at all
         if (EntryCount > 0)
-            Platform::Log(Platform::LogLevel::Info,
-                          "HDTexPack: indexed %u entries from %s (scale %ux), images load on first use\n",
-                          EntryCount, PackDir.c_str(), PackScale);
+            Platform::Log(Platform::LogLevel::Warn,
+                          "HDTexPack: indexed %u entries from %s (textures %zu, sprites %zu, bg tiles %zu, "
+                          "scale %ux), images load on first use\n",
+                          EntryCount, PackDir.c_str(), TexIndex.size() + TexWildIndex.size(),
+                          SpriteIndex.size() + SpriteWildIndex.size(), BGIndex.size() + BGWildIndex.size(),
+                          PackScale);
     }
     if (DumpEnabled)
     {
@@ -265,8 +270,8 @@ const HDTexPackImage* HDTexPack::Load(const Index& index, Cache& cache, u64 key)
     stbi_image_free(pixels);
 
     if ((++LoadedCount & 0xFF) == 1)
-        Platform::Log(Platform::LogLevel::Info, "HDTexPack: %u of %u images loaded\n",
-                      LoadedCount, EntryCount);
+        Platform::Log(Platform::LogLevel::Warn, "HDTexPack: %u of %u images loaded (latest %s)\n",
+                      LoadedCount, EntryCount, ref->second.Path.c_str());
     return &img;
 }
 
@@ -287,9 +292,12 @@ const HDTexPackImage* HDTexPack::LookupTexture(u32 width, u32 height, u64 texHas
                                                u64 palHash, bool hasPal, u32 fmt) const
 {
     if (!LoadActive()) return nullptr;
-    return Find(TexIndex, TexWildIndex, TexEntries, TexWildcard,
+    const HDTexPackImage* img = Find(TexIndex, TexWildIndex, TexEntries, TexWildcard,
                 MapKey(width, height, texHash, hasPal ? palHash : 0, fmt, hasPal),
                 MapKey(width, height, texHash, 0, fmt, false));
+    Lookups[0].fetch_add(1, std::memory_order_relaxed);
+    if (img) Hits[0].fetch_add(1, std::memory_order_relaxed);
+    return img;
 }
 
 const HDTexPackImage* HDTexPack::LookupSprite(u32 width, u32 height, u64 tileHash,
@@ -297,17 +305,37 @@ const HDTexPackImage* HDTexPack::LookupSprite(u32 width, u32 height, u64 tileHas
 {
     if (!LoadActive()) return nullptr;
     u32 disc = !strcmp(bppTag, "bmp") ? 0xB : (u32)atoi(bppTag);
-    return Find(SpriteIndex, SpriteWildIndex, SpriteEntries, SpriteWildcard,
+    const HDTexPackImage* img = Find(SpriteIndex, SpriteWildIndex, SpriteEntries, SpriteWildcard,
                 MapKey(width, height, tileHash, hasPal ? palHash : 0, disc, hasPal),
                 MapKey(width, height, tileHash, 0, disc, false));
+    Lookups[1].fetch_add(1, std::memory_order_relaxed);
+    if (img) Hits[1].fetch_add(1, std::memory_order_relaxed);
+    return img;
 }
 
 const HDTexPackImage* HDTexPack::LookupBGTile(u64 tileHash, u64 palHash, bool hasPal, u32 bpp) const
 {
     if (!LoadActive()) return nullptr;
-    return Find(BGIndex, BGWildIndex, BGEntries, BGWildcard,
+    const HDTexPackImage* img = Find(BGIndex, BGWildIndex, BGEntries, BGWildcard,
                 MapKey(8, 8, tileHash, hasPal ? palHash : 0, bpp, hasPal),
                 MapKey(8, 8, tileHash, 0, bpp, false));
+    Lookups[2].fetch_add(1, std::memory_order_relaxed);
+    if (img) Hits[2].fetch_add(1, std::memory_order_relaxed);
+    return img;
+}
+
+void HDTexPack::LogStats(size_t instances2D) const
+{
+    u32 l[3], h[3];
+    for (int i = 0; i < 3; i++)
+    {
+        l[i] = Lookups[i].exchange(0, std::memory_order_relaxed);
+        h[i] = Hits[i].exchange(0, std::memory_order_relaxed);
+    }
+    Platform::Log(Platform::LogLevel::Warn,
+                  "HDTexPack[Stats]: textures %u/%u sprites %u/%u bg %u/%u (hits/lookups) "
+                  "2dInstances=%zu loaded=%u\n",
+                  h[0], l[0], h[1], l[1], h[2], l[2], instances2D, LoadedCount);
 }
 
 void HDTexPack::WriteDumpPNG(const char* subdir, const std::string& name,

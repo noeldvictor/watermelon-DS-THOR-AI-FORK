@@ -22,6 +22,7 @@
 
 #include "types.h"
 
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -94,6 +95,10 @@ public:
     static u32 RGB6A5ToRGBA8(u32 texel);
     static u32 RGBA8ToRGB6A5(u32 pixel);
 
+    // One Warn line with lookup hits and misses per kind since the last call, then reset.
+    // instances2D: replacement instances the 2D walker emitted for the latest frame.
+    void LogStats(size_t instances2D) const;
+
 private:
     void LoadDir(const std::string& dir, const char* kind);
     bool AddEntry(const std::string& path, const std::string& name, const char* kind);
@@ -132,6 +137,8 @@ private:
     mutable std::unordered_set<const void*> FailedLoads;   // node addresses of index entries
     mutable std::mutex CacheLock;                           // 2D and 3D look up from different threads
     mutable u32 LoadedCount = 0;
+    // lookups and hits since the last LogStats: [0] textures, [1] sprites, [2] BG tiles
+    mutable std::atomic<u32> Lookups[3]{}, Hits[3]{};
 
     std::unordered_set<u64> DumpedKeys;
     std::unordered_set<u64> LoggedSpriteInstances;

@@ -330,6 +330,7 @@ private:
     std::unique_ptr<RetroAchievements::RetroAchievementsManager> retroAchievementsManager;
     std::unique_ptr<melonDS::HDTexPack> hdTexPack;
     std::string hdTexPackState;
+    u32 hdTexPackStatsFrames = 0;
     std::unique_ptr<melonDS::HDTexPack> hdTexFilterCache;
     std::string hdTexFilterCacheState;
     melonDS::HDPack2D hdPack2D;

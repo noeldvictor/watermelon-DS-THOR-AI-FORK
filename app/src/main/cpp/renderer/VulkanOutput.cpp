@@ -6267,6 +6267,11 @@ bool VulkanOutput::updateCompositorPackedBuffersFastPath(
     }
 
     resource.softPackedFrameId = softPackedSnapshot.frameId;
+    {
+        // HD pack 2D replacements; the Compatibility update carries them the same way
+        std::scoped_lock instanceLock(replacementInstanceLock);
+        resource.replacementInstances = softPackedSnapshot.replacementInstances;
+    }
     resource.frontBufferLatched = softPackedSnapshot.frontBufferLatched;
     resource.captureCntLatched = softPackedSnapshot.captureCntLatched;
     resource.dispCntALatched = softPackedSnapshot.dispCntALatched;

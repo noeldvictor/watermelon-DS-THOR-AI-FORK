@@ -2636,6 +2636,11 @@ u32 MelonInstance::runFrame()
         hdPack2D.ProcessFrame(nds->GPU, hdTexPack.get());
     else if (!hdPack2D.Instances.empty())
         hdPack2D.Instances.clear();
+    if (hdTexPack && hdTexPack->LoadActive() && ++hdTexPackStatsFrames >= 60)
+    {
+        hdTexPackStatsFrames = 0;
+        hdTexPack->LogStats(hdPack2D.Instances.size());
+    }
     const u64 raFrameStartNs = measuringVulkan ? PerfNowNs() : 0;
     {
         std::lock_guard lock(retroAchievementsManagerLifetimeMutex);
@@ -6430,6 +6435,9 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
     lastSoftPackedFrameSnapshot.frameId = frame->frameId;
     lastSoftPackedFrameSnapshot.frontBufferLatched = frontBuffer;
     lastSoftPackedFrameSnapshot.screenSwapLatched = screenSwap;
+    // HD pack 2D replacements ride the snapshot to the compositor; both latch paths
+    // (this one and the FastPath one) and both compositor updates must carry them
+    lastSoftPackedFrameSnapshot.replacementInstances = hdPack2D.Instances;
     const bool renderer2dDebugControlsActive = areRenderer2DDebugControlsActive();
     if (renderer2dDebugControlsActive)
     {

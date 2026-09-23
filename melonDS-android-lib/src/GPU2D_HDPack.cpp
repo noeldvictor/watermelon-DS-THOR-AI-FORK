@@ -202,6 +202,15 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
     const u16* extPal = const_cast<GPU2D::Unit&>(unit).GetOBJExtPal();
     const char screen = num ? 'B' : 'A';
 
+    // The replacement overlay draws art as-is; it doesn't reproduce the colour special
+    // effects. While an effect applies to the OBJ layer (a fade or blend in progress) the
+    // native sprites are left on screen instead, or a fading layer would show at full
+    // strength: Lufia fades its opaque white logo sheet out over the logo this way.
+    const u32 effect = (unit.BlendCnt >> 6) & 0x3;
+    const bool objEffect = (unit.BlendCnt & 0x10) && effect != 0
+        && !(effect == 1 && unit.EVA >= 16 && unit.EVB == 0)
+        && !(effect >= 2 && unit.EVY == 0);
+
     static const u8 spritewidth[16] =
     {
         8, 16, 8, 8,
@@ -367,8 +376,9 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
             }
         }
 
-        // replacement v1 skips rotscale sprites and window OBJs
-        if (load && !(sprtype & 1) && sprmode != 2)
+        // replacement v1 skips rotscale sprites and window OBJs, and anything being blended:
+        // semi-transparent OBJs, or all of them while a colour effect targets the OBJ layer
+        if (load && !(sprtype & 1) && sprmode != 2 && sprmode != 1 && !objEffect)
         {
             const HDTexPackImage* img =
                 pack->LookupSprite((u32)width, (u32)height, tileHash, palHash, hasPal, bppTag);
@@ -519,7 +529,13 @@ void HDPack2D::WalkBGLayers(GPU& gpu, int num, HDTexPack* pack, bool dump, bool 
             }
         }
 
-        if (load)
+        // as for sprites: while a colour effect targets this layer, keep the native tiles
+        const u32 effect = (unit.BlendCnt >> 6) & 0x3;
+        const bool layerEffect = (unit.BlendCnt & (1u << layer)) && effect != 0
+            && !(effect == 1 && unit.EVA >= 16 && unit.EVB == 0)
+            && !(effect >= 2 && unit.EVY == 0);
+
+        if (load && !layerEffect)
         {
             u16 xoff = unit.BGXPos[layer];
             u16 yoff = unit.BGYPos[layer];
