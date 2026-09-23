@@ -9,6 +9,16 @@
 // replacement only lands on pixels its producer actually won during 2D
 // composition, so occlusion and priority survive unchanged. Both stacked
 // plane halves are checked per invocation.
+//
+// HD art rarely has the native silhouette: an upscaled sprite's edge is a
+// smooth curve through its blocky outline. The HD alpha at the centre of a
+// native pixel tells which side of that outline the pixel was on, so:
+//  - on the producer's own pixels the art is blended over the layer beneath
+//    (the lower plane), so a corner the curve cuts off shows what is behind
+//  - on a pixel the producer didn't win, the art may spill in where its own
+//    native pixel was transparent and a neighbouring pixel is the producer's;
+//    where its native pixel was opaque the producer was occluded, and the
+//    occluder is kept
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -36,6 +46,16 @@ layout(push_constant) uniform PushConsts
     uint debugTint;
 } pc;
 
+bool ownedBy(uint producer, uint requireMask, uint rejectMask)
+{
+    return (producer & requireMask) != 0u && (producer & rejectMask) == 0u;
+}
+
+uint producerAt(ivec2 coord)
+{
+    return uint(imageLoad(planes, coord).a * 255.0 + 0.5);
+}
+
 void main()
 {
     OverlayInstance inst = instances[pc.instanceIndex];
@@ -53,13 +73,20 @@ void main()
         return;
 
     uvec2 srcTexel = local;
+    uvec2 centreTexel = (local / pc.scale) * pc.scale + uvec2(pc.scale / 2u);
     if ((inst.flags & 1u) != 0u)
+    {
         srcTexel.x = scaledSize.x - 1u - srcTexel.x;
+        centreTexel.x = scaledSize.x - 1u - centreTexel.x;
+    }
     if ((inst.flags & 2u) != 0u)
+    {
         srcTexel.y = scaledSize.y - 1u - srcTexel.y;
+        centreTexel.y = scaledSize.y - 1u - centreTexel.y;
+    }
     vec4 hd = imageLoad(hdAtlas, ivec2(inst.atlasPos + srcTexel));
-    if (hd.a <= 0.0)
-        return;
+    // whether the art's own native pixel here was opaque
+    bool nativeInk = imageLoad(hdAtlas, ivec2(inst.atlasPos + centreTexel)).a >= 0.5;
 
     uint requireMask = inst.masks & 0xFFu;
     uint rejectMask = (inst.masks >> 8u) & 0xFFu;
@@ -70,9 +97,48 @@ void main()
         uint producer = uint(existing.a * 255.0 + 0.5);
         if ((producer & 0xC0u) == 0x40u)
             continue;
-        if ((producer & requireMask) == 0u || (producer & rejectMask) != 0u)
-            continue;
-        vec3 blended = mix(existing.rgb, hd.rgb, hd.a);
+
+        vec3 base = existing.rgb;
+        if (ownedBy(producer, requireMask, rejectMask))
+        {
+            if (nativeInk && plane == 0)
+            {
+                // blend over the layer beneath; a 3D pixel there isn't in the planes yet
+                vec4 below = imageLoad(planes, ivec2(px, py + planeHeight));
+                uint belowProducer = uint(below.a * 255.0 + 0.5);
+                if ((belowProducer & 0xC0u) != 0x40u)
+                    base = below.rgb;
+            }
+            else if (hd.a <= 0.0)
+            {
+                continue;
+            }
+        }
+        else
+        {
+            if (plane != 0 || nativeInk || hd.a <= 0.0)
+                continue;
+            bool besideOwn = false;
+            int step = int(pc.scale);
+            for (int dy = -1; dy <= 1 && !besideOwn; dy++)
+            {
+                for (int dx = -1; dx <= 1; dx++)
+                {
+                    ivec2 n = ivec2(px + dx * step, py + dy * step);
+                    if ((dx == 0 && dy == 0) || n.x < 0 || n.x >= planeWidth || n.y < 0 || n.y >= planeHeight)
+                        continue;
+                    if (ownedBy(producerAt(n), requireMask, rejectMask))
+                    {
+                        besideOwn = true;
+                        break;
+                    }
+                }
+            }
+            if (!besideOwn)
+                continue;
+        }
+
+        vec3 blended = mix(base, hd.rgb, hd.a);
         if (pc.debugTint != 0u)
             blended = mix(blended, vec3(1.0, 0.0, 1.0), 0.5);
         imageStore(planes, coord, vec4(blended, existing.a));

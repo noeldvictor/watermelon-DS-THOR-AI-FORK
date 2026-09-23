@@ -22,7 +22,7 @@ HERE = Path(__file__).resolve().parent
 GAMES = HERE / "games"
 MODELS = HERE / "models"
 REGISTRY = HERE / "models.json"
-CATEGORIES = ("textures", "sprites", "backgrounds")
+CATEGORIES = ("textures", "sprites", "backgrounds", "fonts")
 DEFAULT_MODEL = "4x-UltraSharp"
 
 

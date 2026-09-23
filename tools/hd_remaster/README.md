@@ -77,6 +77,11 @@ those bytes, so the key of every texture can be computed from the ROM.
   built from a best guess; a wrong guess just doesn't match. Game-specific load rules that can't
   be read from the files live in `twod.PROFILES` (Lufia's portraits, for example, are uploaded
   with their colour indices shifted by 48).
+- **Text** is drawn by games at runtime from Nitro fonts (NFTR), one glyph at a time, so it
+  never exists as an image. Each font goes into the pack's `fonts/` folder as the font file
+  itself plus an upscaled atlas of its glyphs (grey shade levels; `fonts.py`). On the device,
+  sprites the pack has no image for are searched for glyphs by exact pixel match, and each glyph
+  is redrawn from the atlas in the palette colours the game drew it with.
 - **On the device**, pack images are indexed at game start and decoded the first time the game
   shows them, so a whole-game pack costs memory only for what is on screen.
 
@@ -102,7 +107,11 @@ sprites. The per-layer filters still apply to those.
 
 ## Limits
 
-- Anything a game builds at runtime can't be found in the ROM (see above).
+- Anything a game builds at runtime can't be found in the ROM (see above), except text drawn
+  from the game's fonts.
+- HD text needs the glyphs drawn exactly as the font stores them: text in background layers,
+  outlined or shadowed text drawn as two overlapping passes, and fonts that aren't NFTR stay
+  native.
 - Games with fully custom formats (not Nitro TEX0 / NCGR) need their own reader.
 - Background tile keys haven't been checked against in-game dumps yet.
 - Replacement skips rotating/scaled sprites, as the emulator's 2D replacement does.

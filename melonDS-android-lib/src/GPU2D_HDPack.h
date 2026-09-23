@@ -21,7 +21,9 @@
 #define GPU2D_HDPACK_H
 
 #include "types.h"
+#include "HDFont.h"
 
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -72,7 +74,23 @@ public:
     std::vector<HDPack2DInstance> Instances;
 
 private:
+    // a sprite the pack had no image for; text is looked for in these (see HDFont.h)
+    struct MissedSprite
+    {
+        s32 X, Y;
+        int Width, Height, Type, TileOffset, TileStride, PalOffset;
+        u8 Flip;
+        u64 TileHash;
+    };
+    struct TextGroup
+    {
+        s32 X0, Y0;
+        u16 Bg;
+        std::vector<HDFontSet::Placement> Placements;
+    };
+
     void WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool load);
+    void ReplaceText(GPU& gpu, int num, HDTexPack* pack, size_t spriteStart);
     void WalkBGLayers(GPU& gpu, int num, HDTexPack* pack, bool dump, bool load);
     void EmitSpriteInstance(const HDTexPackImage* img, int num, u8 flip,
                             s32 xpos, s32 ypos, int width, int height);
@@ -85,6 +103,12 @@ private:
     std::unordered_set<u64> PrevBitmapKeys, CurBitmapKeys;
 
     std::vector<u32> PixelScratch;
+
+    std::vector<MissedSprite> Missed;
+    std::vector<u16> TextCanvas;
+    // recognised glyphs per sprite group, keyed by the group's sprites and positions, so
+    // text that stays on screen is matched once
+    std::unordered_map<u64, TextGroup> TextGroups;
 };
 
 }

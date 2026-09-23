@@ -48,7 +48,8 @@
   "baseline": {
     "textures": 1777,
     "sprites": 9574,
-    "backgrounds": 26064
+    "backgrounds": 26064,
+    "fonts": 4
   },
   "verified": {
     "date": "2026-09-22",
@@ -59,6 +60,7 @@
   },
   "notes": [
     "Every asset lives in the indexed archive mcd.dat (mcd_compact.bin + mcd_path.bin), which the tool reads directly.",
-    "Not in the ROM, so not in the pack: dialogue text (drawn into sprite memory at runtime), 64x64 bitmap sprites captured from the 3D scene, and character parts the game assembles into one texture. The per-layer filters still apply to those."
+    "Not in the ROM, so not in the pack: dialogue text (drawn into sprite memory at runtime), 64x64 bitmap sprites captured from the 3D scene, and character parts the game assembles into one texture. The per-layer filters still apply to those.",
+    "HD text: the four 1bpp NFTR fonts in mcd:font/ are packed; dialogue-box text redraws in HD on the Thor (attract demo verified)."
   ]
 }

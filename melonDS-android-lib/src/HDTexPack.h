@@ -21,6 +21,7 @@
 #define HDTEXPACK_H
 
 #include "types.h"
+#include "HDFont.h"
 
 #include <atomic>
 #include <mutex>
@@ -55,14 +56,16 @@ public:
     HDTexPack(const std::string& packDir, const std::string& dumpDir,
               bool loadEnabled, bool dumpEnabled);
 
-    bool LoadActive() const { return LoadEnabled && EntryCount > 0; }
+    bool LoadActive() const { return LoadEnabled && (EntryCount > 0 || !FontSet.Empty()); }
     bool DumpActive() const { return DumpEnabled; }
     u32 Scale() const { return PackScale; }
     bool Has2DEntries() const
     {
         return !SpriteIndex.empty() || !SpriteWildIndex.empty()
-            || !BGIndex.empty() || !BGWildIndex.empty();
+            || !BGIndex.empty() || !BGWildIndex.empty() || !FontSet.Empty();
     }
+    // the pack's fonts/ folder: HD glyphs for text the game draws at runtime (see HDFont.h)
+    HDFontSet* Fonts() { return FontSet.Empty() ? nullptr : &FontSet; }
     bool Has3DEntries() const
     {
         return !TexIndex.empty() || !TexWildIndex.empty();
@@ -156,6 +159,8 @@ private:
     static constexpr u32 MaxLoggedMisses = 200;
     mutable std::unordered_set<u64> MissKeys[2];
     mutable u32 MissesLogged[2]{};
+
+    HDFontSet FontSet;
 
     std::unordered_set<u64> DumpedKeys;
     std::unordered_set<u64> LoggedSpriteInstances;

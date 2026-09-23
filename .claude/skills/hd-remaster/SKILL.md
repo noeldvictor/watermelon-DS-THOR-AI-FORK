@@ -37,6 +37,10 @@ keys, the pairing split (material / name / block / none), and the 2D line (cells
 standalone sprites, sprite keys, BG tile keys). Zero texture blocks means no Nitro TEX0 data
 (custom format or 2D-only); zero cells/screens means no NCER/NSCR data - say so.
 
+Fonts: the `fonts:` line lists the NFTR fonts found. They are upscaled and packed like
+everything else; on the device `HDFont: N fonts, M glyphs` logs at game start, and text frames
+show `2dInstances` rising with the glyphs on screen.
+
 Game-specific 2D load rules go in `twod.PROFILES[<GAMECODE>]` (see the BSDE entry: portraits
 uploaded with indices +48 into a composed 256-colour palette). Only add one when verify shows
 sprites whose tiles match but palettes don't, or tiles that match only after a transform.

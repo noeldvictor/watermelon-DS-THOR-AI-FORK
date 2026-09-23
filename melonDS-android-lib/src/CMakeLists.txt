@@ -48,6 +48,8 @@ add_library(core STATIC
     GPU3D_Texcache.h
     GPU2D_HDPack.cpp
     GPU2D_HDPack.h
+    HDFont.cpp
+    HDFont.h
     HDTexPack.cpp
     HDTexPack.h
     HDTextureFilter.cpp

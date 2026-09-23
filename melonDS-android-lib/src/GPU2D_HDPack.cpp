@@ -22,6 +22,8 @@
 #include "GPU.h"
 #include "HDTexPack.h"
 
+#include <algorithm>
+
 #define XXH_STATIC_LINKING_ONLY
 #include "xxhash/xxhash.h"
 
@@ -32,6 +34,7 @@ namespace
 {
 
 constexpr size_t kMaxInstances = 4096;
+constexpr size_t kMaxTextGroups = 512;
 constexpr u32 kSpriteDumpInterval = 8;
 constexpr u32 kBGDumpInterval = 16;
 
@@ -211,6 +214,10 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
         && !(effect == 1 && unit.EVA >= 16 && unit.EVB == 0)
         && !(effect >= 2 && unit.EVY == 0);
 
+    const size_t spriteStart = Instances.size();
+    HDFontSet* fonts = load ? pack->Fonts() : nullptr;
+    Missed.clear();
+
     static const u8 spritewidth[16] =
     {
         8, 16, 8, 8,
@@ -382,14 +389,153 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
         {
             const HDTexPackImage* img =
                 pack->LookupSprite((u32)width, (u32)height, tileHash, palHash, hasPal, bppTag);
+            u8 flip = (u8)(((attrib[1] & (1 << 12)) ? 1 : 0)
+                           | ((attrib[1] & (1 << 13)) ? 2 : 0));
             if (img)
-            {
-                u8 flip = (u8)(((attrib[1] & (1 << 12)) ? 1 : 0)
-                               | ((attrib[1] & (1 << 13)) ? 2 : 0));
                 EmitSpriteInstance(img, num, flip, xpos, ypos, width, height);
-            }
+            else if (fonts && type != 2)
+                Missed.push_back({ xpos, ypos, width, height, type, tileOffset, tileStride,
+                                   palOffset, flip, tileHash });
         }
     }
+
+    if (!Missed.empty())
+        ReplaceText(gpu, num, pack, spriteStart);
+}
+
+void HDPack2D::ReplaceText(GPU& gpu, int num, HDTexPack* pack, size_t spriteStart)
+{
+    HDFontSet* fonts = pack->Fonts();
+    const GPU2D::Unit& unit = num ? (const GPU2D::Unit&)gpu.GPU2D_B : gpu.GPU2D_A;
+    u8* objvram;
+    u32 objvrammask;
+    unit.GetOBJVRAM(objvram, objvrammask);
+    const u16* stdPal = (const u16*)&gpu.Palette[num ? 0x600 : 0x200];
+    const u16* extPal = const_cast<GPU2D::Unit&>(unit).GetOBJExtPal();
+
+    // Text is drawn into a group of sprites sharing one palette, and a glyph can straddle two
+    // of them, so each group is assembled into one screen-space canvas of palette indices
+    std::vector<HDPack2DInstance> glyphs;
+    std::vector<bool> done(Missed.size(), false);
+    for (size_t first = 0; first < Missed.size(); first++)
+    {
+        if (done[first]) continue;
+        const int type = Missed[first].Type, palOffset = Missed[first].PalOffset;
+        std::vector<size_t> members;
+        u64 groupKey = XXH64(&num, sizeof(num), (u64)type * 1000 + (u64)palOffset);
+        s32 x0 = 256, y0 = 192, x1 = 0, y1 = 0;
+        for (size_t i = first; i < Missed.size(); i++)
+        {
+            const MissedSprite& m = Missed[i];
+            if (done[i] || m.Type != type || m.PalOffset != palOffset) continue;
+            done[i] = true;
+            members.push_back(i);
+            // rows wrap at 256 like the renderer's scanline test; the canvas only needs the
+            // part on screen
+            const s32 y = m.Y & 0xFF;
+            const s32 top = (y + m.Height > 256) ? 0 : y;
+            const s32 bottom = (y + m.Height > 256) ? 192 : y + m.Height;
+            x0 = std::min(x0, std::max<s32>(m.X, 0));
+            x1 = std::max(x1, std::min<s32>(m.X + m.Width, 256));
+            y0 = std::min(y0, std::min<s32>(top, 192));
+            y1 = std::max(y1, std::min<s32>(bottom, 192));
+            const s32 fields[5] = { m.X, m.Y, m.Width, m.Height, m.Flip };
+            groupKey = XXH64(fields, sizeof(fields), groupKey ^ m.TileHash);
+        }
+        if (x1 <= x0 || y1 <= y0) continue;
+
+        auto cached = TextGroups.find(groupKey);
+        if (cached == TextGroups.end())
+        {
+            if (TextGroups.size() >= kMaxTextGroups)
+                TextGroups.clear();
+            const int w = x1 - x0, h = y1 - y0;
+            TextCanvas.assign((size_t)w * h, HDFontSet::kEmpty);
+            // lower OAM slots win where sprites overlap, as on hardware: paint them last
+            for (auto it = members.rbegin(); it != members.rend(); ++it)
+            {
+                const MissedSprite& m = Missed[*it];
+                for (int sy = 0; sy < m.Height; sy++)
+                {
+                    const s32 py = (m.Y + sy) & 0xFF;
+                    if (py < y0 || py >= y1) continue;
+                    const int ty = (m.Flip & 2) ? m.Height - 1 - sy : sy;
+                    for (int sx = 0; sx < m.Width; sx++)
+                    {
+                        const s32 px = m.X + sx;
+                        if (px < x0 || px >= x1) continue;
+                        const int tx = (m.Flip & 1) ? m.Width - 1 - sx : sx;
+                        u32 col;
+                        if (m.Type == 0)
+                        {
+                            u32 addr = (u32)(m.TileOffset + ((tx >> 3) * 32) + ((ty >> 3) * m.TileStride)
+                                             + ((tx & 0x7) >> 1) + ((ty & 0x7) << 2));
+                            u8 byte = objvram[addr & objvrammask];
+                            col = (tx & 1) ? (byte >> 4) : (byte & 0xF);
+                        }
+                        else
+                        {
+                            u32 addr = (u32)(m.TileOffset + ((tx >> 3) * 64) + ((ty >> 3) * m.TileStride)
+                                             + (tx & 0x7) + ((ty & 0x7) << 3));
+                            col = objvram[addr & objvrammask];
+                        }
+                        if (col)
+                            TextCanvas[(size_t)(py - y0) * w + (px - x0)] = (u16)col;
+                    }
+                }
+            }
+
+            // an opaque text box is filled with one index; ink rarely covers much of the area
+            u16 bg = 0;
+            {
+                std::unordered_map<u16, u32> counts;
+                for (u16 v : TextCanvas)
+                    if (v != HDFontSet::kEmpty) counts[v]++;
+                for (const auto& entry : counts)
+                    if (entry.second * 5 > (u32)(w * h) * 2) bg = entry.first;
+            }
+            TextGroup group{ x0, y0, bg, {} };
+            fonts->Recognize(TextCanvas.data(), w, h, bg, group.Placements);
+            cached = TextGroups.emplace(groupKey, std::move(group)).first;
+        }
+
+        const TextGroup& group = cached->second;
+        auto colour = [&](u32 index) -> u32 {
+            u16 entry;
+            if (type == 0) entry = stdPal[(palOffset + index) & 0xFF];
+            else if (palOffset == 0) entry = stdPal[index & 0xFF];
+            else entry = extPal[(palOffset - 1) * 256 + (index & 0xFF)];
+            return Pal555ToRGBA8(entry, true);
+        };
+        for (const HDFontSet::Placement& p : group.Placements)
+        {
+            u32 shades[16] = {};
+            const int maxShade = fonts->MaxShade(p);
+            for (int s = 1; s <= maxShade; s++)
+                shades[s] = colour(p.Base + (u32)s);
+            const HDTexPackImage* img = fonts->GlyphImage(p, shades, group.Bg != 0, colour(group.Bg));
+            if (!img) continue;
+            int bx, by, bw, bh;
+            fonts->GlyphBox(p, bx, by, bw, bh);
+            HDPack2DInstance inst;
+            inst.Image = img;
+            inst.Engine = (u8)num;
+            inst.RequireMask = 0x90;
+            inst.RejectMask = 0;
+            inst.Flip = 0;
+            inst.X = (s16)(group.X0 + p.X + bx);
+            inst.Y = (s16)(group.Y0 + p.Y + by);
+            inst.W = (u16)bw;
+            inst.H = (u16)bh;
+            glyphs.push_back(inst);
+        }
+    }
+
+    // the presenter draws sprite instances last to first, so glyphs placed ahead of this
+    // engine's sprites are drawn over them: text sits on top of what it is printed on
+    const size_t room = kMaxInstances > Instances.size() ? kMaxInstances - Instances.size() : 0;
+    if (glyphs.size() > room) glyphs.resize(room);
+    Instances.insert(Instances.begin() + (std::ptrdiff_t)spriteStart, glyphs.begin(), glyphs.end());
 }
 
 void HDPack2D::WalkBGLayers(GPU& gpu, int num, HDTexPack* pack, bool dump, bool load)

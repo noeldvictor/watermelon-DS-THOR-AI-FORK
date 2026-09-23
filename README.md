@@ -21,6 +21,7 @@ external display support, RetroAchievements, RetroArch shader presets. On top of
 | Target device | Any Android device | Tuned and tested on the AYN Thor (Snapdragon 8 Gen 2, two panels) |
 | HD texture packs | — | Dump and replace 3D textures, 2D sprites and BG tiles |
 | HD remastering | — | Build an AI-upscaled pack for a whole game straight from its ROM, no playthrough needed |
+| HD text | — | Text the game draws at runtime is redrawn from an upscaled copy of its own font |
 | Upscaling | Full-screen RetroArch shaders | Also per-layer filters for 3D, sprites and BG separately (ScaleFX, Anime4K, HQ2x, ...) with a disk cache |
 | In-game overlay | Pause menu | Adds a turbo speed picker, live texture-filter switching, and "stretch to fit both screens" |
 | Input | Single-button hotkeys | Adds modifier combos, so a hotkey can sit behind a chord |
@@ -56,9 +57,19 @@ names each one by the key the emulator looks it up by, upscales them with an AI 
 backgrounds are upscaled as whole cells and screens, then cut apart, so they stay seamless.
 Verified against what was dumped during real play of Lufia: Curse of the Sinistrals: 81% of
 the 3D textures and every sprite that comes from the ROM's graphics are reproduced, all
-pixel-identical. What's left is built by the game at runtime (dialogue text, captured scenes)
-and still gets the per-layer filters. On the device, pack images load the first time the game
-shows them, so a whole-game pack only costs memory for what is on screen.
+pixel-identical. What's left is built by the game at runtime (captured scenes, parts assembled
+in memory) and still gets the per-layer filters. On the device, pack images load the first time
+the game shows them, so a whole-game pack only costs memory for what is on screen.
+
+**Text** is drawn by the game one glyph at a time, so no image of it exists to replace. The
+pack carries the game's own fonts instead (Nitro NFTR files) with an upscaled copy of every
+glyph. The emulator finds the glyphs in the sprites the pack didn't cover by exact pixel match
+and redraws each one from the upscaled font, in the colours the game used. Verified on Phantom
+Hourglass's story text and Lufia's dialogue boxes.
+
+HD art isn't clipped to the blocky outline of the pixel art it replaces: an edge the upscaler
+smoothed shows the layer behind it, and may extend a pixel past the original silhouette where
+nothing covered it.
 
 ### HD texture packs
 * **3D texture dump & replace**: content-hash keyed (texture hash + palette hash), compatible

@@ -26,6 +26,7 @@ from PIL import Image
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import fonts  # noqa: E402
 import nitro  # noqa: E402
 import recipes  # noqa: E402
 import tex3d  # noqa: E402
@@ -85,8 +86,10 @@ def cmd_extract(args) -> Path:
             }) + "\n")
         log(f"wrote {len(ents)} textures to {tex_dir} in {time.time() - t0:.0f}s")
         n_obj, n_bg = extract_2d(files, out, mf, recipe["twod"])
+        n_fonts = extract_fonts(files, out, mf)
     log(f"done in {time.time() - t0:.0f}s")
-    recipes.check_baseline(recipe, {"textures": len(ents), "sprites": n_obj, "backgrounds": n_bg})
+    recipes.check_baseline(recipe, {"textures": len(ents), "sprites": n_obj, "backgrounds": n_bg,
+                                    "fonts": n_fonts})
     return out
 
 
@@ -160,6 +163,36 @@ def extract_2d(files: dict[str, bytes], out: Path, mf, rules: dict) -> tuple[int
                 write_asset(f"a{n_assets:05d}", asset["image"], keep, asset)
     log(f"2D: {n_assets} cells/screens + {n_solo} standalone sprites -> {n_obj} sprite keys, {n_bg} BG tile keys")
     return n_obj, n_bg
+
+
+def extract_fonts(files: dict[str, bytes], out: Path, mf) -> int:
+    """NFTR fonts: text is drawn from these at runtime, so the pack carries the font file and
+    an upscaled atlas of its glyphs, and the emulator redraws the glyphs it finds in sprites."""
+    fdir = out / "native" / "fonts"
+    fdir.mkdir(parents=True, exist_ok=True)
+    names: set[str] = set()
+    n = 0
+    for path, data in sorted(files.items()):
+        if not fonts.is_nftr(data):
+            continue
+        name = Path(path.split("~")[0]).stem
+        while name in names:
+            name += "_"
+        names.add(name)
+        font = fonts.parse(data, name)
+        grey = fonts.atlas(font)
+        rgba = np.dstack([grey, grey, grey, np.full_like(grey, 255)])
+        write_native(out, "fonts", name, rgba)
+        (fdir / f"{name}.nftr").write_bytes(data)
+        mf.write(json.dumps({
+            "kind": "font", "category": "fonts", "key": name, "w": int(grey.shape[1]),
+            "h": int(grey.shape[0]), "source": path, "glyphs": len(font.glyphs),
+            "cell": [font.cell_w, font.cell_h], "bpp": font.bpp,
+        }) + "\n")
+        n += 1
+    if n:
+        log(f"fonts: {n} ({', '.join(sorted(names))})")
+    return n
 
 
 # ---------------------------------------------------------------------------- verify
@@ -264,7 +297,7 @@ def verify_sprites(work: Path, dumps: Path) -> None:
 
 # ---------------------------------------------------------------------------- upscale
 
-KINDS = {"tex1": "textures", "asset2d": "assets2d"}
+KINDS = {"tex1": "textures", "asset2d": "assets2d", "font": "fonts"}
 EDGE = (False, False, False, False)   # 2D art is clamped: pad by edge replication
 
 
@@ -355,7 +388,7 @@ def cmd_build(args) -> Path:
     if out.exists():
         shutil.rmtree(out)
     scales, copied, absent = set(), 0, 0
-    for sub in ("textures", "sprites", "bgtiles"):
+    for sub in ("textures", "sprites", "bgtiles", "fonts"):
         (out / sub).mkdir(parents=True, exist_ok=True)
     for m in items:
         src = work / stage / KINDS[m["kind"]] / f"{m['key']}.png"
@@ -366,6 +399,14 @@ def cmd_build(args) -> Path:
             with Image.open(src) as im:
                 scales.add(im.width // m["w"])
             shutil.copyfile(src, out / "textures" / src.name)
+            copied += 1
+            continue
+        if m["kind"] == "font":
+            # the font file itself plus its atlas, stored grey (see fonts.atlas)
+            with Image.open(src) as im:
+                scales.add(im.width // m["w"])
+                im.convert("L").save(out / "fonts" / src.name)
+            shutil.copyfile(work / "native" / "fonts" / f"{m['key']}.nftr", out / "fonts" / f"{m['key']}.nftr")
             copied += 1
             continue
         # 2D: cut each key's rectangle out of the whole upscaled cell or screen

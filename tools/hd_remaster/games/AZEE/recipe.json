@@ -17,7 +17,8 @@
   "baseline": {
     "textures": 2135,
     "sprites": 4608,
-    "backgrounds": 7811
+    "backgrounds": 7811,
+    "fonts": 5
   },
   "verified": {
     "date": "2026-09-23",
@@ -32,6 +33,7 @@
     "Phantom Hourglass renders both screens in 3D using display capture, so captured frames can't be replaced, but the textures drawn into them can.",
     "The title logo is a raw SDK texture (Menu/Tex2D/title.ntft + .ntfp) whose palette file is shorter than the 256 colours the key hashes, so it gets the '$' palette wildcard.",
     "The storybook pages (Event/Kamishibai/*.ntft) are 256x192 pictures uploaded into 256x256 textures; the last 64 rows hold leftover VRAM, so their keys end in _rows192 and hash only the rows the picture fills. Their palettes are also often one colour short, so most get the '$' wildcard.",
-    "In-game text is drawn at runtime from the NFTR fonts in Font/, one glyph at a time, so text sprites can't be keyed from the ROM."
+    "In-game text is drawn at runtime from the NFTR fonts in Font/, one glyph at a time, so text sprites can't be keyed from the ROM.",
+    "HD text: the five NFTR fonts in Font/ are packed; the prologue's story text and the dialogue use zeldaDS_15 and redraw in HD on the Thor."
   ]
 }
