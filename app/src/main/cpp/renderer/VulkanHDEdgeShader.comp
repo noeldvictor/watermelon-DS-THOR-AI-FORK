@@ -1,0 +1,200 @@
+#version 450
+
+// HD sprite edges, after composition.
+//
+// The overlay pass (VulkanPlaneOverlayShader) writes replacement art into the
+// plane images before the compositor runs, where 3D is still a placeholder and
+// the layer under a 2D pixel isn't kept, so a sprite's smooth HD outline can't
+// be blended over what is behind it: its edge fell back to the native pixel
+// staircase. This pass runs on the composed screen instead, where every colour
+// is final, and redraws the edge of each replaced sprite:
+//  - mode 0, the sprite's own native pixels where the art is partly
+//    transparent: the art over the background, taken from the neighbouring
+//    native pixels no sprite at or above this one covers (3D or 2D alike)
+//  - mode 1, 3D pixels next to the sprite: the art over the composed pixel
+//    (the overlay already spills art onto 2D neighbours)
+// Ownership comes from HDPack2D::ObjRank, the art from the overlay atlas, and
+// the art gets the line's master brightness like the compositor applies it.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+struct OverlayInstance
+{
+    ivec2 destPos;      // native screen coords, may be negative
+    uvec2 nativeSize;   // native pixel size
+    uvec2 atlasPos;     // scaled atlas texel origin
+    uint masks;
+    uint flags;         // bit 0 flipH, bit 1 flipV
+    uint rank;          // bits 0-7 sprite rank (0xFF: not a sprite), bit 8 engine
+    uint screen;        // 0 top, 1 bottom
+};
+
+layout(set = 0, binding = 0, std430) readonly buffer InstanceBuffer
+{
+    OverlayInstance instances[];
+};
+
+layout(set = 0, binding = 1, rgba8) uniform readonly image2D hdAtlas;
+// composed screens, colour stored BGR in the RGBA slots (see the compositor)
+layout(set = 0, binding = 2, rgba8) uniform image2D outImage;
+
+layout(set = 0, binding = 3, std430) readonly buffer RankBuffer
+{
+    uint rankWords[];
+};
+
+layout(set = 0, binding = 4, std430) readonly buffer TopPackedBuffer
+{
+    uint topPacked[];
+};
+
+layout(set = 0, binding = 5, std430) readonly buffer BottomPackedBuffer
+{
+    uint bottomPacked[];
+};
+
+layout(push_constant) uniform PushConsts
+{
+    uint scale;
+    uint instanceIndex;
+    uint mode;          // 0 own edge pixels, 1 spill onto 3D
+    uint packedStride;
+} pc;
+
+uint rankAtNative(uint engine, ivec2 native)
+{
+    uint index = engine * (256u * 192u) + uint(native.y) * 256u + uint(native.x);
+    return (rankWords[index >> 2u] >> ((index & 3u) * 8u)) & 0xFFu;
+}
+
+uint readPacked(uint screen, int y, int x)
+{
+    uint offset = uint(y) * pc.packedStride + uint(x);
+    return screen == 0u ? topPacked[offset] : bottomPacked[offset];
+}
+
+int screenRowOffset(uint screen)
+{
+    return screen == 0u ? 0 : (192 + 2) * int(pc.scale);
+}
+
+vec3 loadComposed(ivec2 coord)
+{
+    return imageLoad(outImage, coord).bgr;
+}
+
+void storeComposed(ivec2 coord, vec3 rgb)
+{
+    imageStore(outImage, coord, vec4(rgb.b, rgb.g, rgb.r, 1.0));
+}
+
+void main()
+{
+    OverlayInstance inst = instances[pc.instanceIndex];
+    uint myRank = inst.rank & 0xFFu;
+    if (myRank == 0xFFu)
+        return;
+    uint engine = (inst.rank >> 8u) & 1u;
+    uint screen = inst.screen & 1u;
+    int scale = int(pc.scale);
+
+    uvec2 local = gl_GlobalInvocationID.xy;
+    uvec2 scaledSize = inst.nativeSize * pc.scale;
+    if (local.x >= scaledSize.x || local.y >= scaledSize.y)
+        return;
+
+    int px = inst.destPos.x * scale + int(local.x);
+    int py = inst.destPos.y * scale + int(local.y);
+    if (px < 0 || px >= 256 * scale || py < 0 || py >= 192 * scale)
+        return;
+    ivec2 native = ivec2(px / scale, py / scale);
+
+    // only lines shown as regular display carry sprites of this frame
+    uint meta = readPacked(screen, native.y, 256 * 3);
+    if (((meta >> 16u) & 0x3u) != 1u)
+        return;
+
+    uvec2 srcTexel = local;
+    if ((inst.flags & 1u) != 0u)
+        srcTexel.x = scaledSize.x - 1u - srcTexel.x;
+    if ((inst.flags & 2u) != 0u)
+        srcTexel.y = scaledSize.y - 1u - srcTexel.y;
+    vec4 hd = imageLoad(hdAtlas, ivec2(inst.atlasPos + srcTexel));
+
+    uint winner = rankAtNative(engine, native);
+    bool own = winner == myRank;
+    ivec2 out0 = ivec2(px, py + screenRowOffset(screen));
+
+    if (pc.mode == 0u)
+    {
+        if (!own || hd.a >= 1.0)
+            return;
+        // the background: the same sub-pixel of neighbouring native pixels that no sprite
+        // at or above this one covers
+        vec3 sum = vec3(0.0);
+        float count = 0.0;
+        for (int dy = -1; dy <= 1; dy++)
+        {
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                if (dx == 0 && dy == 0)
+                    continue;
+                ivec2 n = native + ivec2(dx, dy);
+                if (n.x < 0 || n.x >= 256 || n.y < 0 || n.y >= 192)
+                    continue;
+                uint r = rankAtNative(engine, n);
+                if (r != 0xFFu && r <= myRank)
+                    continue;
+                float w = (dx == 0 || dy == 0) ? 2.0 : 1.0;
+                sum += loadComposed(out0 + ivec2(dx, dy) * scale) * w;
+                count += w;
+            }
+        }
+        if (count == 0.0)
+            return;
+        vec3 under = sum / count;
+        vec3 art = hd.rgb;
+        uint brightnessMode = ((meta >> 8u) & 0xFFu) >> 6u;
+        float factor = float(min(16u, meta & 0x1Fu)) / 16.0;
+        if (brightnessMode == 1u)
+            art = art + (vec3(1.0) - art) * factor;
+        else if (brightnessMode == 2u)
+            art = art - art * factor;
+        storeComposed(out0, mix(under, art, hd.a));
+        return;
+    }
+
+    // mode 1: art spilling onto a 3D pixel next to the sprite
+    if (own || hd.a <= 0.0)
+        return;
+    if (winner != 0xFFu && winner < myRank)
+        return; // a sprite above this one is there
+    uint top = readPacked(screen, native.y, native.x) >> 24u;
+    if ((top & 0xC0u) != 0x40u)
+        return; // not 3D: the overlay pass already spilled onto 2D
+    bool besideOwn = false;
+    for (int dy = -1; dy <= 1 && !besideOwn; dy++)
+    {
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            ivec2 n = native + ivec2(dx, dy);
+            if ((dx == 0 && dy == 0) || n.x < 0 || n.x >= 256 || n.y < 0 || n.y >= 192)
+                continue;
+            if (rankAtNative(engine, n) == myRank)
+            {
+                besideOwn = true;
+                break;
+            }
+        }
+    }
+    if (!besideOwn)
+        return;
+    vec3 art = hd.rgb;
+    uint brightnessMode = ((meta >> 8u) & 0xFFu) >> 6u;
+    float factor = float(min(16u, meta & 0x1Fu)) / 16.0;
+    if (brightnessMode == 1u)
+        art = art + (vec3(1.0) - art) * factor;
+    else if (brightnessMode == 2u)
+        art = art - art * factor;
+    storeComposed(out0, mix(loadComposed(out0), art, hd.a));
+}

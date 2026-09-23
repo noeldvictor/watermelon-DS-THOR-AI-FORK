@@ -692,7 +692,15 @@ private:
         u32 masks;  // bits 0-7 require, bits 8-15 reject
         u32 flags;  // bit 0 flipH, bit 1 flipV
         u32 rank;   // bits 0-7 sprite rank (0xFF: BG tile or glyph), bit 8 engine
-        u32 pad;
+        u32 screen; // 0 top, 1 bottom (read by the edge pass)
+    };
+
+    struct HDEdgePushConstants
+    {
+        u32 scale;
+        u32 instanceIndex;
+        u32 mode;   // 0 own edge pixels, 1 spill onto 3D
+        u32 packedStride;
     };
 
     struct OverlayAtlasSlot
@@ -899,6 +907,13 @@ private:
         VkDeviceMemory overlayStagingMemory{VK_NULL_HANDLE};
         void* overlayStagingMapped{};
         VkImageView cachedOverlayTopPlaneView{VK_NULL_HANDLE};
+        // post-composition HD sprite edges (VulkanHDEdgeShader)
+        VkDescriptorSet hdEdgeDescriptorSet{VK_NULL_HANDLE};
+        VkImageView cachedHDEdgeImageView{VK_NULL_HANDLE};
+        VkImageView cachedHDEdgeAtlasView{VK_NULL_HANDLE};
+        VkBuffer cachedHDEdgeTopPacked{VK_NULL_HANDLE};
+        VkBuffer cachedHDEdgeBottomPacked{VK_NULL_HANDLE};
+        u32 overlayPreparedCount{};   // replacement instances the overlay drew this frame
         VkImageView cachedOverlayBottomPlaneView{VK_NULL_HANDLE};
         std::array<VkDescriptorSet, 2> overlayDescriptorSets{};
         bool overlayDescriptorsReady{};
@@ -936,6 +951,8 @@ private:
     bool ensurePlaneOverlayResources(FrameResource& resource);
     void destroyPlaneOverlayResources();
     VkPipeline getPlaneOverlayPipeline();
+    bool ensureHDEdgeResources(FrameResource& resource);
+    void recordHDEdgePasses(FrameResource& resource, const VulkanCompositionInputs& inputs);
     bool acquireOverlayAtlasSlot(const melonDS::HDTexPackImage* image, u32 scale,
                                  u32 nativeW, u32 nativeH, FrameResource& resource,
                                  VkDeviceSize& stagingUsed,
@@ -1233,6 +1250,11 @@ private:
     VkPipelineLayout overlayPipelineLayout{VK_NULL_HANDLE};
     VkPipeline overlayPipeline{VK_NULL_HANDLE};
     bool overlayPipelineFailed{false};
+    VkDescriptorSetLayout hdEdgeDescriptorSetLayout{VK_NULL_HANDLE};
+    VkDescriptorPool hdEdgeDescriptorPool{VK_NULL_HANDLE};
+    VkPipelineLayout hdEdgePipelineLayout{VK_NULL_HANDLE};
+    VkPipeline hdEdgePipeline{VK_NULL_HANDLE};
+    bool hdEdgePipelineFailed{false};
     VkImage overlayAtlasImage{VK_NULL_HANDLE};
     VkImageView overlayAtlasView{VK_NULL_HANDLE};
     VkDeviceMemory overlayAtlasMemory{VK_NULL_HANDLE};

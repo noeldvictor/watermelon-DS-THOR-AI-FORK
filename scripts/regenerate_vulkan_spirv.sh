@@ -529,6 +529,12 @@ generate_header \
   "$ROOT_DIR/app/src/main/cpp/renderer/VulkanPlaneOverlayShaderData.h"
 
 generate_header \
+  "$ROOT_DIR/app/src/main/cpp/renderer/VulkanHDEdgeShader.comp" \
+  "comp" \
+  "melonDS_android_vulkan_hd_edge_comp_spv" \
+  "$ROOT_DIR/app/src/main/cpp/renderer/VulkanHDEdgeShaderData.h"
+
+generate_header \
   "$ROOT_DIR/app/src/main/cpp/renderer/VulkanAccumulate3dCompatibilityShader.comp" \
   "comp" \
   "melonDS_android_vulkan_accumulate_3d_compatibility_comp_spv" \

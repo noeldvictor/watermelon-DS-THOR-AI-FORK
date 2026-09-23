@@ -42,6 +42,7 @@
 #include "VulkanScaleFXPass3ShaderData.h"
 #include "VulkanScaleFXPass4ShaderData.h"
 #include "VulkanPlaneOverlayShaderData.h"
+#include "VulkanHDEdgeShaderData.h"
 #include "VulkanAccumulate3dCompatibilityShaderData.h"
 #include "VulkanAccumulate3dScale8ShaderData.h"
 
@@ -2702,6 +2703,192 @@ VkPipeline VulkanOutput::getPlaneOverlayPipeline()
     return overlayPipeline;
 }
 
+bool VulkanOutput::ensureHDEdgeResources(FrameResource& resource)
+{
+    if (hdEdgePipelineFailed)
+        return false;
+    if (hdEdgeDescriptorSetLayout == VK_NULL_HANDLE)
+    {
+        std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
+        const VkDescriptorType types[6] = {
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   // instances
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    // atlas
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    // composed output
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   // sprite ranks
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   // top packed lines
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   // bottom packed lines
+        };
+        for (u32 i = 0; i < bindings.size(); i++)
+        {
+            bindings[i].binding = i;
+            bindings[i].descriptorType = types[i];
+            bindings[i].descriptorCount = 1;
+            bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+        VkDescriptorSetLayoutCreateInfo layoutCreateInfo{};
+        layoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutCreateInfo.bindingCount = static_cast<u32>(bindings.size());
+        layoutCreateInfo.pBindings = bindings.data();
+        if (vkCreateDescriptorSetLayout(device, &layoutCreateInfo, nullptr, &hdEdgeDescriptorSetLayout) != VK_SUCCESS)
+            return false;
+    }
+    if (hdEdgeDescriptorPool == VK_NULL_HANDLE)
+    {
+        std::array<VkDescriptorPoolSize, 2> poolSizes{};
+        poolSizes[0] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, FRAME_QUEUE_SIZE * 4};
+        poolSizes[1] = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, FRAME_QUEUE_SIZE * 2};
+        VkDescriptorPoolCreateInfo poolCreateInfo{};
+        poolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolCreateInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        poolCreateInfo.maxSets = FRAME_QUEUE_SIZE;
+        poolCreateInfo.poolSizeCount = static_cast<u32>(poolSizes.size());
+        poolCreateInfo.pPoolSizes = poolSizes.data();
+        if (vkCreateDescriptorPool(device, &poolCreateInfo, nullptr, &hdEdgeDescriptorPool) != VK_SUCCESS)
+            return false;
+    }
+    if (hdEdgePipelineLayout == VK_NULL_HANDLE)
+    {
+        VkPushConstantRange pushRange{};
+        pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pushRange.size = sizeof(HDEdgePushConstants);
+        VkPipelineLayoutCreateInfo layoutCreateInfo{};
+        layoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        layoutCreateInfo.setLayoutCount = 1;
+        layoutCreateInfo.pSetLayouts = &hdEdgeDescriptorSetLayout;
+        layoutCreateInfo.pushConstantRangeCount = 1;
+        layoutCreateInfo.pPushConstantRanges = &pushRange;
+        if (vkCreatePipelineLayout(device, &layoutCreateInfo, nullptr, &hdEdgePipelineLayout) != VK_SUCCESS)
+            return false;
+    }
+    if (hdEdgePipeline == VK_NULL_HANDLE)
+    {
+        std::vector<u32> shaderWords((melonDS_android_vulkan_hd_edge_comp_spv_len + 3) / 4);
+        std::memcpy(shaderWords.data(), melonDS_android_vulkan_hd_edge_comp_spv,
+                    melonDS_android_vulkan_hd_edge_comp_spv_len);
+        VkShaderModuleCreateInfo moduleCreateInfo{};
+        moduleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        moduleCreateInfo.codeSize = melonDS_android_vulkan_hd_edge_comp_spv_len;
+        moduleCreateInfo.pCode = shaderWords.data();
+        VkShaderModule shaderModule = VK_NULL_HANDLE;
+        if (vkCreateShaderModule(device, &moduleCreateInfo, nullptr, &shaderModule) != VK_SUCCESS)
+        {
+            hdEdgePipelineFailed = true;
+            melonDS::Platform::Log(melonDS::Platform::LogLevel::Error, "VulkanOutput: failed to create HD edge shader module");
+            return false;
+        }
+        VkComputePipelineCreateInfo pipelineCreateInfo{};
+        pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipelineCreateInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        pipelineCreateInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        pipelineCreateInfo.stage.module = shaderModule;
+        pipelineCreateInfo.stage.pName = "main";
+        pipelineCreateInfo.layout = hdEdgePipelineLayout;
+        const VkResult result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &hdEdgePipeline);
+        vkDestroyShaderModule(device, shaderModule, nullptr);
+        if (result != VK_SUCCESS)
+        {
+            hdEdgePipeline = VK_NULL_HANDLE;
+            hdEdgePipelineFailed = true;
+            melonDS::Platform::Log(melonDS::Platform::LogLevel::Error, "VulkanOutput: failed to create HD edge pipeline");
+            return false;
+        }
+    }
+
+    if (resource.hdEdgeDescriptorSet == VK_NULL_HANDLE)
+    {
+        VkDescriptorSetAllocateInfo allocateInfo{};
+        allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocateInfo.descriptorPool = hdEdgeDescriptorPool;
+        allocateInfo.descriptorSetCount = 1;
+        allocateInfo.pSetLayouts = &hdEdgeDescriptorSetLayout;
+        if (vkAllocateDescriptorSets(device, &allocateInfo, &resource.hdEdgeDescriptorSet) != VK_SUCCESS)
+        {
+            resource.hdEdgeDescriptorSet = VK_NULL_HANDLE;
+            return false;
+        }
+        resource.cachedHDEdgeImageView = VK_NULL_HANDLE;
+    }
+    if (resource.cachedHDEdgeImageView != resource.imageView
+        || resource.cachedHDEdgeAtlasView != overlayAtlasView
+        || resource.cachedHDEdgeTopPacked != resource.topPackedBuffer
+        || resource.cachedHDEdgeBottomPacked != resource.bottomPackedBuffer)
+    {
+        VkDescriptorBufferInfo instanceInfo{resource.overlayInstanceBuffer, 0,
+                                            kOverlayMaxInstances * sizeof(PlaneOverlayGpuInstance)};
+        VkDescriptorImageInfo atlasInfo{VK_NULL_HANDLE, overlayAtlasView, VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo outInfo{VK_NULL_HANDLE, resource.imageView, VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorBufferInfo rankInfo{resource.overlayRankBuffer, 0, 2 * melonDS::kObjRankEngineSize};
+        VkDescriptorBufferInfo topInfo{resource.topPackedBuffer, 0, resource.packedBufferSize};
+        VkDescriptorBufferInfo bottomInfo{resource.bottomPackedBuffer, 0, resource.packedBufferSize};
+        std::array<VkWriteDescriptorSet, 6> writes{};
+        for (u32 i = 0; i < writes.size(); i++)
+        {
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = resource.hdEdgeDescriptorSet;
+            writes[i].dstBinding = i;
+            writes[i].descriptorCount = 1;
+        }
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[0].pBufferInfo = &instanceInfo;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;  writes[1].pImageInfo = &atlasInfo;
+        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;  writes[2].pImageInfo = &outInfo;
+        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[3].pBufferInfo = &rankInfo;
+        writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[4].pBufferInfo = &topInfo;
+        writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[5].pBufferInfo = &bottomInfo;
+        vkUpdateDescriptorSets(device, static_cast<u32>(writes.size()), writes.data(), 0, nullptr);
+        resource.cachedHDEdgeImageView = resource.imageView;
+        resource.cachedHDEdgeAtlasView = overlayAtlasView;
+        resource.cachedHDEdgeTopPacked = resource.topPackedBuffer;
+        resource.cachedHDEdgeBottomPacked = resource.bottomPackedBuffer;
+    }
+    return true;
+}
+
+void VulkanOutput::recordHDEdgePasses(FrameResource& resource, const VulkanCompositionInputs& inputs)
+{
+    const u32 count = std::min<u32>(resource.overlayPreparedCount, static_cast<u32>(kOverlayMaxInstances));
+    if (count == 0u || resource.overlayInstanceMapped == nullptr || resource.overlayRankBuffer == VK_NULL_HANDLE
+        || overlayAtlasView == VK_NULL_HANDLE || !ensureHDEdgeResources(resource))
+        return;
+
+    const u32 scale = std::max(inputs.scale, 1u);
+    const auto* instanceData = static_cast<const PlaneOverlayGpuInstance*>(resource.overlayInstanceMapped);
+
+    VkMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    auto orderAfterPreviousWrites = [&]() {
+        vkCmdPipelineBarrier(resource.commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+    };
+
+    orderAfterPreviousWrites();   // the compositor's output
+    vkCmdBindPipeline(resource.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, hdEdgePipeline);
+    vkCmdBindDescriptorSets(resource.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, hdEdgePipelineLayout,
+                            0, 1, &resource.hdEdgeDescriptorSet, 0, nullptr);
+    // own edge pixels of every sprite first (they read the background around them), then the
+    // spill onto 3D; each dispatch reads what the one before it wrote
+    for (u32 mode = 0; mode < 2; mode++)
+    {
+        for (u32 i = 0; i < count; i++)
+        {
+            const PlaneOverlayGpuInstance& inst = instanceData[i];
+            if ((inst.rank & 0xFFu) == 0xFFu)
+                continue;
+            HDEdgePushConstants pushConstants{};
+            pushConstants.scale = scale;
+            pushConstants.instanceIndex = i;
+            pushConstants.mode = mode;
+            pushConstants.packedStride = inputs.packedStride;
+            vkCmdPushConstants(resource.commandBuffer, hdEdgePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(pushConstants), &pushConstants);
+            vkCmdDispatch(resource.commandBuffer, (inst.nativeW * scale + 7u) / 8u,
+                          (inst.nativeH * scale + 7u) / 8u, 1);
+            orderAfterPreviousWrites();
+        }
+    }
+}
+
 bool VulkanOutput::acquireOverlayAtlasSlot(const melonDS::HDTexPackImage* image, u32 scale,
                                            u32 nativeW, u32 nativeH, FrameResource& resource,
                                            VkDeviceSize& stagingUsed,
@@ -2845,6 +3032,7 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
         out.gpu.flags = inst.Flip;
         out.gpu.rank = static_cast<u32>(inst.Rank) | (static_cast<u32>(inst.Engine & 1u) << 8);
         out.screen = ((inst.Engine == 0) == engineAOnTop) ? 0 : 1;
+        out.gpu.screen = out.screen;
         out.isSprite = inst.RequireMask == 0x90;
         prepared.push_back(out);
     };
@@ -2866,6 +3054,7 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
     auto* instanceData = static_cast<PlaneOverlayGpuInstance*>(resource.overlayInstanceMapped);
     for (size_t i = 0; i < prepared.size(); i++)
         instanceData[i] = prepared[i].gpu;
+    resource.overlayPreparedCount = static_cast<u32>(prepared.size());
     {
         // which sprite won each native pixel (HDPack2D::ObjRank); without one no sprite owns
         // anything, which only costs the replacements, never shows them over the wrong sprite
@@ -3045,6 +3234,34 @@ void VulkanOutput::destroyPlaneOverlayResources()
         overlayPipeline = VK_NULL_HANDLE;
     }
     overlayPipelineFailed = false;
+    if (hdEdgePipeline != VK_NULL_HANDLE)
+    {
+        vkDestroyPipeline(device, hdEdgePipeline, nullptr);
+        hdEdgePipeline = VK_NULL_HANDLE;
+    }
+    hdEdgePipelineFailed = false;
+    if (hdEdgePipelineLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyPipelineLayout(device, hdEdgePipelineLayout, nullptr);
+        hdEdgePipelineLayout = VK_NULL_HANDLE;
+    }
+    if (hdEdgeDescriptorPool != VK_NULL_HANDLE)
+    {
+        // frees every frame's edge set with it
+        vkDestroyDescriptorPool(device, hdEdgeDescriptorPool, nullptr);
+        hdEdgeDescriptorPool = VK_NULL_HANDLE;
+        for (auto& [frame, frameResource] : resources)
+        {
+            (void)frame;
+            frameResource.hdEdgeDescriptorSet = VK_NULL_HANDLE;
+            frameResource.cachedHDEdgeImageView = VK_NULL_HANDLE;
+        }
+    }
+    if (hdEdgeDescriptorSetLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyDescriptorSetLayout(device, hdEdgeDescriptorSetLayout, nullptr);
+        hdEdgeDescriptorSetLayout = VK_NULL_HANDLE;
+    }
 
     if (overlayPipelineLayout != VK_NULL_HANDLE)
     {
@@ -5314,6 +5531,12 @@ void VulkanOutput::destroyFrameResource(Frame* frame)
                 scalefxSet = VK_NULL_HANDLE;
             }
         }
+    }
+
+    if (hdEdgeDescriptorPool != VK_NULL_HANDLE && resource.hdEdgeDescriptorSet != VK_NULL_HANDLE)
+    {
+        vkFreeDescriptorSets(device, hdEdgeDescriptorPool, 1, &resource.hdEdgeDescriptorSet);
+        resource.hdEdgeDescriptorSet = VK_NULL_HANDLE;
     }
 
     if (overlayDescriptorPool != VK_NULL_HANDLE)
@@ -14908,6 +15131,7 @@ bool VulkanOutput::dispatchCompositor(
     const u32 bgModeForFrame = bgFilterMode.load(std::memory_order_acquire);
     const bool tintForFrame = areRendererDebugFilterTintEnabled();
     bool overlayWantedForFrame = false;
+    resource.overlayPreparedCount = 0;
     size_t replacementInstanceCountForFrame = 0;
     {
         std::scoped_lock instanceLock(replacementInstanceLock);
@@ -15245,6 +15469,10 @@ bool VulkanOutput::dispatchCompositor(
     const u32 groupCountY =
         (dispatchHeight + compositorWorkgroupSize - 1u) / compositorWorkgroupSize;
     vkCmdDispatch(resource.commandBuffer, groupCountX, groupCountY, 1);
+
+    // HD sprite edges over the finished picture, before any LCD replay copies an older one in
+    if (planeFilterActive && !fastPathProfile && !fastHighresRegionalCompose)
+        recordHDEdgePasses(resource, inputs);
 
     auto replayPreviousComposedLcd = [&](Frame* sourceFrame, bool topLcd) {
         if (sourceFrame == nullptr || sourceFrame == frame)
