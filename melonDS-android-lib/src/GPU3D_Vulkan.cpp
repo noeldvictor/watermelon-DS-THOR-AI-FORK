@@ -2786,31 +2786,36 @@ void VulkanRenderer3D::SetBackendMode(BackendMode mode) noexcept
     }
 }
 
-void VulkanRenderer3D::SetTexPack(HDTexPack* pack)
+void VulkanRenderer3D::beforeTextureCacheReset()
 {
     // live textures may still be referenced by submitted work; reach the
     // same safe point the invalidation path uses before they are destroyed
-    Texcache.SetTexPack(pack, [this]() {
-        if (Initialized && ActiveBackendMode == BackendMode::GraphicsHardware)
-            (void)waitForTextureCacheMutationSafePoint();
-    });
+    if (Initialized && ActiveBackendMode == BackendMode::GraphicsHardware)
+        (void)waitForTextureCacheMutationSafePoint();
+    // The texture cache is about to destroy every texture array. The resolved
+    // texture cache holds their views and samplers, and the descriptor caches
+    // compare against them; both must go with the textures. Missing this, a
+    // render scale change (which changes the HD filter scale) left stale views
+    // in the resolved cache, and the next full descriptor write crashed inside
+    // vkUpdateDescriptorSets. Same as what Reset() does below.
+    GraphicsResolvedTextureCache.clear();
+    invalidateAllDescriptorSetCaches();
+}
+
+void VulkanRenderer3D::SetTexPack(HDTexPack* pack)
+{
+    Texcache.SetTexPack(pack, [this]() { beforeTextureCacheReset(); });
     refreshHDTextureSampling();
 }
 
 void VulkanRenderer3D::SetFilterCache(HDTexPack* cache)
 {
-    Texcache.SetFilterCache(cache, [this]() {
-        if (Initialized && ActiveBackendMode == BackendMode::GraphicsHardware)
-            (void)waitForTextureCacheMutationSafePoint();
-    });
+    Texcache.SetFilterCache(cache, [this]() { beforeTextureCacheReset(); });
 }
 
 void VulkanRenderer3D::SetHDTextureFilter(int scale, int mode)
 {
-    Texcache.SetHDTextureFilter(scale, mode, [this]() {
-        if (Initialized && ActiveBackendMode == BackendMode::GraphicsHardware)
-            (void)waitForTextureCacheMutationSafePoint();
-    });
+    Texcache.SetHDTextureFilter(scale, mode, [this]() { beforeTextureCacheReset(); });
     refreshHDTextureSampling();
 }
 

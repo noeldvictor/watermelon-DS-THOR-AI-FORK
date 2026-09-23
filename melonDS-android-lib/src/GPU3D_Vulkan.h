@@ -487,6 +487,7 @@ private:
     bool createGraphicsPipelines();
     void destroyGraphicsRasterPipelines();
     void refreshHDTextureSampling();
+    void beforeTextureCacheReset();
     bool createPipelineCache(TextureSamplingPath samplingPath);
     void savePipelineCache();
     std::string buildPipelineCacheFileName(TextureSamplingPath samplingPath) const;
