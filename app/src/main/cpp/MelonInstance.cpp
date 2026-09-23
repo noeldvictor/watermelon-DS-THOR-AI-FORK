@@ -6719,6 +6719,26 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
                     (packedPlane0 != 0u && packedPlane0 != kPacked3dPlaceholder)
                     || (packedPlane1 != 0u && packedPlane1 != kPacked3dPlaceholder);
                 const bool packedCurrent2DOnly = packedHasCurrent2D && !packedNeeds3DSlot;
+                // A capture shown through a blended bitmap layer (sprites or a bitmap BG
+                // over the backdrop) comes out of the raw composite as a 2D-2D blend
+                // (ColorBlend4 stamps 0xFF), while the structured plane marks the same
+                // pixel as a capture-backed 3D slot with nothing above it. Keeping the
+                // blend drops the capture on every frame this screen shows it that way:
+                // Lufia's title bottom screen went blank on alternate frames while the
+                // other screen of the pair displayed the capture in VRAM mode. Real 2D
+                // drawn over the capture is carried as the structured plane's payload.
+                const bool packedIsCaptureDisplayBlend =
+                    packedPlane0Alpha == 0xFFu
+                    && structuredHas3DSlot
+                    && !structuredHasRenderablePayload;
+
+                if (packedIsCaptureDisplayBlend)
+                {
+                    plane0[index] = structuredP0;
+                    plane1[index] = structuredP1;
+                    control[index] = structuredC;
+                    continue;
+                }
 
                 if (!structuredHasRenderablePayload && !(packedNeeds3DSlot && structuredHas3DSlot))
                 {
