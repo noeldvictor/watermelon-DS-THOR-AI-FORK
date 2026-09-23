@@ -18999,6 +18999,21 @@ void VulkanRenderer3D::buildGraphicsTriangleList(GPU& gpu)
                     texWidth = textureData.Width;
                     texHeight = textureData.Height;
                 }
+                if (!textureFallbackUsed)
+                {
+                    const u32 hdTexelScale = Texcache.GetHDTextureScale();
+                    if (hdTexelScale > 1u)
+                    {
+                        // bits 12+ of the size fields carry the HD texel scale and
+                        // filter mode into the raster shaders; layers holding
+                        // nearest-expanded native texels sample nearest (mode 15)
+                        const u32 hdMode = Texcache.GetLoader().IsTextureLayerHDContent(textureHandle, textureLayer)
+                            ? static_cast<u32>(Texcache.GetHDTextureFilterMode())
+                            : 15u;
+                        texWidth |= hdTexelScale << 12u;
+                        texHeight |= hdMode << 12u;
+                    }
+                }
             }
         }
 

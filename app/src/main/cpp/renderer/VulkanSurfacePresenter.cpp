@@ -1226,6 +1226,7 @@ bool VulkanSurfacePresenter::presentFrame(Frame* frame, VulkanOutput& output, co
         !inputs.needsReadback
         && !inputs.validationMode
         && !postProcessFilterRequested
+        && !inputs.planeFilterRequested
         && surfaces.size() == 1
         && hasRequiredDirectHandles
         && directPresentHasReadyDualScreenHistory

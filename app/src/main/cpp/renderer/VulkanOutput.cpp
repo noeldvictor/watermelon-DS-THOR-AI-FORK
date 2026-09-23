@@ -6267,6 +6267,7 @@ bool VulkanOutput::updateCompositorPackedBuffersFastPath(
     }
 
     resource.softPackedFrameId = softPackedSnapshot.frameId;
+    resource.hasPackedUpload = true;
     {
         // HD pack 2D replacements; the Compatibility update carries them the same way
         std::scoped_lock instanceLock(replacementInstanceLock);
@@ -11799,6 +11800,14 @@ bool VulkanOutput::buildCompositionInputs(
     outInputs.screenSwap = resource.screenSwap ? 1u : 0u;
     outInputs.scale = static_cast<u32>(scale);
     outInputs.filtering = filtering;
+    {
+        std::scoped_lock instanceLock(replacementInstanceLock);
+        outInputs.planeFilterRequested =
+            (objFilterMode.load(std::memory_order_acquire) != 0u
+             || bgFilterMode.load(std::memory_order_acquire) != 0u
+             || (replacement2DActive && !resource.replacementInstances.empty()))
+            && outInputs.scale > 1u;
+    }
     const bool asymmetricRegularCapture3d =
         topUsesRegularCapture3d != bottomUsesRegularCapture3d
         && !topUsesVramCapture3d
