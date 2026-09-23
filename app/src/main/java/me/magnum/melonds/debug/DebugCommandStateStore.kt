@@ -73,8 +73,13 @@ internal object DebugCommandStateStore {
     }
 
     fun isRunningRom(): Boolean {
+        return currentEmulatorState() is EmulatorState.RunningRom
+    }
+
+    /** The emulator screen's state, or null when no EmulatorActivity is alive. */
+    fun currentEmulatorState(): EmulatorState? {
         val viewModel = currentEmulatorActivity.get()?.let { resolveEmulatorViewModel(it) }
-        return viewModel?.emulatorState?.value is EmulatorState.RunningRom
+        return viewModel?.emulatorState?.value
     }
 
     fun hasEmulatorActivity(): Boolean {

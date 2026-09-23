@@ -22,6 +22,8 @@
                 <action android:name="${applicationId}.SET_PREFERENCE" />
                 <action android:name="${applicationId}.LIST_ROMS" />
                 <action android:name="${applicationId}.GET_FPS" />
+                <action android:name="${applicationId}.START_DEV_SERVER" />
+                <action android:name="${applicationId}.STOP_DEV_SERVER" />
             </intent-filter>
         </receiver>
 
@@ -32,6 +34,9 @@
             tools:node="merge">
             <meta-data
                 android:name="me.magnum.melonds.debug.DebugCommandInitializer"
+                android:value="androidx.startup" />
+            <meta-data
+                android:name="me.magnum.melonds.debug.DevServerInitializer"
                 android:value="androidx.startup" />
         </provider>
     </application>

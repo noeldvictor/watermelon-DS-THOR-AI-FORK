@@ -3,6 +3,10 @@
     "thor": {
       "command": "python",
       "args": ["tools/thor_mcp/thor_mcp.py"]
+    },
+    "watermelon-thor": {
+      "type": "http",
+      "url": "http://127.0.0.1:27184/mcp"
     }
   }
 }

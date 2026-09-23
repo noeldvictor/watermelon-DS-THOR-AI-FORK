@@ -229,6 +229,8 @@
     <string name="rewind_memory_usage_above_recommended_limit">Memory usage above recommended limit</string>
     <string name="sustained_performance_mode">Sustained performance mode</string>
     <string name="sustained_performance_mode_summary">When enabled, peak performance will be lower but thermal throttling will be less pronounced.</string>
+    <string name="dev_mcp_server" translatable="false">Dev server (MCP)</string>
+    <string name="dev_mcp_server_summary" translatable="false">Debug builds only. Serves MCP tools (settings, launch, save states, stats) on 127.0.0.1:27184 for adb forward tcp:27184 tcp:27184.</string>
     <string name="check_for_updates">Check for updates</string>
     <string name="check_for_updates_summary">When enabled, the app will periodically check for available updates</string>
     <string name="rom_icon_filtering">Icon filtering</string>

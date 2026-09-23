@@ -2,4 +2,6 @@
 <resources>
     <bool name="settings_backup_restore_enabled">false</bool>
     <bool name="settings_audio_latency_enabled">true</bool>
+    <!-- The on-device MCP server only exists in debug builds; app/src/debug turns its toggle on -->
+    <bool name="dev_mcp_server_available">false</bool>
 </resources>

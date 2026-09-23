@@ -1,34 +1,26 @@
 package me.magnum.melonds.debug
 
-import android.app.ActivityOptions
-import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.util.Log
 import androidx.core.content.edit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import me.magnum.melonds.MelonDSAndroidInterface
 import me.magnum.melonds.MelonEmulator
 import me.magnum.melonds.domain.model.ControllerConfiguration
 import me.magnum.melonds.domain.model.Input
-import me.magnum.melonds.domain.model.SaveStateSlot
 import me.magnum.melonds.domain.model.VideoRenderer
 import me.magnum.melonds.impl.emulator.debug.RendererDebugCaptureKind
 import me.magnum.melonds.impl.emulator.debug.RendererDebugCapturePresets
 import me.magnum.melonds.impl.emulator.debug.RendererDebugCaptureLogger
 import me.magnum.melonds.impl.emulator.debug.RendererDebugBridge
 import me.magnum.melonds.impl.emulator.debug.RendererDebugCaptureResult
-import me.magnum.melonds.ui.emulator.EmulatorActivity
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.File
 import java.util.LinkedHashSet
 import java.util.Locale
@@ -83,6 +75,8 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
             context.debugCommandAction(ACTION_SET_PREFERENCE_SUFFIX) -> handleSetPreference(entryPoint, intent)
             context.debugCommandAction(ACTION_LIST_ROMS_SUFFIX) -> handleListRoms(entryPoint, intent)
             context.debugCommandAction(ACTION_GET_FPS_SUFFIX) -> handleGetFps()
+            context.debugCommandAction(ACTION_START_DEV_SERVER_SUFFIX) -> handleDevServer(context, intent, start = true)
+            context.debugCommandAction(ACTION_STOP_DEV_SERVER_SUFFIX) -> handleDevServer(context, intent, start = false)
             else -> {
                 Log.w(TAG, "Ignored unknown action=${intent.action}")
                 false
@@ -235,84 +229,41 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         Log.w(TAG, "action=touch_screen x=$x y=$y durationMs=$durationMs")
     }
 
-    /** All preferences as a JSON object, optionally only keys containing `filter`. */
     private fun handleGetPreferences(entryPoint: DebugCommandEntryPoint, intent: Intent): Boolean {
-        val filter = intent.getStringExtra(EXTRA_FILTER).orEmpty()
-        val json = JSONObject()
-        entryPoint.sharedPreferences().all.toSortedMap().forEach { (key, value) ->
-            if (filter.isEmpty() || key.contains(filter, ignoreCase = true)) {
-                json.put(key, if (value is Set<*>) JSONArray(value.toList()) else value ?: JSONObject.NULL)
-            }
-        }
-        resultData = json.toString()
+        resultData = DebugCommands.preferences(entryPoint, intent.getStringExtra(EXTRA_FILTER).orEmpty()).toString()
         return true
     }
 
-    /**
-     * Sets one preference. The stored value's type decides how `value` is parsed; a key that
-     * doesn't exist yet needs `type` (boolean, int, long, float, set, string). Written through
-     * SharedPreferences, so the settings listeners apply it to a running game the same way the
-     * settings screen does.
-     */
     private fun handleSetPreference(entryPoint: DebugCommandEntryPoint, intent: Intent): Boolean {
         val key = intent.getStringExtra(EXTRA_KEY) ?: throw IllegalArgumentException("Missing key")
         val raw = intent.getStringExtra(EXTRA_VALUE) ?: throw IllegalArgumentException("Missing value")
-        val preferences = entryPoint.sharedPreferences()
-        val old = preferences.all[key]
-        val type = intent.getStringExtra(EXTRA_TYPE) ?: when (old) {
-            is Boolean -> "boolean"
-            is Int -> "int"
-            is Long -> "long"
-            is Float -> "float"
-            is Set<*> -> "set"
-            null -> throw IllegalArgumentException("Unknown preference $key: pass type to create it")
-            else -> "string"
-        }
-        preferences.edit(commit = true) {
-            when (type) {
-                "boolean" -> putBoolean(key, raw.toBooleanStrict())
-                "int" -> putInt(key, raw.toInt())
-                "long" -> putLong(key, raw.toLong())
-                "float" -> putFloat(key, raw.toFloat())
-                "set" -> putStringSet(key, raw.split(',').filter { it.isNotEmpty() }.toSet())
-                "string" -> putString(key, raw)
-                else -> throw IllegalArgumentException("Unknown type $type")
-            }
-        }
-        val new = preferences.all[key]
-        // push the change into a running game, as the other setting commands do
-        val refreshed = DebugCommandStateStore.requestSettingsRefresh()
-        resultData = JSONObject()
-            .put("key", key)
-            .put("type", type)
-            .put("old", (old as? Set<*>)?.let { JSONArray(it.toList()) } ?: old ?: JSONObject.NULL)
-            .put("new", (new as? Set<*>)?.let { JSONArray(it.toList()) } ?: new ?: JSONObject.NULL)
-            .put("appliedToRunningGame", refreshed)
-            .toString()
-        Log.w(TAG, "action=set_preference key=$key old=$old new=$new refreshed=${if (refreshed) 1 else 0}")
+        resultData = DebugCommands.setPreference(entryPoint, key, raw, intent.getStringExtra(EXTRA_TYPE)).toString()
         return true
     }
 
     private fun handleGetFps(): Boolean {
-        resultData = JSONObject()
-            .put("fps", MelonEmulator.getFPS())
-            .put("running", DebugCommandStateStore.isRunningRom())
-            .toString()
+        resultData = DebugCommands.fps().toString()
         return true
     }
 
-    /** The ROM library as JSON: name, file and the URI LAUNCH_ROM takes. Optional `query`. */
     private suspend fun handleListRoms(entryPoint: DebugCommandEntryPoint, intent: Intent): Boolean {
-        val query = intent.getStringExtra(EXTRA_QUERY).orEmpty()
-        val roms = JSONArray()
-        entryPoint.romsRepository().getRoms().first()
-            .filter { query.isEmpty() || it.name.contains(query, true) || it.fileName.contains(query, true) }
-            .sortedBy { it.name }
-            .forEach { rom ->
-                roms.put(JSONObject().put("name", rom.name).put("file", rom.fileName).put("uri", rom.uri.toString()))
-            }
-        resultData = roms.toString()
+        resultData = DebugCommands.listRoms(entryPoint, intent.getStringExtra(EXTRA_QUERY).orEmpty()).toString()
         return true
+    }
+
+    /**
+     * Starts the on-device MCP server for this process's lifetime; `persist=true` also turns
+     * the settings toggle on so it comes back with the app. Stopping always turns it off.
+     */
+    private fun handleDevServer(context: Context, intent: Intent, start: Boolean): Boolean {
+        val persist = intent.firstBooleanExtra(EXTRA_PERSIST) ?: false
+        when {
+            start && persist -> DevServer.setEnabled(context, true)
+            start -> DevServer.start(context)
+            else -> DevServer.setEnabled(context, false)
+        }
+        resultData = DevServer.statusJson(context).toString()
+        return DevServer.isRunning() == start
     }
 
     private suspend fun handleLaunchRom(context: Context, intent: Intent): Boolean {
@@ -323,75 +274,19 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         val pauseAfterReady = intent.getBooleanExtra(EXTRA_PAUSE_AFTER, false)
         val requestedTimeoutMs = intent.firstNullableIntExtra(EXTRA_WAIT_TIMEOUT_MS, EXTRA_TIMEOUT_MS)
             ?.coerceAtLeast(1)
-            ?: DEFAULT_ROM_READY_TIMEOUT_MS
-
-        if (waitReady) {
-            DebugCommandStateStore.requestPauseAfterNextRunningRom(pauseAfterReady)
-        }
-
-        startEmulatorActivityFromDebugCommand(
-            context = context,
-            launchIntent = Intent(context, EmulatorActivity::class.java).apply {
-                action = context.debugCommandAction(ACTION_LAUNCH_ROM_SUFFIX)
-                data = romUri
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            },
-        )
-
-        delay(LAUNCH_ACTIVITY_SEEN_TIMEOUT_MS)
-        val activitySeen = DebugCommandStateStore.hasEmulatorActivity()
-        val ready = DebugCommandStateStore.isRunningRom()
-        if (ready && waitReady) {
-            applyPauseAfterReady(pauseAfterReady)
-        }
-        Log.w(
-            TAG,
-            "action=launch_rom uri=$romUri waitReady=${if (waitReady) 1 else 0} activitySeen=${if (activitySeen) 1 else 0} ready=${if (ready) 1 else 0} pauseAfter=${if (pauseAfterReady) 1 else 0} requestedTimeoutMs=$requestedTimeoutMs deferredReady=1",
-        )
-        return activitySeen
-    }
-
-    private fun startEmulatorActivityFromDebugCommand(context: Context, launchIntent: Intent) {
-        val options = ActivityOptions.makeBasic()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val mode = if (Build.VERSION.SDK_INT >= 36) {
-                ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS
-            } else {
-                @Suppress("DEPRECATION")
-                ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
-            }
-            options.setPendingIntentBackgroundActivityStartMode(mode)
-            options.setPendingIntentCreatorBackgroundActivityStartMode(mode)
-        }
-
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            REQUEST_CODE_LAUNCH_ROM,
-            launchIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        pendingIntent.send(
-            context,
-            0,
-            null,
-            null,
-            null,
-            null,
-            options.toBundle(),
-        )
+            ?: DebugCommands.DEFAULT_ROM_READY_TIMEOUT_MS
+        return DebugCommands.launchRom(context, romUri, waitReady, pauseAfterReady, requestedTimeoutMs)
     }
 
     private suspend fun handleWaitRomReady(intent: Intent): Boolean {
         val pauseAfterReady = intent.getBooleanExtra(EXTRA_PAUSE_AFTER, false)
         val requestedTimeoutMs = intent.firstNullableIntExtra(EXTRA_WAIT_TIMEOUT_MS, EXTRA_TIMEOUT_MS)
             ?.coerceAtLeast(1)
-            ?: DEFAULT_ROM_READY_TIMEOUT_MS
-        val timeoutMs = requestedTimeoutMs.coerceAtMost(MAX_RECEIVER_WAIT_TIMEOUT_MS)
+            ?: DebugCommands.DEFAULT_ROM_READY_TIMEOUT_MS
+        val timeoutMs = requestedTimeoutMs.coerceAtMost(DebugCommands.MAX_RECEIVER_WAIT_TIMEOUT_MS)
         val ready = DebugCommandStateStore.waitForRunningRom(timeoutMs.toLong())
         if (ready) {
-            applyPauseAfterReady(pauseAfterReady)
+            DebugCommands.setDebugPause(pauseAfterReady)
         }
         Log.w(
             TAG,
@@ -409,37 +304,16 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
             ?: true
         val requestedTimeoutMs = intent.firstNullableIntExtra(EXTRA_WAIT_TIMEOUT_MS, EXTRA_TIMEOUT_MS)
             ?.coerceAtLeast(1)
-            ?: DEFAULT_ROM_READY_TIMEOUT_MS
-        val timeoutMs = requestedTimeoutMs.coerceAtMost(MAX_RECEIVER_WAIT_TIMEOUT_MS)
+            ?: DebugCommands.DEFAULT_ROM_READY_TIMEOUT_MS
         val pauseAfterLoad = intent.getBooleanExtra(EXTRA_PAUSE_AFTER, false)
-        if (waitReady) {
-            val ready = DebugCommandStateStore.waitForRunningRom(timeoutMs.toLong())
-            if (!ready) {
-                Log.w(
-                    TAG,
-                    "action=load_state waitReady=1 ready=0 success=0 pauseAfter=${if (pauseAfterLoad) 1 else 0} timeoutMs=$timeoutMs requestedTimeoutMs=$requestedTimeoutMs",
-                )
-                return false
-            }
-        }
-        val stateUri = resolveStateUri(context, entryPoint, intent, preferExistingSlotFallback = true)
-            ?: throw IllegalArgumentException("Missing load target. Provide slot or path.")
-        MelonEmulator.pauseEmulation()
-        val success = try {
-            MelonEmulator.loadState(stateUri)
-        } finally {
-            if (pauseAfterLoad) {
-                DebugCommandStateStore.setDebugPauseHeld(true)
-            } else {
-                DebugCommandStateStore.setDebugPauseHeld(false)
-                MelonEmulator.resumeEmulation()
-            }
-        }
-        Log.w(
-            TAG,
-            "action=load_state uri=$stateUri waitReady=${if (waitReady) 1 else 0} success=${if (success) 1 else 0} pauseAfter=${if (pauseAfterLoad) 1 else 0} timeoutMs=$timeoutMs requestedTimeoutMs=$requestedTimeoutMs",
-        )
-        return success
+        return DebugCommands.loadState(
+            context = context,
+            entryPoint = entryPoint,
+            target = intent.stateTarget(),
+            waitReady = waitReady,
+            requestedTimeoutMs = requestedTimeoutMs,
+            pauseAfterLoad = pauseAfterLoad,
+        ).success
     }
 
     private suspend fun handleSaveState(
@@ -447,25 +321,16 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         entryPoint: DebugCommandEntryPoint,
         intent: Intent,
     ): Boolean {
-        val stateUri = resolveStateUri(context, entryPoint, intent, preferExistingSlotFallback = false)
-            ?: throw IllegalArgumentException("Missing save target. Provide slot or path.")
         val pauseAfterSave = intent.getBooleanExtra(EXTRA_PAUSE_AFTER, false)
-        MelonEmulator.pauseEmulation()
-        val success = try {
-            MelonEmulator.saveState(stateUri)
-        } finally {
-            if (pauseAfterSave) {
-                DebugCommandStateStore.setDebugPauseHeld(true)
-            } else {
-                DebugCommandStateStore.setDebugPauseHeld(false)
-                MelonEmulator.resumeEmulation()
-            }
-        }
-        Log.w(
-            TAG,
-            "action=save_state uri=$stateUri success=${if (success) 1 else 0} pauseAfter=${if (pauseAfterSave) 1 else 0}",
+        return DebugCommands.saveState(context, entryPoint, intent.stateTarget(), pauseAfterSave).success
+    }
+
+    private fun Intent.stateTarget(): DebugCommands.StateTarget {
+        return DebugCommands.StateTarget(
+            pathOrUri = firstStringExtra(EXTRA_PATH, EXTRA_URI),
+            slot = firstNullableIntExtra(EXTRA_SLOT, EXTRA_VALUE),
+            romUri = firstStringExtra(EXTRA_ROM_URI),
         )
-        return success
     }
 
     private suspend fun handleStepFrame(
@@ -815,114 +680,6 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         }
     }
 
-    private suspend fun resolveStateUri(
-        context: Context,
-        entryPoint: DebugCommandEntryPoint,
-        intent: Intent,
-        preferExistingSlotFallback: Boolean,
-    ): Uri? {
-        intent.firstStringExtra(EXTRA_PATH, EXTRA_URI)?.let { pathOrUri ->
-            return parseUri(pathOrUri)
-        }
-
-        val slot = intent.firstNullableIntExtra(EXTRA_SLOT, EXTRA_VALUE) ?: return null
-        require(slot in 0..8) { "Unsupported save state slot=$slot" }
-
-        val romUri = resolveRomUriForSlot(context, intent) ?: return null
-        val rom = entryPoint.romsRepository().getRomAtUri(romUri) ?: return null
-        val resolvedUri = entryPoint.saveStatesRepository().getRomSaveStateUri(
-            rom,
-            SaveStateSlot(slot, exists = true, lastUsedDate = null, screenshot = null),
-        )
-        if (!preferExistingSlotFallback) {
-            return resolvedUri
-        }
-
-        val fallbackUri = resolveExistingSlotFallbackUri(
-            preferredUri = resolvedUri,
-            romFileName = rom.fileName,
-            slot = slot,
-        ) ?: return resolvedUri
-        Log.w(TAG, "action=slot_fallback slot=$slot preferred=$resolvedUri fallback=$fallbackUri")
-        return fallbackUri
-    }
-
-    private suspend fun resolveRomUriForSlot(context: Context, intent: Intent): Uri? {
-        intent.firstStringExtra(EXTRA_ROM_URI)?.let { return Uri.parse(it) }
-
-        var romUri = DebugCommandStateStore.getLastRomUri(context)
-        if (romUri != null) {
-            return romUri
-        }
-
-        val deadlineAt = System.nanoTime() + ROM_URI_RESOLVE_TIMEOUT_MS * 1_000_000L
-        while (romUri == null && System.nanoTime() < deadlineAt) {
-            delay(ROM_URI_RESOLVE_STEP_MS)
-            romUri = DebugCommandStateStore.getLastRomUri(context)
-        }
-        return romUri
-    }
-
-    private fun resolveExistingSlotFallbackUri(
-        preferredUri: Uri,
-        romFileName: String,
-        slot: Int,
-    ): Uri? {
-        if (preferredUri.scheme != "file") {
-            return null
-        }
-        val preferredPath = preferredUri.path ?: return null
-        val preferredFile = File(preferredPath)
-        if (preferredFile.exists() && preferredFile.length() > 0L) {
-            return null
-        }
-        val parentDirectory = preferredFile.parentFile
-            ?.takeIf { it.exists() && it.isDirectory }
-            ?: return null
-
-        val romName = romFileName.substringBeforeLast('.', romFileName).trim()
-        if (romName.isEmpty()) {
-            return null
-        }
-        val candidateFile = buildAlternativeSaveStateNames(romName).asSequence()
-            .map { candidateName -> File(parentDirectory, "$candidateName.ml$slot") }
-            .firstOrNull { file -> file.exists() && file.length() > 0L }
-            ?: return null
-        return Uri.fromFile(candidateFile)
-    }
-
-    private fun buildAlternativeSaveStateNames(romName: String): List<String> {
-        val normalized = romName.trim()
-        if (normalized.isEmpty()) {
-            return emptyList()
-        }
-
-        val names = LinkedHashSet<String>()
-        val analogSuffixes = listOf(" Analog", " (Analog)", " [Analog]", "[Analog]")
-        analogSuffixes.forEach { suffix ->
-            if (normalized.endsWith(suffix, ignoreCase = true)) {
-                val stripped = normalized.dropLast(suffix.length).trimEnd()
-                if (stripped.isNotEmpty()) {
-                    names.add(stripped)
-                }
-            }
-        }
-        if (!normalized.endsWith(" Analog", ignoreCase = true)) {
-            names.add("$normalized Analog")
-        }
-        return names.toList()
-    }
-
-    private fun applyPauseAfterReady(pauseAfterReady: Boolean) {
-        if (pauseAfterReady) {
-            DebugCommandStateStore.setDebugPauseHeld(true)
-            MelonEmulator.pauseEmulation()
-        } else {
-            DebugCommandStateStore.setDebugPauseHeld(false)
-            MelonEmulator.resumeEmulation()
-        }
-    }
-
     private fun parseRenderer(value: String): VideoRenderer? {
         return when (value.trim().lowercase(Locale.US)) {
             "software", "soft" -> VideoRenderer.SOFTWARE
@@ -1117,15 +874,6 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         }
     }
 
-    private fun parseUri(pathOrUri: String): Uri {
-        val file = File(pathOrUri)
-        return if (file.isAbsolute) {
-            Uri.fromFile(file)
-        } else {
-            Uri.parse(pathOrUri)
-        }
-    }
-
     private fun Intent.firstStringExtra(vararg keys: String): String? {
         return keys.firstNotNullOfOrNull { key ->
             getStringExtra(key)?.takeIf { value -> value.isNotBlank() }
@@ -1195,7 +943,6 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         private const val TAG = "DebugCommand"
         private const val RESULT_FAILURE = 0
         private const val RESULT_SUCCESS = 1
-        private const val REQUEST_CODE_LAUNCH_ROM = 1
         private const val KEY_VIDEO_RENDERER = "video_renderer"
         private const val KEY_VIDEO_INTERNAL_RESOLUTION = "video_internal_resolution"
         private const val KEY_ENABLE_JIT = "enable_jit"
@@ -1253,11 +1000,6 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         private const val EXTRA_CAPTURE_KINDS_REST = "capture_kinds_rest"
         private const val EXTRA_REST_KINDS = "rest_kinds"
         private const val EXTRA_VALUE = "value"
-        private const val DEFAULT_ROM_READY_TIMEOUT_MS = 8_000
-        private const val MAX_RECEIVER_WAIT_TIMEOUT_MS = 8_000
-        private const val LAUNCH_ACTIVITY_SEEN_TIMEOUT_MS = 2_000L
-        private const val ROM_URI_RESOLVE_TIMEOUT_MS = 4_000L
-        private const val ROM_URI_RESOLVE_STEP_MS = 100L
         private const val DEFAULT_TOUCH_X = 128
         private const val DEFAULT_TOUCH_Y = 96
         private const val DEFAULT_TOUCH_DURATION_MS = 80
@@ -1286,10 +1028,13 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         private const val ACTION_SET_PREFERENCE_SUFFIX = "SET_PREFERENCE"
         private const val ACTION_LIST_ROMS_SUFFIX = "LIST_ROMS"
         private const val ACTION_GET_FPS_SUFFIX = "GET_FPS"
+        private const val ACTION_START_DEV_SERVER_SUFFIX = "START_DEV_SERVER"
+        private const val ACTION_STOP_DEV_SERVER_SUFFIX = "STOP_DEV_SERVER"
         private const val EXTRA_KEY = "key"
         private const val EXTRA_TYPE = "type"
         private const val EXTRA_FILTER = "filter"
         private const val EXTRA_QUERY = "query"
+        private const val EXTRA_PERSIST = "persist"
     }
 
     private fun Context.debugCommandAction(suffix: String): String {

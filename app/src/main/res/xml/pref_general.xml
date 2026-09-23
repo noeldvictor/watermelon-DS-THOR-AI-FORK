@@ -53,6 +53,14 @@
             app:iconSpaceReserved="false"
             android:defaultValue="false" />
 
+    <SwitchPreference
+            android:key="dev_mcp_server_enabled"
+            android:title="@string/dev_mcp_server"
+            android:summary="@string/dev_mcp_server_summary"
+            app:isPreferenceVisible="@bool/dev_mcp_server_available"
+            app:iconSpaceReserved="false"
+            android:defaultValue="false" />
+
     <Preference
             android:key="backup_settings"
             android:title="@string/backup_settings"
