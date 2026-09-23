@@ -305,7 +305,9 @@ def cmd_upscale(args) -> None:
         sub = KINDS[m["kind"]]
         src = work / "native" / sub / f"{m['key']}.png"
         dst = work / "upscaled" / sub / f"{m['key']}.png"
-        if dst.exists() and not args.force:
+        redo = args.force or (args.redo_cutouts and dst.exists()
+                              and int(np.asarray(Image.open(src))[..., 3].min()) < 255)
+        if dst.exists() and not redo:
             skipped += 1
         else:
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -469,6 +471,8 @@ def main() -> None:
         p.add_argument("--alpha", choices=("model", "resize"), default="model")
         p.add_argument("--fp32", action="store_true", help="never use fp16")
         p.add_argument("--force", action="store_true", help="redo images already upscaled")
+        p.add_argument("--redo-cutouts", action="store_true",
+                       help="redo only images with transparency (after an alpha-handling change)")
 
     p = sub.add_parser("upscale", help="AI-upscale an extraction")
     p.add_argument("work")

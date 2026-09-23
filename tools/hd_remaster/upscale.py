@@ -15,10 +15,15 @@ https://huggingface.co/Kim2091/UltraSharp). Models stay outside the repo; the li
 non-commercial, so packs made with it are for personal use.
 
 This module comes from the ARMSX2 Thor fork's disc-texture tooling, where the decisions below
-were measured on Okage: Shadow King (2,807 textures). The one DS-specific change is padding:
-a DS texture's material states whether each axis repeats, mirrors or clamps, so the seam margin
-uses exactly that per axis instead of guessing from the pixels. The guess below is only the
-fallback for textures no material describes.
+were measured on Okage: Shadow King (2,807 textures). Two DS-specific changes:
+
+- Padding. A DS texture's material states whether each axis repeats, mirrors or clamps, so the
+  seam margin uses exactly that per axis instead of guessing from the pixels. The guess below
+  is only the fallback for textures no material describes.
+- Binary alpha. DS cut-outs are small and drawn on a pixel staircase, and the model's alpha,
+  re-thresholded, kept every step (Phantom Hourglass's title logo got a ragged outline). Binary
+  alpha now comes from a bicubic enlargement of the mask, blurred by 0.4 native pixels and
+  thresholded at 50%: same shape, smooth contour. Soft alpha still goes through the model.
 
 Decisions (worked out 2026-09-22 on Okage: Shadow King, 2,807 textures):
 
@@ -70,7 +75,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 # Must be set before torch initialises cuBLAS, for deterministic output.
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
@@ -222,8 +227,8 @@ def upscale_texture(rgba: np.ndarray, up: Upscaler, scale: int, pad: int, alpha_
     s = up.scale
     out_rgb = up.run(prgb)  # (ph*s, pw*s, 3), 0..1
     out_a = None
-    if not opaque:
-        pa = pad2(alpha.astype(np.float32), my, mx, modes) / 255.0
+    pa = pad2(alpha.astype(np.float32), my, mx, modes) / 255.0 if not opaque else None
+    if not opaque and not binary_alpha:
         if alpha_mode == "model":
             out_a = up.run(np.repeat(pa[..., None], 3, axis=2)).mean(axis=2)
         else:
@@ -234,6 +239,16 @@ def upscale_texture(rgba: np.ndarray, up: Upscaler, scale: int, pad: int, alpha_
         out_rgb = np.stack([resize_float(out_rgb[..., c], size, Image.LANCZOS) for c in range(3)], axis=2)
         if out_a is not None:
             out_a = resize_float(out_a, size, Image.LANCZOS)
+
+    if binary_alpha:
+        # A DS cut-out is drawn on a pixel staircase, and thresholding the model's alpha keeps
+        # every step: on Phantom Hourglass's title logo the outline came out as a ragged edge.
+        # A bicubic enlargement of the mask, blurred by 0.4 native pixels and thresholded at
+        # 50%, keeps the same shape with a smooth contour; thin strokes survive (a one-pixel
+        # line is 4 pixels wide at 4x and peaks well above the threshold).
+        big = Image.fromarray(np.rint(pa * 255).astype(np.uint8), "L").resize(
+            (pw * scale, ph * scale), Image.BICUBIC).filter(ImageFilter.GaussianBlur(0.4 * scale))
+        out_a = np.asarray(big, np.float32) / 255.0
 
     cy, cx = my * scale, mx * scale
     out_rgb = out_rgb[cy : cy + h * scale, cx : cx + w * scale]
