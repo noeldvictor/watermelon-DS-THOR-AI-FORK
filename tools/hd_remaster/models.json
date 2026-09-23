@@ -6,5 +6,13 @@
     "scale": 4,
     "license": "CC BY-NC-SA 4.0 (Kim2091): personal, non-commercial use",
     "notes": "ESRGAN. Sharp and detailed on painted and pre-rendered game art."
+  },
+  "RealESRGAN_x4plus_anime_6B": {
+    "file": "RealESRGAN_x4plus_anime_6B.pth",
+    "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
+    "sha256": "f872d837d3c90ed2e05227bed711af5671a6fd1c9f7d7e91c911a61f155e99da",
+    "scale": 4,
+    "license": "BSD-3-Clause (xinntao/Real-ESRGAN)",
+    "notes": "RRDB, 6 blocks, trained on anime illustrations. Clean line art and eyes on character portraits, where 4x-UltraSharp invents structure (slit pupils) from 2-3 native pixels."
   }
 }

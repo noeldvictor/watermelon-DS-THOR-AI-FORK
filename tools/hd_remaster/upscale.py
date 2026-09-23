@@ -208,7 +208,7 @@ def pad2(a: np.ndarray, my: int, mx: int, modes: tuple[str, str]) -> np.ndarray:
 
 
 def upscale_texture(rgba: np.ndarray, up: Upscaler, scale: int, pad: int, alpha_mode: str,
-                    wrap=None) -> np.ndarray:
+                    wrap=None, cutout: str = "contour") -> np.ndarray:
     h, w, _ = rgba.shape
     rgb = rgba[..., :3].astype(np.float32)
     alpha = rgba[..., 3]
@@ -240,7 +240,14 @@ def upscale_texture(rgba: np.ndarray, up: Upscaler, scale: int, pad: int, alpha_
         if out_a is not None:
             out_a = resize_float(out_a, size, Image.LANCZOS)
 
-    if binary_alpha:
+    if binary_alpha and cutout == "model":
+        # Painted art (character portraits): the model redraws the mask like line art, and the
+        # soft edge it gives is kept. The contour below still steps along diagonals at 4x.
+        out_a = up.run(np.repeat(pa[..., None], 3, axis=2)).mean(axis=2)
+        if scale != s:
+            out_a = resize_float(out_a, (pw * scale, ph * scale), Image.LANCZOS)
+        binary_alpha = False
+    elif binary_alpha:
         # A DS cut-out is drawn on a pixel staircase, and thresholding the model's alpha keeps
         # every step: on Phantom Hourglass's title logo the outline came out as a ragged edge.
         # A bicubic enlargement of the mask, blurred by 0.4 native pixels and thresholded at

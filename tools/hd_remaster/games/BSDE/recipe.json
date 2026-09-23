@@ -62,5 +62,13 @@
     "Every asset lives in the indexed archive mcd.dat (mcd_compact.bin + mcd_path.bin), which the tool reads directly.",
     "Not in the ROM, so not in the pack: dialogue text (drawn into sprite memory at runtime), 64x64 bitmap sprites captured from the 3D scene, and character parts the game assembles into one texture. The per-layer filters still apply to those.",
     "HD text: the four 1bpp NFTR fonts in mcd:font/ are packed; dialogue-box text redraws in HD on the Thor (attract demo verified)."
+  ],
+  "overrides": [
+    {
+      "match": "2d/bustup/",
+      "model": "RealESRGAN_x4plus_anime_6B",
+      "cutout": "model",
+      "why": "Character portraits are painted anime art: 4x-UltraSharp drew slit pupils from 2-3 native eye pixels, and the bicubic cut-out contour kept the native staircase along the hair and shoulders. The anime model redraws both the art and its mask cleanly."
+    }
   ]
 }

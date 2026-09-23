@@ -310,6 +310,13 @@ def cmd_upscale(args) -> None:
     # the pack has one scale (the emulator requires it); each category may use its own model
     scale = args.scale or recipe["scale"]
     names = {c: args.model or recipe["models"][c] for c in recipes.CATEGORIES}
+    # recipe "overrides": [{"match": "<source substring>", "model": ..., "cutout": "model"}], first
+    # match wins; they apply to the images whose manifest source contains the match
+    overrides = [] if args.model else recipe.get("overrides", [])
+
+    def override_for(m: dict) -> dict:
+        src = m.get("source") or ""
+        return next((o for o in overrides if o["match"] in src), {})
     info_path = work / "upscaled" / "upscale.json"
     if info_path.exists() and not args.force:
         before = json.loads(info_path.read_text())
@@ -318,8 +325,8 @@ def cmd_upscale(args) -> None:
                 f"kept; pass --force to redo them with {names} at {scale}x")
     ups: dict[str, object] = {}
 
-    def upscaler(category: str):
-        name = names[category]
+    def upscaler(category: str, name: str | None = None):
+        name = name or names[category]
         if name not in ups:
             path = recipes.model_path(name)
             up = upscale.Upscaler(path, args.tile, fp16=not args.fp32)
@@ -338,9 +345,10 @@ def cmd_upscale(args) -> None:
         sub = KINDS[m["kind"]]
         src = work / "native" / sub / f"{m['key']}.png"
         dst = work / "upscaled" / sub / f"{m['key']}.png"
-        redo = args.force or (args.redo_cutouts and dst.exists()
-                              and int(np.asarray(Image.open(src))[..., 3].min()) < 255)
-        if dst.exists() and not redo:
+        selected = not args.only or args.only in (m.get("source") or "")
+        redo = selected and (args.force or bool(args.only) or (args.redo_cutouts and dst.exists()
+                             and int(np.asarray(Image.open(src))[..., 3].min()) < 255))
+        if not selected or (dst.exists() and not redo):
             skipped += 1
         else:
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -348,7 +356,9 @@ def cmd_upscale(args) -> None:
                 rgba = np.asarray(Image.open(src).convert("RGBA"))
                 wrap = m.get("wrap") if m["kind"] == "tex1" else EDGE
                 category = m.get("category", "textures")
-                out = upscale.upscale_texture(rgba, upscaler(category), scale, args.pad, args.alpha, wrap=wrap)
+                ov = override_for(m)
+                out = upscale.upscale_texture(rgba, upscaler(category, ov.get("model")), scale, args.pad,
+                                              args.alpha, wrap=wrap, cutout=ov.get("cutout", "contour"))
                 tmp = dst.with_name(dst.name + ".tmp")
                 Image.fromarray(out, "RGBA").save(tmp, format="PNG")
                 os.replace(tmp, dst)
@@ -363,8 +373,8 @@ def cmd_upscale(args) -> None:
                 f"{rate:.1f}/s, eta {(len(items) - i) / rate if rate else 0:.0f}s")
             last = now
     info_path.parent.mkdir(parents=True, exist_ok=True)
-    info_path.write_text(json.dumps({"scale": scale, "models": names, "alpha": args.alpha, "pad": args.pad},
-                                    indent=1))
+    info_path.write_text(json.dumps({"scale": scale, "models": names, "overrides": overrides,
+                                     "alpha": args.alpha, "pad": args.pad}, indent=1))
 
 
 def work_recipe(work: Path) -> dict:
@@ -514,6 +524,8 @@ def main() -> None:
         p.add_argument("--force", action="store_true", help="redo images already upscaled")
         p.add_argument("--redo-cutouts", action="store_true",
                        help="redo only images with transparency (after an alpha-handling change)")
+        p.add_argument("--only", help="redo only the images whose source contains this text "
+                                      "(e.g. 2d/bustup/ after changing a recipe override)")
 
     p = sub.add_parser("upscale", help="AI-upscale an extraction")
     p.add_argument("work")
