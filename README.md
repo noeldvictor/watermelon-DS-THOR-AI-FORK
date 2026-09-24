@@ -26,7 +26,7 @@ external display support, RetroAchievements, RetroArch shader presets. On top of
 | In-game overlay | Pause menu | Adds a turbo speed picker, live texture-filter switching, and "stretch to fit both screens" |
 | Input | Single-button hotkeys | Adds modifier combos, so a hotkey can sit behind a chord |
 | Cheats | Starts with an empty database | Ships a cheat database, imported on first launch |
-| Dual-screen rendering | Dual-screen presets and layouts | Adds fixes for flicker and wrong-screen content on alternating dual-3D scenes |
+| Dual-screen rendering | Dual-screen presets and layouts | Adds fixes for flicker, stale lines and wrong-screen content on alternating dual-3D scenes |
 | CPU / JIT | melonDS core as of Nov 2025 | ARM64 JIT fixes and speedups (see below) |
 | Saves and audio | — | Crash-safe save writes; sound comes back after the volume has been set to 0 |
 | Install | Application ID `me.magnum.melondualds` | Own application ID `app.watermelonthor`, so it installs alongside WatermelonDS and melonDS; its settings files in shared folders have their own names (`WatermelonThor.opts`, `<game>.thor.opts`) |

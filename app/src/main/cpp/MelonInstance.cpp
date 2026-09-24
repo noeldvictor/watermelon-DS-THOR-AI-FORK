@@ -1062,6 +1062,76 @@ bool packedControlMarksProtectedBlack2D(u32 control)
     return ((control >> 24u) & 0x20u) != 0u;
 }
 
+// every pixel a 3D slot with no 2D above it
+bool packedLineIsLive3dSlotLine(
+    const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& control,
+    int y)
+{
+    const size_t rowBase = static_cast<size_t>(y) * static_cast<size_t>(kScreenshotScreenWidth);
+    for (int x = 0; x < kScreenshotScreenWidth; x++)
+    {
+        if (((control[rowBase + static_cast<size_t>(x)] >> 24u) & 0xC0u) != 0x40u)
+            return false;
+    }
+    return true;
+}
+
+// the CPU composite of a line whose capture blends 3D: 2D-only comp mode 7 pixels, no 3D slot
+bool packedLineIsCapture3dComposite(
+    const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& plane0,
+    const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& control,
+    u32 lineMeta,
+    int y)
+{
+    if ((lineMeta & (kSoftPackedMetaFlagRegularCaptureUses3d | kSoftPackedMetaFlagVramCaptureUses3d)) == 0u)
+        return false;
+
+    int compositePixels = 0;
+    const size_t rowBase = static_cast<size_t>(y) * static_cast<size_t>(kScreenshotScreenWidth);
+    for (int x = 0; x < kScreenshotScreenWidth; x++)
+    {
+        const size_t index = rowBase + static_cast<size_t>(x);
+        const u32 controlAlpha = control[index] >> 24u;
+        if ((controlAlpha & 0x40u) != 0u)
+            return false;
+        if ((controlAlpha & 0x8Fu) == 0x87u && packedPixelHasVisibleColor(plane0[index]))
+            compositePixels++;
+    }
+    return compositePixels >= kScreenshotScreenWidth / 2;
+}
+
+void applyCachedEngineASnapshot(
+    std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& targetPlane0,
+    std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& targetPlane1,
+    std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& targetControl,
+    std::array<u32, SoftPackedFrameSnapshot::kLineCount>& targetLineMeta,
+    const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& cachedPlane0,
+    const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& cachedPlane1,
+    const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& cachedControl,
+    const std::array<u32, SoftPackedFrameSnapshot::kLineCount>& cachedLineMeta)
+{
+    for (int y = 0; y < kScreenshotScreenHeight; y++)
+    {
+        const size_t line = static_cast<size_t>(y);
+        // a line that is live 3D now keeps its pixels. The cached composite is two frames behind
+        // the live picture in alternating dual-3D scenes, and once it is shown the next frame's
+        // temporal carry has no 3D slot to take for that line, so it would stay stale for good
+        // (DQ IV's opening: the 20-line strip it opens with stayed as a band over the dragon).
+        const bool keepLive3dLine =
+            packedLineIsLive3dSlotLine(targetControl, y)
+            && packedLineIsCapture3dComposite(cachedPlane0, cachedControl, cachedLineMeta[line], y);
+        if (!keepLive3dLine)
+        {
+            const size_t rowBase = line * static_cast<size_t>(kScreenshotScreenWidth);
+            const size_t rowBytes = static_cast<size_t>(kScreenshotScreenWidth) * sizeof(u32);
+            std::memcpy(targetPlane0.data() + rowBase, cachedPlane0.data() + rowBase, rowBytes);
+            std::memcpy(targetPlane1.data() + rowBase, cachedPlane1.data() + rowBase, rowBytes);
+            std::memcpy(targetControl.data() + rowBase, cachedControl.data() + rowBase, rowBytes);
+        }
+        targetLineMeta[line] = (cachedLineMeta[line] & 0xFFFF0000u) | (targetLineMeta[line] & 0x0000FFFFu);
+    }
+}
+
 void normalizeProtectedBlackTargetForScreen(
     std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& control,
     bool targetTopScreen)
@@ -8069,25 +8139,6 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
                 return false;
             };
 
-        auto applyCachedEngineASnapshot =
-            [](std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& targetPlane0,
-                std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& targetPlane1,
-                std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& targetControl,
-                std::array<u32, SoftPackedFrameSnapshot::kLineCount>& targetLineMeta,
-                const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& cachedPlane0,
-                const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& cachedPlane1,
-                const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& cachedControl,
-                const std::array<u32, SoftPackedFrameSnapshot::kLineCount>& cachedLineMeta) {
-                const std::array<u32, SoftPackedFrameSnapshot::kLineCount> currentLineMeta = targetLineMeta;
-                targetPlane0 = cachedPlane0;
-                targetPlane1 = cachedPlane1;
-                targetControl = cachedControl;
-                targetLineMeta = cachedLineMeta;
-
-                for (size_t y = 0; y < SoftPackedFrameSnapshot::kLineCount; y++)
-                    targetLineMeta[y] = (targetLineMeta[y] & 0xFFFF0000u) | (currentLineMeta[y] & 0x0000FFFFu);
-            };
-
         if (engineAOnTop)
         {
             if (screenHasMeaningfulContent(lastSoftPackedFrameSnapshot.packedTopPlane0)
@@ -9808,6 +9859,12 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
                                     std::array<melonDS::u8, SoftPackedFrameSnapshot::kLineCount>& heldStreak,
                                     std::array<melonDS::u8, SoftPackedFrameSnapshot::kLineCount>& recentHold,
                                     u32& heldLines) {
+            // a screen that is live 3D on every line has no 2D that could have dropped out:
+            // holding colors there paints an older frame over the live picture (DQ IV's
+            // opening kept the last frame of its intro strip as a band over the dragon)
+            bool wholeScreenLive3d = true;
+            for (int y = 0; y < kScreenshotScreenHeight && wholeScreenLive3d; y++)
+                wholeScreenLive3d = packedLineIsLive3dSlotLine(control, y);
             for (size_t y = 0; y < SoftPackedFrameSnapshot::kLineCount; y++)
             {
                 const size_t rowBase = y * SoftPackedFrameSnapshot::kScreenWidth;
@@ -9866,7 +9923,7 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
                 const bool holdEligible =
                     heldStreak[y] >= 8u
                     || (recentHold[y] > 0u && heldStreak[y] >= 1u);
-                if (active && heldAge[y] <= 2u && holdEligible)
+                if (active && heldAge[y] <= 2u && holdEligible && !wholeScreenLive3d)
                 {
                     recentHold[y] = 60u;
                     std::memcpy(plane0.data() + rowBase, heldPlane0.data() + rowBase,
@@ -13220,25 +13277,6 @@ bool MelonInstance::latchSoftPackedFrameSnapshotFastPath(
                 return stats.Structured2DOnlyVisiblePixels >= kMinVisiblePixels;
             };
 
-        auto applyCachedEngineASnapshot =
-            [](std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& targetPlane0,
-                std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& targetPlane1,
-                std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& targetControl,
-                std::array<u32, SoftPackedFrameSnapshot::kLineCount>& targetLineMeta,
-                const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& cachedPlane0,
-                const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& cachedPlane1,
-                const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& cachedControl,
-                const std::array<u32, SoftPackedFrameSnapshot::kLineCount>& cachedLineMeta) {
-                const std::array<u32, SoftPackedFrameSnapshot::kLineCount> currentLineMeta = targetLineMeta;
-                targetPlane0 = cachedPlane0;
-                targetPlane1 = cachedPlane1;
-                targetControl = cachedControl;
-                targetLineMeta = cachedLineMeta;
-
-                for (size_t y = 0; y < SoftPackedFrameSnapshot::kLineCount; y++)
-                    targetLineMeta[y] = (targetLineMeta[y] & 0xFFFF0000u) | (currentLineMeta[y] & 0x0000FFFFu);
-            };
-
         if (engineAOnTop)
         {
             if (screenHasMeaningfulContent(lastSoftPackedFrameSnapshot.topScreenStats)
@@ -15845,6 +15883,12 @@ bool MelonInstance::latchSoftPackedFrameSnapshotFastPath(
                                     std::array<melonDS::u8, SoftPackedFrameSnapshot::kLineCount>& heldStreak,
                                     std::array<melonDS::u8, SoftPackedFrameSnapshot::kLineCount>& recentHold,
                                     u32& heldLines) {
+            // a screen that is live 3D on every line has no 2D that could have dropped out:
+            // holding colors there paints an older frame over the live picture (DQ IV's
+            // opening kept the last frame of its intro strip as a band over the dragon)
+            bool wholeScreenLive3d = true;
+            for (int y = 0; y < kScreenshotScreenHeight && wholeScreenLive3d; y++)
+                wholeScreenLive3d = packedLineIsLive3dSlotLine(control, y);
             for (size_t y = 0; y < SoftPackedFrameSnapshot::kLineCount; y++)
             {
                 const size_t rowBase = y * SoftPackedFrameSnapshot::kScreenWidth;
@@ -15903,7 +15947,7 @@ bool MelonInstance::latchSoftPackedFrameSnapshotFastPath(
                 const bool holdEligible =
                     heldStreak[y] >= 8u
                     || (recentHold[y] > 0u && heldStreak[y] >= 1u);
-                if (active && heldAge[y] <= 2u && holdEligible)
+                if (active && heldAge[y] <= 2u && holdEligible && !wholeScreenLive3d)
                 {
                     recentHold[y] = 60u;
                     std::memcpy(plane0.data() + rowBase, heldPlane0.data() + rowBase,
