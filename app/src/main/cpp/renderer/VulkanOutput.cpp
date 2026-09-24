@@ -2579,7 +2579,7 @@ bool VulkanOutput::ensurePlaneOverlayResources(FrameResource& resource)
     {
         if (!createHostBuffer(resource.overlayRankBuffer, resource.overlayRankMemory,
                               resource.overlayRankMapped,
-                              2 * melonDS::kObjRankEngineSize,
+                              melonDS::kObjRankSlots * melonDS::kObjRankEngineSize,
                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
             return false;
         resource.overlayDescriptorsReady = false;
@@ -2617,7 +2617,7 @@ bool VulkanOutput::ensurePlaneOverlayResources(FrameResource& resource)
         planeInfos[0] = {VK_NULL_HANDLE, topFilteredPlaneView, VK_IMAGE_LAYOUT_GENERAL};
         planeInfos[1] = {VK_NULL_HANDLE, bottomFilteredPlaneView, VK_IMAGE_LAYOUT_GENERAL};
 
-        VkDescriptorBufferInfo rankInfo{resource.overlayRankBuffer, 0, 2 * melonDS::kObjRankEngineSize};
+        VkDescriptorBufferInfo rankInfo{resource.overlayRankBuffer, 0, melonDS::kObjRankSlots * melonDS::kObjRankEngineSize};
 
         std::array<VkWriteDescriptorSet, 8> writes{};
         for (u32 screen = 0; screen < 2; screen++)
@@ -2817,7 +2817,7 @@ bool VulkanOutput::ensureHDEdgeResources(FrameResource& resource)
                                             kOverlayMaxInstances * sizeof(PlaneOverlayGpuInstance)};
         VkDescriptorImageInfo atlasInfo{VK_NULL_HANDLE, overlayAtlasView, VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo outInfo{VK_NULL_HANDLE, resource.imageView, VK_IMAGE_LAYOUT_GENERAL};
-        VkDescriptorBufferInfo rankInfo{resource.overlayRankBuffer, 0, 2 * melonDS::kObjRankEngineSize};
+        VkDescriptorBufferInfo rankInfo{resource.overlayRankBuffer, 0, melonDS::kObjRankSlots * melonDS::kObjRankEngineSize};
         VkDescriptorBufferInfo topInfo{resource.topPackedBuffer, 0, resource.packedBufferSize};
         VkDescriptorBufferInfo bottomInfo{resource.bottomPackedBuffer, 0, resource.packedBufferSize};
         std::array<VkWriteDescriptorSet, 6> writes{};
@@ -2867,13 +2867,17 @@ void VulkanOutput::recordHDEdgePasses(FrameResource& resource, const VulkanCompo
     vkCmdBindDescriptorSets(resource.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, hdEdgePipelineLayout,
                             0, 1, &resource.hdEdgeDescriptorSet, 0, nullptr);
     // own edge pixels of every sprite first (they read the background around them), then the
-    // spill onto 3D; each dispatch reads what the one before it wrote
-    for (u32 mode = 0; mode < 2; mode++)
+    // spill onto 3D, then the detail of sprites under an effect (modes 0 and 1 are for
+    // sprites drawn as-is only); each dispatch reads what the one before it wrote
+    for (u32 mode = 0; mode < 3; mode++)
     {
         for (u32 i = 0; i < count; i++)
         {
             const PlaneOverlayGpuInstance& inst = instanceData[i];
             if ((inst.rank & 0xFFu) == 0xFFu)
+                continue;
+            const bool underEffect = ((inst.flags >> 8u) & 0x1Fu) < 16u;
+            if ((mode == 2u) != underEffect)
                 continue;
             HDEdgePushConstants pushConstants{};
             pushConstants.scale = scale;
@@ -3007,10 +3011,6 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
     std::unique_lock instanceLock(replacementInstanceLock);
     prepared.reserve(resource.replacementInstances.size());
 
-    // packed "top" planes hold whichever engine the swap put on the
-    // physical top screen (see GPU::AssignFramebuffers)
-    const bool engineAOnTop = resource.screenSwap;
-
     VkDeviceSize stagingUsed = 0;
     std::vector<VkBufferImageCopy> pendingCopies;
 
@@ -3029,9 +3029,13 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
         out.gpu.atlasX = slot.x;
         out.gpu.atlasY = slot.y;
         out.gpu.masks = static_cast<u32>(inst.RequireMask) | (static_cast<u32>(inst.RejectMask) << 8);
-        out.gpu.flags = inst.Flip;
-        out.gpu.rank = static_cast<u32>(inst.Rank) | (static_cast<u32>(inst.Engine & 1u) << 8);
-        out.screen = ((inst.Engine == 0) == engineAOnTop) ? 0 : 1;
+        // bits 8-12: the sprite's blend weight (16 = drawn as-is; less = under an effect,
+        // left native by the overlay and given the art's detail by the edge pass)
+        out.gpu.flags = static_cast<u32>(inst.Flip) | (static_cast<u32>(std::min<u8>(inst.BlendWeight, 16)) << 8);
+        out.gpu.rank = static_cast<u32>(inst.Rank) | (static_cast<u32>(inst.Engine & 3u) << 8);
+        // the walker recorded the screen each engine drew on (the swap latched with the
+        // snapshot can already be the next frame's)
+        out.screen = inst.Screen & 1u;
         out.gpu.screen = out.screen;
         out.isSprite = inst.RequireMask == 0x90;
         prepared.push_back(out);
@@ -3060,10 +3064,10 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
         // anything, which only costs the replacements, never shows them over the wrong sprite
         std::scoped_lock rankLock(replacementInstanceLock);
         auto* rankData = static_cast<u8*>(resource.overlayRankMapped);
-        if (resource.replacementObjRank.size() == 2 * melonDS::kObjRankEngineSize)
-            std::memcpy(rankData, resource.replacementObjRank.data(), 2 * melonDS::kObjRankEngineSize);
+        if (resource.replacementObjRank.size() == melonDS::kObjRankSlots * melonDS::kObjRankEngineSize)
+            std::memcpy(rankData, resource.replacementObjRank.data(), melonDS::kObjRankSlots * melonDS::kObjRankEngineSize);
         else
-            std::memset(rankData, melonDS::kNoObjRank, 2 * melonDS::kObjRankEngineSize);
+            std::memset(rankData, melonDS::kNoObjRank, melonDS::kObjRankSlots * melonDS::kObjRankEngineSize);
     }
     statsOverlayInstances += static_cast<u32>(prepared.size());
 

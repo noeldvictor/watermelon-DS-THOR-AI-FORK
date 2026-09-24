@@ -13,6 +13,12 @@
 //    native pixels no sprite at or above this one covers (3D or 2D alike)
 //  - mode 1, 3D pixels next to the sprite: the art over the composed pixel
 //    (the overlay already spills art onto 2D neighbours)
+//  - mode 2, sprites under a blend or fade (weight below 16), which the overlay
+//    leaves native because their pixels carry the effect: the art's detail is
+//    added inside each native pixel (the art minus its own mean over that
+//    pixel) at the share of the sprite's colour that reaches the screen, so a
+//    fading portrait is HD all the way instead of popping to HD at the end.
+//    Their outline stays native until the effect ends.
 // Ownership comes from HDPack2D::ObjRank, the art from the overlay atlas, and
 // the art gets the line's master brightness like the compositor applies it.
 
@@ -24,8 +30,8 @@ struct OverlayInstance
     uvec2 nativeSize;   // native pixel size
     uvec2 atlasPos;     // scaled atlas texel origin
     uint masks;
-    uint flags;         // bit 0 flipH, bit 1 flipV
-    uint rank;          // bits 0-7 sprite rank (0xFF: not a sprite), bit 8 engine
+    uint flags;         // bit 0 flipH, bit 1 flipV, bits 8-12 blend weight (16 = as-is)
+    uint rank;          // bits 0-7 sprite rank (0xFF: not a sprite), bits 8-9 ownership slot
     uint screen;        // 0 top, 1 bottom
 };
 
@@ -57,7 +63,7 @@ layout(push_constant) uniform PushConsts
 {
     uint scale;
     uint instanceIndex;
-    uint mode;          // 0 own edge pixels, 1 spill onto 3D
+    uint mode;          // 0 own edge pixels, 1 spill onto 3D, 2 detail under an effect
     uint packedStride;
 } pc;
 
@@ -94,7 +100,7 @@ void main()
     uint myRank = inst.rank & 0xFFu;
     if (myRank == 0xFFu)
         return;
-    uint engine = (inst.rank >> 8u) & 1u;
+    uint engine = (inst.rank >> 8u) & 3u;
     uint screen = inst.screen & 1u;
     int scale = int(pc.scale);
 
@@ -124,6 +130,43 @@ void main()
     uint winner = rankAtNative(engine, native);
     bool own = winner == myRank;
     ivec2 out0 = ivec2(px, py + screenRowOffset(screen));
+    uint weight = (inst.flags >> 8u) & 0x1Fu;
+
+    if (pc.mode == 2u)
+    {
+        if (weight >= 16u || !own || hd.a <= 0.0)
+            return;
+        // the art's mean over this native pixel
+        ivec2 cell = ivec2(local) - ivec2(px - native.x * scale, py - native.y * scale);
+        vec3 sum = vec3(0.0);
+        float alphaSum = 0.0;
+        for (int sy = 0; sy < scale; sy++)
+        {
+            for (int sx = 0; sx < scale; sx++)
+            {
+                uvec2 t = uvec2(cell + ivec2(sx, sy));
+                if ((inst.flags & 1u) != 0u)
+                    t.x = scaledSize.x - 1u - t.x;
+                if ((inst.flags & 2u) != 0u)
+                    t.y = scaledSize.y - 1u - t.y;
+                vec4 c = imageLoad(hdAtlas, ivec2(inst.atlasPos + t));
+                sum += c.rgb * c.a;
+                alphaSum += c.a;
+            }
+        }
+        if (alphaSum <= 0.0)
+            return;
+        vec3 detail = (hd.rgb - sum / alphaSum) * hd.a;
+        // master brightness scales the sprite's colour by (16 - factor) / 16 either way
+        float strength = float(weight) / 16.0;
+        uint brightnessMode = ((meta >> 8u) & 0xFFu) >> 6u;
+        if (brightnessMode == 1u || brightnessMode == 2u)
+            strength *= 1.0 - float(min(16u, meta & 0x1Fu)) / 16.0;
+        storeComposed(out0, clamp(loadComposed(out0) + detail * strength, 0.0, 1.0));
+        return;
+    }
+    if (weight < 16u)
+        return; // under an effect the native outline stays
 
     if (pc.mode == 0u)
     {
@@ -169,9 +212,15 @@ void main()
         return;
     if (winner != 0xFFu && winner < myRank)
         return; // a sprite above this one is there
+    // 3D shows here: a live 3D layer slot in plane 0, or (single-3D scenes, where plane 0
+    // holds the backdrop) a structured 3D slot with no 2D plane above it. Anything else
+    // is 2D, where the overlay pass already spilled.
     uint top = readPacked(screen, native.y, native.x) >> 24u;
-    if ((top & 0xC0u) != 0x40u)
-        return; // not 3D: the overlay pass already spilled onto 2D
+    uint control = readPacked(screen, native.y, 512 + native.x) >> 24u;
+    bool shows3D = (top & 0xC0u) == 0x40u
+        || ((control & 0x40u) != 0u && (control & 0x80u) == 0u);
+    if (!shows3D)
+        return;
     bool besideOwn = false;
     for (int dy = -1; dy <= 1 && !besideOwn; dy++)
     {

@@ -691,7 +691,7 @@ private:
         u32 atlasX, atlasY;
         u32 masks;  // bits 0-7 require, bits 8-15 reject
         u32 flags;  // bit 0 flipH, bit 1 flipV
-        u32 rank;   // bits 0-7 sprite rank (0xFF: BG tile or glyph), bit 8 engine
+        u32 rank;   // bits 0-7 sprite rank (0xFF: BG tile or glyph), bits 8-9 ownership slot
         u32 screen; // 0 top, 1 bottom (read by the edge pass)
     };
 
@@ -699,7 +699,7 @@ private:
     {
         u32 scale;
         u32 instanceIndex;
-        u32 mode;   // 0 own edge pixels, 1 spill onto 3D
+        u32 mode;   // 0 own edge pixels, 1 spill onto 3D, 2 detail under an effect
         u32 packedStride;
     };
 

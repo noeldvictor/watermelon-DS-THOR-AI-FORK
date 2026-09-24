@@ -334,6 +334,9 @@ private:
     std::unique_ptr<melonDS::HDTexPack> hdTexFilterCache;
     std::string hdTexFilterCacheState;
     melonDS::HDPack2D hdPack2D;
+    bool hdPack2DWalkedThisFrame = false;
+    static void onVBlankStart(void* user);
+    void walkHDPack2D();
     std::unique_ptr<SaveManager> ndsSave;
     std::unique_ptr<SaveManager> gbaSave;
     std::unique_ptr<SaveManager> firmwareSave;

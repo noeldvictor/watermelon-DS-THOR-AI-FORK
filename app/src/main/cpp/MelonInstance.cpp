@@ -2003,6 +2003,31 @@ void MelonInstance::joinPendingFrameTail()
     frameTailCondition.wait(lock, [&] { return !frameTailJobPending; });
 }
 
+void MelonInstance::onVBlankStart(void* user)
+{
+    auto* self = static_cast<MelonInstance*>(user);
+    // an async frame tail may still be latching the previous frame's walk
+    if (self->frameTailWorker.joinable())
+        self->joinPendingFrameTail();
+    self->walkHDPack2D();
+    self->hdPack2DWalkedThisFrame = true;
+}
+
+// 2D sprite/BG tile dumping and replacement lookup for the frame the core just
+// drew; the walker throttles its own dump cadence. Only the Vulkan compositor
+// consumes 2D replacements, so without it the walker runs only when the user
+// explicitly enabled dumping. Runs at VBlank start: after RunFrame returns, the
+// game has already loaded the next frame's OAM and blend registers, which paired
+// each picture with the next frame's sprites (HD art flashing through fading
+// portraits, and swapping in and out while engine A alternates screens).
+void MelonInstance::walkHDPack2D()
+{
+    if (hdTexPack && (currentRenderer == Renderer::Vulkan || hdTexPack->DumpActive()))
+        hdPack2D.ProcessFrame(nds->GPU, hdTexPack.get());
+    else if (!hdPack2D.Instances.empty())
+        hdPack2D.Instances.clear();
+}
+
 void MelonInstance::stopFrameTailWorker()
 {
     {
@@ -2606,6 +2631,9 @@ u32 MelonInstance::runFrame()
         if (auto* renderer2D = dynamic_cast<GPU2D::SoftRenderer*>(&nds->GPU.GetRenderer2D()))
             renderer2D->BeginStructuredVulkan2DFrame();
     }
+    hdPack2DWalkedThisFrame = false;
+    nds->GPU.VBlankStartHook = &MelonInstance::onVBlankStart;
+    nds->GPU.VBlankStartHookUser = this;
     u32 nLines = nds->RunFrame();
     if (measuringVulkan)
     {
@@ -2628,14 +2656,10 @@ u32 MelonInstance::runFrame()
     }
 #endif
 
-    // 2D sprite/BG tile dumping and replacement lookup ride the frame the
-    // core just produced; the walker throttles its own dump cadence. Only
-    // the Vulkan compositor consumes 2D replacements, so without it the
-    // walker runs only when the user explicitly enabled dumping.
-    if (hdTexPack && (currentRenderer == Renderer::Vulkan || hdTexPack->DumpActive()))
-        hdPack2D.ProcessFrame(nds->GPU, hdTexPack.get());
-    else if (!hdPack2D.Instances.empty())
-        hdPack2D.Instances.clear();
+    // the walk normally ran at VBlank start (onVBlankStart); a frame that
+    // never reached line 192 walks here instead
+    if (!hdPack2DWalkedThisFrame)
+        walkHDPack2D();
     if (hdTexPack && hdTexPack->LoadActive() && ++hdTexPackStatsFrames >= 60)
     {
         hdTexPackStatsFrames = 0;

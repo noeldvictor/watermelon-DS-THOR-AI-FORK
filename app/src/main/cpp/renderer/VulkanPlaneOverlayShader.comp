@@ -34,8 +34,8 @@ struct OverlayInstance
     uvec2 nativeSize;   // native pixel size
     uvec2 atlasPos;     // scaled atlas texel origin
     uint masks;         // bits 0-7 required flag bits, bits 8-15 rejected bits
-    uint flags;         // bit 0 flipH, bit 1 flipV
-    uint rank;          // bits 0-7 sprite rank (0xFF: BG tile or glyph), bit 8 engine
+    uint flags;         // bit 0 flipH, bit 1 flipV, bits 8-12 blend weight (16 = as-is)
+    uint rank;          // bits 0-7 sprite rank (0xFF: BG tile or glyph), bits 8-9 ownership slot
     uint pad;
 };
 
@@ -47,7 +47,8 @@ layout(set = 0, binding = 0, std430) readonly buffer InstanceBuffer
 layout(set = 0, binding = 1, rgba8) uniform readonly image2D hdAtlas;
 layout(set = 0, binding = 2, rgba8) uniform image2D planes;
 
-// per engine, per native pixel: rank of the sprite drawn there, 0xFF none (4 per word)
+// per ownership slot (engine A, engine B, carried), per native pixel: rank of the sprite
+// drawn there, 0xFF none (4 per word)
 layout(set = 0, binding = 3, std430) readonly buffer RankBuffer
 {
     uint rankWords[];
@@ -80,6 +81,10 @@ uint rankAt(uint engine, ivec2 scaledCoord)
 void main()
 {
     OverlayInstance inst = instances[pc.instanceIndex];
+    // a sprite under a blend or fade (weight below 16) keeps its native pixels, which
+    // carry the effect; the edge pass adds its art's detail after composition
+    if (((inst.flags >> 8u) & 0x1Fu) < 16u)
+        return;
 
     uvec2 local = gl_GlobalInvocationID.xy;
     uvec2 scaledSize = inst.nativeSize * pc.scale;
@@ -112,7 +117,7 @@ void main()
     uint requireMask = inst.masks & 0xFFu;
     uint rejectMask = (inst.masks >> 8u) & 0xFFu;
     uint myRank = inst.rank & 0xFFu;
-    uint engine = (inst.rank >> 8u) & 1u;
+    uint engine = (inst.rank >> 8u) & 3u;
     bool ranked = myRank != 0xFFu;
     uint winner = ranked ? rankAt(engine, ivec2(px, py)) : 0xFFu;
     if (ranked)

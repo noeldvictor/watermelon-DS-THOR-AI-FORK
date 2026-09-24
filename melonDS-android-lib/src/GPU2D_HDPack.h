@@ -41,7 +41,8 @@ struct HDTexPackImage;
 struct HDPack2DInstance
 {
     const HDTexPackImage* Image;
-    u8 Engine;       // 0 = engine A, 1 = engine B
+    u8 Engine;       // 0 = engine A, 1 = engine B, 2 = carried from the frame before
+    u8 Screen = 0;   // 0 top, 1 bottom: where the engine was while this frame was drawn
     u8 RequireMask;  // packed flag bits that must be set (0x90 OBJ, 1<<n BG n)
     u8 RejectMask;   // packed flag bits that must be clear (0x90 for BG tiles)
     u8 Flip;         // bit 0 horizontal, bit 1 vertical
@@ -50,10 +51,17 @@ struct HDPack2DInstance
     // sprites: the sprite's place in the hardware drawing order (see HDPack2D::ObjRank);
     // kNoObjRank for BG tiles and glyphs, which don't use the ownership map
     u8 Rank = 0xFF;
+    // how much of the sprite's own colour reaches the screen, in 16ths: 16 normally, less
+    // while it is blended or faded. Below 16 the native pixels stay (they carry the
+    // effect) and the renderer only adds the art's detail at this strength.
+    u8 BlendWeight = 16;
 };
 
 constexpr u8 kNoObjRank = 0xFF;
 constexpr size_t kObjRankEngineSize = 256 * 192;
+// ownership map slots: engine A, engine B, and the engine whose sprites were carried
+// over from the frame before (see HDPack2D::CarryAlternatingScreen)
+constexpr size_t kObjRankSlots = 3;
 
 // CPU-side 2D asset walker: decodes active OBJ sprites and text BG tiles
 // straight from OAM/VRAM after a frame has been rendered, dumping them
@@ -73,14 +81,14 @@ constexpr size_t kObjRankEngineSize = 256 * 192;
 class HDPack2D
 {
 public:
-    // call once per emulated frame on the emu thread, after RunFrame
+    // call once per emulated frame on the emu thread, at VBlank start (GPU::VBlankStartHook)
     void ProcessFrame(GPU& gpu, HDTexPack* pack);
 
     std::vector<HDPack2DInstance> Instances;
     // Per engine, per native pixel: the rank (place in the hardware drawing order: OBJ
     // priority bits, then OAM index) of the sprite drawn there, kNoObjRank if none. A
     // replacement is only drawn where its own sprite won, never over a sprite above it,
-    // even one the pack has no art for. 2 * kObjRankEngineSize bytes.
+    // even one the pack has no art for. kObjRankSlots * kObjRankEngineSize bytes.
     std::vector<u8> ObjRank;
 
 private:
@@ -103,7 +111,14 @@ private:
     void ReplaceText(GPU& gpu, int num, HDTexPack* pack, size_t spriteStart);
     void WalkBGLayers(GPU& gpu, int num, HDTexPack* pack, bool dump, bool load);
     void EmitSpriteInstance(const HDTexPackImage* img, int num, u8 flip,
-                            s32 xpos, s32 ypos, int width, int height, u8 rank);
+                            s32 xpos, s32 ypos, int width, int height, u8 rank, u8 blendWeight);
+    void CarryAlternatingScreen(bool engineAOnTop, bool prevValid);
+
+    // the previous frame's own sprite replacements and ownership, for CarryAlternatingScreen
+    std::vector<HDPack2DInstance> PrevInstances;
+    std::vector<u8> PrevObjRank;
+    bool PrevEngineAOnTop = false;
+    bool PrevValid = false;
 
     u32 FrameCounter = 0;
     u32 WalkBatch = 0;

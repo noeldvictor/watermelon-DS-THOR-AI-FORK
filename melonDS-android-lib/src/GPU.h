@@ -518,6 +518,13 @@ public:
     void StartScanline(u32 line) noexcept;
     void StartHBlank(u32 line) noexcept;
 
+    // Called at the start of VBlank (line 192): the visible lines are drawn and the
+    // VBlank IRQ and DMAs haven't run, so OAM, VRAM and the 2D registers still hold
+    // what this frame was drawn with. By the time RunFrame returns the game's VBlank
+    // handler has set them up for the next frame.
+    void (*VBlankStartHook)(void* user) = nullptr;
+    void* VBlankStartHookUser = nullptr;
+
     void DisplayFIFO(u32 x) noexcept;
 
     void SetDispStat(u32 cpu, u16 val) noexcept;

@@ -21,6 +21,7 @@
 
 #include "GPU.h"
 #include "HDTexPack.h"
+#include "NDS.h"
 
 #include <algorithm>
 
@@ -178,6 +179,8 @@ u64 SpritePalHash(const u16* stdPal, const u16* extPal, int type, int palOffset,
 void HDPack2D::ProcessFrame(GPU& gpu, HDTexPack* pack)
 {
     Instances.clear();
+    const bool prevValid = PrevValid;
+    PrevValid = false;
     if (!pack)
         return;
 
@@ -196,7 +199,7 @@ void HDPack2D::ProcessFrame(GPU& gpu, HDTexPack* pack)
         WalkBatch++;
     if (dumpSprites)
         CurBitmapKeys.clear();
-    ObjRank.assign(2 * kObjRankEngineSize, kNoObjRank);
+    ObjRank.assign(kObjRankSlots * kObjRankEngineSize, kNoObjRank);
 
     for (int num = 0; num < 2; num++)
     {
@@ -210,6 +213,14 @@ void HDPack2D::ProcessFrame(GPU& gpu, HDTexPack* pack)
             WalkBGLayers(gpu, num, pack, dumpBG, load);
     }
 
+    // the screens the engines drew this frame on: POWCNT as it was while the frame was drawn
+    // (the game may flip it in its VBlank handler, before the frame is presented)
+    const bool engineAOnTop = (gpu.NDS.PowerControl9 & (1u << 15)) != 0;
+    for (HDPack2DInstance& inst : Instances)
+        inst.Screen = ((inst.Engine == 0) == engineAOnTop) ? 0 : 1;
+    if (load)
+        CarryAlternatingScreen(engineAOnTop, prevValid);
+
     if (dumpSprites)
     {
         std::swap(PrevBitmapKeys, CurBitmapKeys);
@@ -222,8 +233,55 @@ void HDPack2D::ProcessFrame(GPU& gpu, HDTexPack* pack)
     }
 }
 
+// Dual-screen 3D scenes flip the screen swap every frame: engine A draws each screen live
+// every other frame and the frame in between shows a capture of it, by which time its
+// sprites have left OAM (Lufia's portraits over the island). That capture is the previous
+// frame's picture, so the previous frame's sprite replacements (and glyphs) still fit it:
+// they are carried to a screen with none of its own this frame, with their ownership in
+// slot 2. They only land where this frame's planes still show sprites at those pixels.
+// Without this the portrait was HD on one frame and native on the next.
+void HDPack2D::CarryAlternatingScreen(bool engineAOnTop, bool prevValid)
+{
+    std::vector<HDPack2DInstance> carried;
+    if (prevValid && PrevEngineAOnTop != engineAOnTop)
+    {
+        bool hasSprites[2] = { false, false };
+        for (const HDPack2DInstance& inst : Instances)
+            if (inst.RequireMask == 0x90)
+                hasSprites[inst.Screen & 1] = true;
+        // one carry slot, so the sprites of one engine
+        int source = -1;
+        for (const HDPack2DInstance& prev : PrevInstances)
+        {
+            if (prev.RequireMask != 0x90 || hasSprites[prev.Screen & 1])
+                continue;
+            if (source < 0)
+                source = prev.Engine;
+            if (prev.Engine != source)
+                continue;
+            HDPack2DInstance inst = prev;
+            inst.Engine = 2;
+            carried.push_back(inst);
+        }
+        if (source >= 0)
+            std::copy_n(&PrevObjRank[(size_t)source * kObjRankEngineSize], kObjRankEngineSize,
+                        &ObjRank[2 * kObjRankEngineSize]);
+    }
+    // this frame's own replacements only, so carries don't chain
+    PrevInstances = Instances;
+    PrevObjRank.assign(ObjRank.begin(), ObjRank.begin() + 2 * kObjRankEngineSize);
+    PrevEngineAOnTop = engineAOnTop;
+    PrevValid = true;
+    for (const HDPack2DInstance& inst : carried)
+    {
+        if (Instances.size() >= kMaxInstances)
+            break;
+        Instances.push_back(inst);
+    }
+}
+
 void HDPack2D::EmitSpriteInstance(const HDTexPackImage* img, int num, u8 flip,
-                                  s32 xpos, s32 ypos, int width, int height, u8 rank)
+                                  s32 xpos, s32 ypos, int width, int height, u8 rank, u8 blendWeight)
 {
     // the renderer draws sprite row r at scanline (ypos + r) & 0xFF, so a
     // sprite near the bottom edge also wraps to the top of the screen
@@ -246,6 +304,7 @@ void HDPack2D::EmitSpriteInstance(const HDTexPackImage* img, int num, u8 flip,
         inst.W = (u16)width;
         inst.H = (u16)height;
         inst.Rank = rank;
+        inst.BlendWeight = blendWeight;
         Instances.push_back(inst);
     }
 }
@@ -266,12 +325,19 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
 
     // The replacement overlay draws art as-is; it doesn't reproduce the colour special
     // effects. While an effect applies to the OBJ layer (a fade or blend in progress) the
-    // native sprites are left on screen instead, or a fading layer would show at full
-    // strength: Lufia fades its opaque white logo sheet out over the logo this way.
+    // native sprites stay on screen and carry it, and the renderer adds only the art's
+    // detail at the share of the sprite's colour that reaches the screen. Drawing the art
+    // as-is showed a fading layer at full strength: Lufia fades its opaque white logo
+    // sheet out over the logo this way.
     const u32 effect = (unit.BlendCnt >> 6) & 0x3;
     const bool objEffect = (unit.BlendCnt & 0x10) && effect != 0
         && !(effect == 1 && unit.EVA >= 16 && unit.EVB == 0)
         && !(effect >= 2 && unit.EVY == 0);
+    // an alpha blend at EVA 16 with EVB above 0 still adds the second target: not as-is
+    const u8 alphaWeight = (u8)((unit.EVA >= 16 && unit.EVB > 0) ? 15 : std::min<u32>(16, unit.EVA));
+    u8 objEffectWeight = 16;
+    if (objEffect)
+        objEffectWeight = effect == 1 ? alphaWeight : (u8)(16 - std::min<u32>(16, unit.EVY));
 
     const size_t spriteStart = Instances.size();
     HDFontSet* fonts = load ? pack->Fonts() : nullptr;
@@ -468,9 +534,10 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
             }
         }
 
-        // replacement v1 skips rotscale sprites and window OBJs, and anything being blended:
-        // semi-transparent OBJs, or all of them while a colour effect targets the OBJ layer
-        if (load && !(sprtype & 1) && sprmode != 2 && sprmode != 1 && !objEffect)
+        // replacement v1 skips rotscale sprites and window OBJs. Semi-transparent OBJs blend
+        // at EVA whatever effect BLDCNT selects.
+        const u8 blendWeight = sprmode == 1 ? alphaWeight : objEffectWeight;
+        if (load && !(sprtype & 1) && sprmode != 2 && blendWeight > 0)
         {
             bool logMiss = true;
             if (type == 2)
@@ -484,8 +551,8 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
             u8 flip = (u8)(((attrib[1] & (1 << 12)) ? 1 : 0)
                            | ((attrib[1] & (1 << 13)) ? 2 : 0));
             if (img)
-                EmitSpriteInstance(img, num, flip, xpos, ypos, width, height, rankOf[i]);
-            else if (fonts && type != 2)
+                EmitSpriteInstance(img, num, flip, xpos, ypos, width, height, rankOf[i], blendWeight);
+            else if (fonts && type != 2 && blendWeight == 16)
                 Missed.push_back({ xpos, ypos, width, height, type, tileOffset, tileStride,
                                    palOffset, flip, tileHash });
         }

@@ -1121,6 +1121,9 @@ void GPU::StartScanline(u32 line) noexcept
     {
         if (VCount == 192)
         {
+            if (VBlankStartHook)
+                VBlankStartHook(VBlankStartHookUser);
+
             // in reality rendering already finishes at line 144
             // and games might already start to modify texture memory.
             // That doesn't matter for us because we cache the entire
