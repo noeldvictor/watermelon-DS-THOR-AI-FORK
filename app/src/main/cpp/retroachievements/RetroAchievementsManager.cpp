@@ -1358,6 +1358,27 @@ void RetroAchievementsManager::Reset()
     PublishLeaderboardResetBarrierLocked();
 }
 
+void RetroAchievementsManager::DeliverAsyncServerResponsesLocked()
+{
+    std::vector<AsyncServerResponse> ready;
+    {
+        std::lock_guard queueLock(asyncServerResponses->mutex);
+        ready.swap(asyncServerResponses->ready);
+    }
+    const uint64_t generation = asyncServerGeneration.load(std::memory_order_acquire);
+    for (const AsyncServerResponse& response : ready)
+    {
+        if (response.generation != generation || !response.callback)
+            continue;
+        const rc_api_server_response_t serverResponse = {
+            .body = response.body.c_str(),
+            .body_length = response.body.length(),
+            .http_status_code = response.httpStatus,
+        };
+        response.callback(&serverResponse, response.callbackData);
+    }
+}
+
 void RetroAchievementsManager::FrameUpdate()
 {
     std::unique_lock lock(runtimeLock, std::try_to_lock);
@@ -1368,6 +1389,7 @@ void RetroAchievementsManager::FrameUpdate()
     {
         const auto frameStart = std::chrono::steady_clock::now();
         const long long frameCpuStartUs = GetCurrentThreadCpuTimeUs();
+        DeliverAsyncServerResponsesLocked();
         rc_client_do_frame(rcClientRuntime);
         PublishLeaderboardTrackerValuesLocked();
         const long long frameCpuEndUs = GetCurrentThreadCpuTimeUs();
@@ -2445,6 +2467,36 @@ void RetroAchievementsManager::RcClientServerCall(const rc_api_request_t* reques
         return;
     }
 
+    // The keep-alive ping is scheduled from rc_client_do_frame, i.e. on the emulator thread, and its
+    // reply is only logged. Sending it synchronously stalled emulation for the whole round trip every
+    // two minutes (0.4-1.5 s hitches with RetroAchievements on, WatermelonDS #142/#197).
+    if (requestAction == "ping" && request && request->url)
+    {
+        auto queue = manager->asyncServerResponses;
+        const uint64_t generation = manager->asyncServerGeneration.load(std::memory_order_acquire);
+        std::thread([queue, generation, callback, callbackData,
+                     url = std::string(request->url),
+                     postData = std::string(request->post_data ? request->post_data : ""),
+                     hasPostData = request->post_data != nullptr,
+                     contentType = std::string(request->content_type ? request->content_type : ""),
+                     hasContentType = request->content_type != nullptr,
+                     userAgent = runtimeUserAgent]() {
+            rc_api_request_t workerRequest{};
+            workerRequest.url = url.c_str();
+            workerRequest.post_data = hasPostData ? postData.c_str() : nullptr;
+            workerRequest.content_type = hasContentType ? contentType.c_str() : nullptr;
+            AsyncServerResponse response{callback, callbackData, std::string(), RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR, generation};
+            if (!ExecuteRcClientHttpRequest(javaVm, &workerRequest, userAgent.empty() ? nullptr : userAgent.c_str(), &response.body, &response.httpStatus)
+                && response.body.empty())
+            {
+                response.body = BuildRcClientErrorResponse("Native rc_client transport failed");
+            }
+            std::lock_guard queueLock(queue->mutex);
+            queue->ready.push_back(std::move(response));
+        }).detach();
+        return;
+    }
+
     melonDS::Platform::Log(
         melonDS::Platform::LogLevel::Warn,
         "[RARequest] source=rc_client_http action=%s method=%s user_agent=%s url=%s params=%s\n",
@@ -2630,6 +2682,11 @@ bool RetroAchievementsManager::TryActivateRcClientRuntimeLocked()
 
 void RetroAchievementsManager::DeactivateRcClientRuntimeLocked()
 {
+    asyncServerGeneration.fetch_add(1, std::memory_order_acq_rel);
+    {
+        std::lock_guard queueLock(asyncServerResponses->mutex);
+        asyncServerResponses->ready.clear();
+    }
     submissionTransportSuspended.store(false, std::memory_order_release);
     if (rcClientRuntime)
     {

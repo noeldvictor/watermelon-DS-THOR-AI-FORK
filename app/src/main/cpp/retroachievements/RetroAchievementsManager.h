@@ -3,6 +3,8 @@
 
 #include <atomic>
 #include <list>
+#include <memory>
+#include <mutex>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -241,6 +243,25 @@ private:
     uintptr_t activeSubmissionResponseCallbackData = 0;
     uint64_t nextPendingSubmissionBarrierId = 1;
     std::atomic<bool> submissionTransportSuspended{false};
+
+    // Keep-alive pings run their HTTP request on a worker thread; FrameUpdate hands the reply to
+    // rc_client on the emulator thread. The generation drops replies meant for a torn-down runtime.
+    struct AsyncServerResponse
+    {
+        rc_client_server_callback_t callback;
+        void* callbackData;
+        std::string body;
+        int httpStatus;
+        uint64_t generation;
+    };
+    struct AsyncServerResponseQueue
+    {
+        std::mutex mutex;
+        std::vector<AsyncServerResponse> ready;
+    };
+    std::shared_ptr<AsyncServerResponseQueue> asyncServerResponses = std::make_shared<AsyncServerResponseQueue>();
+    std::atomic<uint64_t> asyncServerGeneration{1};
+    void DeliverAsyncServerResponsesLocked();
 
     static JavaVM* javaVm;
 };

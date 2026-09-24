@@ -24,11 +24,12 @@ external display support, RetroAchievements, RetroArch shader presets. On top of
 | HD text | — | Text the game draws at runtime is redrawn from an upscaled copy of its own font |
 | Upscaling | Full-screen RetroArch shaders | Also per-layer filters for 3D, sprites and BG separately (ScaleFX, Anime4K, HQ2x, ...) with a disk cache |
 | In-game overlay | Pause menu | Adds a turbo speed picker, live texture-filter switching, and "stretch to fit both screens" |
-| Input | Single-button hotkeys | Adds modifier combos, so a hotkey can sit behind a chord |
+| Input | Single-button hotkeys | Adds modifier combos, so a hotkey can sit behind a chord; an unassigned stick click no longer washes out the top screen |
 | Cheats | Starts with an empty database | Ships a cheat database, imported on first launch |
 | Dual-screen rendering | Dual-screen presets and layouts | Adds fixes for flicker, stale lines and wrong-screen content on alternating dual-3D scenes, in both the Compatibility and FastPath profiles |
 | CPU / JIT | melonDS core as of Nov 2025 | ARM64 JIT fixes and speedups (see below) |
 | Saves and audio | — | Crash-safe save writes; changing the volume in-game (including from 0) keeps the sound playing |
+| RetroAchievements | Keep-alive ping blocks the emulator for the network round trip every two minutes | Ping is sent off the emulator thread, so it no longer causes periodic hitches |
 | Install | Application ID `me.magnum.melondualds` | Own application ID `app.watermelonthor`, so it installs alongside WatermelonDS and melonDS; its settings files in shared folders have their own names (`WatermelonThor.opts`, `<game>.thor.opts`) |
 | Updates | In-app updater that downloads WatermelonDS releases from GitHub | No in-app updater: new builds are installed by hand |
 

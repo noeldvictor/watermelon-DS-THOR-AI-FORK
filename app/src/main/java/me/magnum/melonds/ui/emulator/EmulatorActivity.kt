@@ -3867,6 +3867,13 @@ class EmulatorActivity : AppCompatActivity() {
         if (!activeOverlays.hasActiveOverlays() && nativeInputListener.onKeyEvent(event))
             return true
 
+        // Android's generic gamepad key map turns an unhandled stick click into DPAD_CENTER, which
+        // leaves touch mode and presses the focused view: an unassigned L3/R3 washed out the top
+        // screen on the Thor (WatermelonDS #195; assigning any button to them hid it).
+        if (!activeOverlays.hasActiveOverlays()
+            && (event.keyCode == KeyEvent.KEYCODE_BUTTON_THUMBL || event.keyCode == KeyEvent.KEYCODE_BUTTON_THUMBR))
+            return true
+
         if (hasComposeOverlayOpen() && event.action == KeyEvent.ACTION_DOWN) {
             val direction = when (event.keyCode) {
                 KeyEvent.KEYCODE_DPAD_UP -> androidx.compose.ui.focus.FocusDirection.Up
