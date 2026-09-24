@@ -1132,6 +1132,35 @@ void applyCachedEngineASnapshot(
     }
 }
 
+// A screen showing last frame's capture (engine B's bitmap OBJs or BG) gets the captured sprites
+// back as 2D over the capture's 3D slot, but engine B composes every pixel in comp mode 7, so a
+// sprite that was blending with the 3D in the captured frame comes back opaque. Where last frame
+// had that blend at the same pixel with the same sprite colour, keep it: Lufia's portrait fade-ins
+// drew opaque on every other frame.
+int restoreReplayedCaptureBlend(
+    std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& control,
+    const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& plane1,
+    const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& previousControl,
+    const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& previousPlane1)
+{
+    int restored = 0;
+    for (size_t i = 0; i < SoftPackedFrameSnapshot::kPixelCount; i++)
+    {
+        const u32 controlAlpha = control[i] >> 24u;
+        if ((controlAlpha & 0xCFu) != 0xC7u || (control[i] & 0x00FFFFFFu) != 0u)
+            continue;
+        // slot + above in comp mode 1 with EVB > 0: the sprite blended with the 3D beneath
+        if (((previousControl[i] >> 24u) & 0xCFu) != 0xC1u || ((previousControl[i] >> 16u) & 0xFFu) == 0u)
+            continue;
+        if (plane1[i] != previousPlane1[i])
+            continue;
+
+        control[i] = (previousControl[i] & 0x00FFFFFFu) | (((controlAlpha & 0xF0u) | 0x01u) << 24u);
+        restored++;
+    }
+    return restored;
+}
+
 void normalizeProtectedBlackTargetForScreen(
     std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& control,
     bool targetTopScreen)
@@ -8006,6 +8035,19 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
             lastSoftPackedFrameSnapshot.packedBottomPlane1,
             lastSoftPackedFrameSnapshot.packedBottomControl,
             lastSoftPackedFrameSnapshot.packedBottomLineMeta);
+    if (!renderer2dDebugControlsActive && previousSoftPackedFrameSnapshot.valid)
+    {
+        restoreReplayedCaptureBlend(
+            lastSoftPackedFrameSnapshot.packedTopControl,
+            lastSoftPackedFrameSnapshot.packedTopPlane1,
+            previousSoftPackedFrameSnapshot.packedTopControl,
+            previousSoftPackedFrameSnapshot.packedTopPlane1);
+        restoreReplayedCaptureBlend(
+            lastSoftPackedFrameSnapshot.packedBottomControl,
+            lastSoftPackedFrameSnapshot.packedBottomPlane1,
+            previousSoftPackedFrameSnapshot.packedBottomControl,
+            previousSoftPackedFrameSnapshot.packedBottomPlane1);
+    }
     if (screenSwapToggledThisFrame)
         framesSinceLastScreenSwapToggle = 0;
     else if (framesSinceLastScreenSwapToggle < 1024)
@@ -12814,6 +12856,19 @@ bool MelonInstance::latchSoftPackedFrameSnapshotFastPath(
             lastSoftPackedFrameSnapshot.packedBottomPlane1,
             lastSoftPackedFrameSnapshot.packedBottomControl,
             lastSoftPackedFrameSnapshot.packedBottomLineMeta);
+    if (!renderer2dDebugControlsActive && previousSoftPackedFrameSnapshot.valid)
+    {
+        restoreReplayedCaptureBlend(
+            lastSoftPackedFrameSnapshot.packedTopControl,
+            lastSoftPackedFrameSnapshot.packedTopPlane1,
+            previousSoftPackedFrameSnapshot.packedTopControl,
+            previousSoftPackedFrameSnapshot.packedTopPlane1);
+        restoreReplayedCaptureBlend(
+            lastSoftPackedFrameSnapshot.packedBottomControl,
+            lastSoftPackedFrameSnapshot.packedBottomPlane1,
+            previousSoftPackedFrameSnapshot.packedBottomControl,
+            previousSoftPackedFrameSnapshot.packedBottomPlane1);
+    }
     recordCarryKind(2);
     const int carriedTopStructured2dOnlyPrimaryLines = renderer2dDebugControlsActive || topPureStructured3DDisplay
         ? 0

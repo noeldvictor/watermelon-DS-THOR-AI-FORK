@@ -132,6 +132,10 @@ bool hasProtectedBlack2D(int dsX, int dsY)
     bool protectedBlack = (control.a & 0x20) != 0;
     if (!protectedBlack)
         return false;
+    // a black sprite blended over the 3D (alpha blend, EVB > 0) lets the 3D show through:
+    // baking black under it put black specks under Lufia's fading portraits next frame
+    if ((control.a & 0xF) == 1 && control.b > 0)
+        return false;
     bool targetsBottom = (control.r & kStructuredVulkan2DProtectedBlackTargetsBottomFlag) != 0;
     if (pc.topLcd != 0u ? targetsBottom : !targetsBottom)
         return false;

@@ -668,6 +668,7 @@ Rgba6 FUNC_NAME(int sourceX, int dsY, int scaledX, int scaledY, uint safeScale) 
             Rgba6 below2D = val1; \
             Rgba6 above2D = val2; \
             Rgba6 composed = below2D; \
+            bool blendedAboveOver3D = false; \
             bool structuredFullRegularCapture3d = regularCaptureUses3d \
                 && !screenHasPartialRegularCapture3d; \
             if (compMode == 7 \
@@ -760,6 +761,7 @@ Rgba6 FUNC_NAME(int sourceX, int dsY, int scaledX, int scaledY, uint safeScale) 
                 } \
                 else if (compMode == 1 && structured2DAbove) \
                 { \
+                    blendedAboveOver3D = true; \
                     int eva = val3.g; \
                     int evb = val3.b; \
                     composed.r = clampColor6(((above2D.r * eva) + (pixel3D.r * evb) + 0x8) >> 4); \
@@ -810,9 +812,9 @@ Rgba6 FUNC_NAME(int sourceX, int dsY, int scaledX, int scaledY, uint safeScale) 
             { \
                 composed = above2D; \
             } \
-            if (regularCaptureVisible2DAbove) \
+            if (regularCaptureVisible2DAbove && !blendedAboveOver3D) \
                 composed = above2D; \
-            if (regularCaptureDominant2DPlane) \
+            if (regularCaptureDominant2DPlane && !blendedAboveOver3D) \
                 composed = above2D; \
             if (compMode == 2 \
                 && (compMode2StructuredPair || (SCREEN_IS_TOP && regularCaptureUses3d && structuredAboveDominant)) \
