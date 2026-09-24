@@ -16,6 +16,7 @@ Recipes contain no game data: every image is generated from your own ROM.
 | --- | --- | --- | --- | --- | --- |
 | [Lufia: Curse of the Sinistrals](BSDE/README.md) | BSDE | 1777 | 9574 | 26064 | textures and sprites pixel-identical to in-game dumps |
 | [The Legend of Zelda: Phantom Hourglass](AZEE/README.md) | AZEE | 1934 | 4608 | 7811 | not yet |
+| [The Legend of Zelda: Spirit Tracks](BKIE/README.md) | BKIE | 3156 | 5422 | 21424 | on device, opening demo (see its README) |
 
 ## recipe.json
 

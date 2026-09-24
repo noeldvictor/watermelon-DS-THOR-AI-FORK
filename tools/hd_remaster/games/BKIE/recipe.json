@@ -1,0 +1,33 @@
+{
+  "game": "BKIE",
+  "title": "The Legend of Zelda: Spirit Tracks",
+  "roms": [
+    {
+      "sha256": "aece41112f1ee70a69bd84d34003cdf9fe9738dbd5739f611c4d87f282dd0eee",
+      "name": "USA with the D-pad control patch (as tested)"
+    }
+  ],
+  "scale": 4,
+  "models": {
+    "textures": "4x-UltraSharp",
+    "sprites": "4x-UltraSharp",
+    "backgrounds": "4x-UltraSharp"
+  },
+  "twod": {},
+  "baseline": {
+    "textures": 3156,
+    "sprites": 5422,
+    "backgrounds": 21424,
+    "fonts": 4
+  },
+  "notes": [
+    "Same engine family as Phantom Hourglass: all assets are standard Nitro files in NARC archives. Textures are paired with their materials' palettes and those palettes' animation families (zeld_eye1 also brings zeld_eye2 and zeld_eye3, which the blink animation swaps in).",
+    "Only the D-pad patched ROM has been tested. The retail ROM should give the same keys wherever the patch didn't touch the graphics; run it and compare the counts with the baseline.",
+    "Fonts: DSZ2_msg (dialogue), DSZ2_endL / DSZ2_endS (credits) and LC_Font_s_Name are packed for HD text.",
+    "Scenes that fade or tint by rewriting palettes (the opening demo's dark start) look native until the palette is back to normal: the pack key hashes the palette, so a faded palette has no key. Measured on the opening: 196 of 200 logged texture misses were this."
+  ],
+  "verified": {
+    "date": "2026-09-24",
+    "on_device": "AYN Thor, opening demo: 29965 pack entries indexed, BG tiles 92160/92160 lookups hit, the train, sky and Link in HD; textures drawn with faded palettes stay native (see notes)"
+  }
+}

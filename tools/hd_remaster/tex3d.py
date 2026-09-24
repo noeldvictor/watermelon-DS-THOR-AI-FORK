@@ -18,6 +18,7 @@ are read from there. Textures no material names fall back to the palettes in the
 """
 from __future__ import annotations
 
+import re
 import struct
 from dataclasses import dataclass, field, replace
 
@@ -444,6 +445,11 @@ class Entry:
     pairing: str         # material | name | block | none
 
 
+def _palette_stem(name: str) -> str:
+    """A palette name without its trailing frame number: zeld_eye1 -> zeld_eye."""
+    return re.sub(r"[_\d]+$", "", name)
+
+
 def entries(blocks_: list[TexBlock]) -> list[Entry]:
     """Every (texture, palette) combination worth writing, keyed by its current pack key."""
     material_pairs: dict[str, set[str]] = {}
@@ -463,6 +469,13 @@ def entries(blocks_: list[TexBlock]) -> list[Entry]:
                 named = [blk.palettes[p] for p in material_pairs.get(tex.name, ()) if p in blk.palettes]
                 if named:
                     cands = [(p, p.name, "material") for p in named]
+                    # palette pattern animations (blinking eyes, mouths) swap in the other
+                    # palettes of the material's family at runtime: zeld_eye1 -> zeld_eye0,
+                    # zeld_eye2, ... in the same file
+                    stems = {_palette_stem(p.name) for p in named} - {""}
+                    have = {p.name for p in named}
+                    cands += [(p, p.name, "material-family") for name, p in blk.palettes.items()
+                              if name not in have and _palette_stem(name) in stems]
                 elif tex.name + "_pl" in blk.palettes:
                     p = blk.palettes[tex.name + "_pl"]
                     cands = [(p, p.name, "name")]
