@@ -480,7 +480,14 @@ bool VulkanOutput::prepareFrameForPresentationCompatibility(
         const bool actualOwnerShowsCapture = backendRenderScreenSwap
             ? topUsesCurrentCapture3d
             : bottomUsesCurrentCapture3d;
-        if (!actualOwnerShowsCapture)
+        // when both screens display captures (a lag frame: capture off, the 3D
+        // unit re-rendered the last scene) the capture test says nothing about
+        // either, and the unit's swap is the only real evidence. The heuristic
+        // otherwise hands the live picture to the other screen for that frame.
+        const bool heuristicOwnerShowsCapture = liveSourceScreenSwap
+            ? topUsesCurrentCapture3d
+            : bottomUsesCurrentCapture3d;
+        if (!actualOwnerShowsCapture || heuristicOwnerShowsCapture)
             liveSourceScreenSwap = backendRenderScreenSwap;
     }
     const bool topPlainStructuredComp7UsesOppositeLive3d =

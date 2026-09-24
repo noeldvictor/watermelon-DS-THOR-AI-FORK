@@ -131,6 +131,9 @@ private:
     Frame* presenterHeldFrame = nullptr;
     Frame* orphanedHeldFrame = nullptr;
     bool suppressPreviousFrameReuse = false;
+    // newest frame ever handed to the presenter; it may already be on one of
+    // the displays even if its present was deferred, so nothing older may follow
+    u64 highestCandidateFrameId = 0;
     u64 nextFrameId = 1;
     FrameQueueStats stats{};
 };

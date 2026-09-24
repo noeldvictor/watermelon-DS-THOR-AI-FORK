@@ -267,6 +267,9 @@ Frame* FrameQueue::getPresentCandidate(
         {
             if (suppressPreviousFrameReuse || !policy.AllowPreviousFrameReuse)
                 return nullptr;
+            // a newer candidate may already be on one display
+            if (previousFrame != nullptr && previousFrame->frameId < highestCandidateFrameId)
+                return nullptr;
             if (previousFrame != nullptr)
             {
                 stats.PreviousFrameReused++;
@@ -276,20 +279,42 @@ Frame* FrameQueue::getPresentCandidate(
         }
     }
 
-    if (presentQueue.empty())
-        return nullptr;
-
+    // Never present backwards. A deferred candidate is requeued, and with the
+    // backlog preserved across presents it can sit behind newer frames until
+    // the queue briefly holds nothing else; presenting it then flashed a
+    // picture 10-30 frames old between two current ones (Lufia's intro).
+    const u64 dropNowNs = MelonDSAndroid::PerfNowNs();
     Frame* frame = nullptr;
-    if (policy.PreferOldestFrame)
+    while (!presentQueue.empty())
     {
-        frame = presentQueue.back();
-        presentQueue.pop_back();
+        Frame* next = nullptr;
+        if (policy.PreferOldestFrame)
+        {
+            next = presentQueue.back();
+            presentQueue.pop_back();
+        }
+        else
+        {
+            next = presentQueue.front();
+            presentQueue.pop_front();
+        }
+        if (next->frameId >= highestCandidateFrameId)
+        {
+            frame = next;
+            break;
+        }
+        freeQueue.push(next);
+        recordDroppedFrameLocked(next, PresentDropCause::Stale, dropNowNs);
+        stats.StaleFramesDropped++;
+        stats.PresentFramesDroppedByPolicy++;
     }
-    else
+    if (frame == nullptr)
     {
-        frame = presentQueue.front();
-        presentQueue.pop_front();
+        updateBacklogStatsLocked();
+        freeFrameReadyCondition.notify_all();
+        return nullptr;
     }
+    highestCandidateFrameId = frame->frameId;
     pendingPresentFrame = frame;
     presenterHeldFrame = frame;
     stats.PresentFramesReturned++;
@@ -632,6 +657,7 @@ void FrameQueue::clear()
     presenterHeldFrame = nullptr;
     orphanedHeldFrame = nullptr;
     suppressPreviousFrameReuse = false;
+    highestCandidateFrameId = 0;
     stats = FrameQueueStats{};
     rebuildFreeQueueLocked();
     freeFrameReadyCondition.notify_all();

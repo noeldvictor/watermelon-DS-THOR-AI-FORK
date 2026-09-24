@@ -99,6 +99,15 @@ bool hasStructured2D3DSlot(Rgba6 control)
     return (control.a & 0x40) != 0;
 }
 
+// The latch also merges a capture's structured planes into VRAM display lines
+// on frames that capture nothing (lag frames), and those lines carry no
+// capture-uses-3D flag. Plane 0 then holds the capture's backdrop under a 3D
+// slot; drawn as a colour it flashes the backdrop (white in Lufia's ocean dive).
+bool vramPixelCarriesStructuredSlot(Rgba6 control)
+{
+    return hasStructured2D3DSlot(control);
+}
+
 bool hasStructured2DAbovePlane(Rgba6 control)
 {
     return (control.a & 0x80) != 0;
@@ -1008,7 +1017,8 @@ Rgba6 FUNC_NAME(int sourceX, int dsY, int scaledX, int scaledY, uint safeScale) 
         } \
         pixel = val1; \
     } \
-    else if (displayMode == 2 && vramCaptureUses3d) \
+    else if (displayMode == 2 \
+        && (vramCaptureUses3d || vramPixelCarriesStructuredSlot(unpackColor6(READ_PACKED_FN(dsY, 512 + sourceX))))) \
     { \
         Rgba6 val2 = SCREEN_IS_TOP \
             ? sampleTopFilteredPackedLayer(sourceX, dsY, scaledX, scaledY, safeScale, 256, displayMode) \
