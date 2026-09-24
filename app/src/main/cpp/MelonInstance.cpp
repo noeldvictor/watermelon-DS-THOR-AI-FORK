@@ -10126,6 +10126,22 @@ bool MelonInstance::latchSoftPackedFrameSnapshotFastPath(
     lastSoftPackedFrameSnapshot.captureCntLatched = sharedBankCaptureCnt;
     lastSoftPackedFrameSnapshot.dispCntALatched = sharedBankDispA;
     lastSoftPackedFrameSnapshot.dispCntBLatched = nds->GPU.GPU2D_B.DispCnt;
+    {
+        // Engine A switching to a display scheme it has not used for a while (normal display or
+        // VRAM display, capture on or off) starts a new scene. FastPath's engine caches, carried
+        // lines and banked captures still hold the old one and keep feeding it back: Dragon Quest
+        // IV's opening froze on its logo screens. Capture cadences of a few frames repeat their
+        // schemes inside the window and never trigger this.
+        const u32 schemeKey = ((sharedBankDispA >> 16u) & 0x3u) | (((sharedBankCaptureCnt >> 31u) & 1u) << 2u);
+        bool seenRecently = fastPathSchemeHistoryCount == 0u;
+        for (u32 k = 0; k < fastPathSchemeHistoryCount; k++)
+            seenRecently = seenRecently || fastPathSchemeHistory[k] == schemeKey;
+        fastPathSchemeHistory[fastPathSchemeHistoryPos] = schemeKey;
+        fastPathSchemeHistoryPos = (fastPathSchemeHistoryPos + 1u) % fastPathSchemeHistory.size();
+        fastPathSchemeHistoryCount = std::min<u32>(fastPathSchemeHistoryCount + 1u, fastPathSchemeHistory.size());
+        if (!seenRecently)
+            vulkanRegularCaptureTransitionResyncPending = true;
+    }
     lastSoftPackedFrameSnapshot.captureLinesLatched = captureStats.CaptureLines;
     lastSoftPackedFrameSnapshot.captureAgeLatched = framesSinceLastCapture;
     if (renderer2D != nullptr)
@@ -14075,29 +14091,39 @@ bool MelonInstance::latchSoftPackedFrameSnapshotFastPath(
         || lastSoftPackedFrameSnapshot.bottomScreenStats.VramCaptureUses3dLines > 0u;
     const bool singleScreenCurrentCapture3d =
         topUsesCurrentCapture3d != bottomUsesCurrentCapture3d;
+    // The four copies below trust the capture-screen hint to say whose 3D the capture holds and
+    // then fill that screen with the CPU-side capture lines. On alternating dual-3D scenes the
+    // hint can name the wrong screen (Metroid Prime Hunters put the bottom's logo on the top every
+    // other frame) and the lines can be older banked ones (Dragon Quest IV froze on a logo). The
+    // high-res 3D history already covers those screens, so these copies stay off.
+    constexpr bool captureHintCopiesEnabled = false;
     const bool top2dOnlyCurrentTopCapture =
-        (softPackedScreenUsesFullStructured2dOnlyDisplay(lastSoftPackedFrameSnapshot.topScreenStats)
+        captureHintCopiesEnabled
+        && (softPackedScreenUsesFullStructured2dOnlyDisplay(lastSoftPackedFrameSnapshot.topScreenStats)
             || softPackedScreenUsesMostlyStructured2dOnlyDisplay(lastSoftPackedFrameSnapshot.topScreenStats)
             || softPackedScreenUsesPlainStructured3dSlot(lastSoftPackedFrameSnapshot.topScreenStats))
         && currentCaptureHintValid
         && currentCaptureSourceIsTop
         && singleScreenCurrentCapture3d;
     const bool bottom2dOnlyCurrentBottomCapture =
-        (softPackedScreenUsesFullStructured2dOnlyDisplay(lastSoftPackedFrameSnapshot.bottomScreenStats)
+        captureHintCopiesEnabled
+        && (softPackedScreenUsesFullStructured2dOnlyDisplay(lastSoftPackedFrameSnapshot.bottomScreenStats)
             || softPackedScreenUsesMostlyStructured2dOnlyDisplay(lastSoftPackedFrameSnapshot.bottomScreenStats)
             || softPackedScreenUsesPlainStructured3dSlot(lastSoftPackedFrameSnapshot.bottomScreenStats))
         && currentCaptureHintValid
         && !currentCaptureSourceIsTop
         && singleScreenCurrentCapture3d;
     const bool top2dOnlyCurrentBottomCapture =
-        !exactTopLiveOwnerNormalizationApplied
+        captureHintCopiesEnabled
+        && !exactTopLiveOwnerNormalizationApplied
         && (softPackedScreenUsesFullStructured2dOnlyDisplay(lastSoftPackedFrameSnapshot.topScreenStats)
             || softPackedScreenUsesMostlyStructured2dOnlyDisplay(lastSoftPackedFrameSnapshot.topScreenStats)
             || softPackedScreenUsesPlainStructured3dSlot(lastSoftPackedFrameSnapshot.topScreenStats))
         && currentCaptureHintValid
         && !currentCaptureSourceIsTop;
     const bool bottom2dOnlyCurrentTopCapture =
-        (softPackedScreenUsesFullStructured2dOnlyDisplay(lastSoftPackedFrameSnapshot.bottomScreenStats)
+        captureHintCopiesEnabled
+        && (softPackedScreenUsesFullStructured2dOnlyDisplay(lastSoftPackedFrameSnapshot.bottomScreenStats)
             || softPackedScreenUsesMostlyStructured2dOnlyDisplay(lastSoftPackedFrameSnapshot.bottomScreenStats)
             || softPackedScreenUsesPlainStructured3dSlot(lastSoftPackedFrameSnapshot.bottomScreenStats))
         && currentCaptureHintValid

@@ -1382,6 +1382,7 @@ void VulkanRenderer3D::RenderFrameCompatibilityBackend(GPU& gpu)
 void VulkanRenderer3D::RenderFrameActiveBackend(GPU& gpu)
 {
     refreshActiveBackendMode();
+    const bool previousRenderScreenSwap = CurrentRenderScreenSwap;
     CurrentRenderScreenSwap = gpu.GPU3D.RenderScreenSwapAt3D;
     PendingSubmitPolygonCount = gpu.GPU3D.RenderNumPolygons;
     GraphicsCadenceRepeatedCurrentFrame = false;
@@ -1471,16 +1472,41 @@ void VulkanRenderer3D::RenderFrameActiveBackend(GPU& gpu)
             | ((a >> 3u) << 24u);
         ExactCaptureFallbackValid = true;
     };
+    // Same rule as the compatibility backend: a render that engine A will neither show nor
+    // capture next frame never reaches a screen, so keep the last visible one. The fast path
+    // renders into ring contexts; what the frontend reads is the published target.
+    const bool renderDisplayedNextFrame =
+        ((gpu.GPU2D_A.DispCnt >> 16u) & 0x3u) == 1u && bg0Uses3d;
+    const bool renderCapturedNextFrame =
+        captureEnabled
+        && (captureMode != 1u)
+        && (captureSource3d || (bg0Uses3d && sourceAContributes));
+    const bool hasPublishedColorTarget = HasColorTarget()
+        && IsColorTargetInitialized()
+        && GetColorTargetWidth() == targetWidth
+        && GetColorTargetHeight() == targetHeight;
+    if (ActiveBackendMode == BackendMode::GraphicsHardware
+        && !renderDisplayedNextFrame
+        && !renderCapturedNextFrame
+        && hasPublishedColorTarget)
+    {
+        CurrentRenderScreenSwap = previousRenderScreenSwap;
+        HiddenRenderSkipped = true;
+        return;
+    }
+
     FrameIdentical = !textureCacheChanged && gpu.GPU3D.RenderFrameIdentical;
     const bool needsZeroGeometryRefresh =
         gpu.GPU3D.RenderNumPolygons == 0u && LastSubmittedRenderPolygonCount != 0u;
+    // after a skipped render the target holds an older scene, so an unchanged frame still renders
     const bool canReuseIdenticalFrame = FrameIdentical
         && Initialized
         && ColorImageInitialized
         && HasColorTarget()
         && ColorImageWidth == targetWidth
         && ColorImageHeight == targetHeight
-        && !needsZeroGeometryRefresh;
+        && !needsZeroGeometryRefresh
+        && !HiddenRenderSkipped;
     if (canReuseIdenticalFrame)
     {
         if (ActiveBackendMode == BackendMode::GraphicsHardware && captureNeedsGpuCaptureLineBase)
@@ -1500,6 +1526,8 @@ void VulkanRenderer3D::RenderFrameActiveBackend(GPU& gpu)
         }
         return;
     }
+
+    HiddenRenderSkipped = false;
 
     const bool requestedCadenceOwner = gpu.GPU3D.RenderScreenSwapAt3D;
     const bool requestedOwnerHasHistory = requestedCadenceOwner

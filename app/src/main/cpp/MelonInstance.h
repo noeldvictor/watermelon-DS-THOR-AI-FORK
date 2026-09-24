@@ -366,6 +366,10 @@ private:
     bool hasLastValidTopScreenCapture3dDsFrame = false;
     bool hasLastValidBottomScreenCapture3dDsFrame = false;
     bool vulkanRegularCaptureTransitionResyncPending = false;
+    // FastPath: engine A's recent display schemes (display mode + capture on/off), to spot a new scene
+    std::array<u32, 8> fastPathSchemeHistory{};
+    u32 fastPathSchemeHistoryCount = 0;
+    u32 fastPathSchemeHistoryPos = 0;
     bool vulkanCaptureVramSeedPending = false;
     std::atomic_bool vulkanRestored3dPrimePending = false;
     int vulkanStructuredCaptureGateFrames = 0;
