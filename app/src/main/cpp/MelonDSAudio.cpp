@@ -20,6 +20,8 @@ std::mutex micBufferMutex;
 int actualMicSource = 0;
 bool isMicInputEnabled = true;
 bool isMicOn = false;
+// output was started and not paused since: a stream rebuilt by a settings change must start too
+bool isAudioOutputRunning = false;
 int micBufferReadPos = 0;
 
 namespace MelonDSAndroid
@@ -280,6 +282,8 @@ namespace MelonDSAndroid
                 cleanupAudioOutputStream();
                 setupAudioOutputStream(audioSettings.audioLatency, audioSettings.volume);
             }
+            if (audioStream && isAudioOutputRunning && audioStream->getState() < oboe::StreamState::Starting)
+                audioStream->requestStart();
         } else if (audioStream) {
             cleanupAudioOutputStream();
         }
@@ -307,12 +311,14 @@ namespace MelonDSAndroid
 
     void cleanupAudio()
     {
+        isAudioOutputRunning = false;
         cleanupAudioOutputStream();
         cleanupMicInputStream();
     }
 
     void startAudio()
     {
+        isAudioOutputRunning = true;
         if (audioStream)
             audioStream->requestStart();
 
@@ -321,6 +327,7 @@ namespace MelonDSAndroid
 
     void pauseAudio()
     {
+        isAudioOutputRunning = false;
         if (audioStream)
             audioStream->requestPause();
 
