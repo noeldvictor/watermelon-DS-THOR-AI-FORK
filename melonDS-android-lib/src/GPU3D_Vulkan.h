@@ -1136,6 +1136,8 @@ private:
     bool PaletteUiOpaqueReplayLastActive = false;
     u32 GraphicsDrawDispatchMissingLogCooldown = 0;
     bool SkipRenderAtVCount215 = false;
+    // the last compatibility render was skipped as never shown; the target holds an older scene
+    bool HiddenRenderSkipped = false;
     bool InEarlySubmitAttempt = false;
     u64 CurrentEarlySubmitContextWaitNs = 0;
     bool CaptureReadbackPending = false;

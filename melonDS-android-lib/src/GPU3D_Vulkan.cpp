@@ -810,6 +810,7 @@ void VulkanRenderer3D::ResetActiveBackend(GPU& gpu)
     HasLastGraphicsSceneSignature = false;
     GraphicsSceneReuseCount = 0;
     SkipRenderAtVCount215 = false;
+    HiddenRenderSkipped = false;
     GraphicsCadenceTopSourceValid = false;
     GraphicsCadenceBottomSourceValid = false;
     GraphicsCadenceLastSourceScreenSwap = false;
@@ -938,6 +939,7 @@ void VulkanRenderer3D::RenderFrameCompatibilityBackend(GPU& gpu)
     static_assert(CaptureLineBufferSlotCount >= kCompatibilityCaptureLineBufferSlotCount);
 
     refreshActiveBackendMode();
+    const bool previousRenderScreenSwap = CurrentRenderScreenSwap;
     CurrentRenderScreenSwap = gpu.GPU3D.RenderScreenSwapAt3D;
 
     if (SkipRenderAtVCount215 && gpu.VCount == 215u)
@@ -1026,16 +1028,37 @@ void VulkanRenderer3D::RenderFrameCompatibilityBackend(GPU& gpu)
             | ((a >> 3u) << 24u);
         ExactCaptureFallbackValid = true;
     };
-    FrameIdentical = !textureCacheChanged && gpu.GPU3D.RenderFrameIdentical;
-    const bool needsZeroGeometryRefresh =
-        gpu.GPU3D.RenderNumPolygons == 0u && LastSubmittedRenderPolygonCount != 0u;
-    const bool canReuseIdenticalFrame = FrameIdentical
-        && Initialized
+    const bool hasReusableColorTarget = Initialized
         && ColorImageInitialized
         && HasColorTarget()
         && ColorImageWidth == targetWidth
-        && ColorImageHeight == targetHeight
-        && !needsZeroGeometryRefresh;
+        && ColorImageHeight == targetHeight;
+
+    // This render is on screen during the next frame, but the frontend composes it one frame
+    // early, with the current 2D. When engine A will neither show it (display mode other than
+    // normal, or BG0 not 3D) nor capture it, the hardware never displays it, so keep the last
+    // visible render and its screen. Metroid Prime Hunters' intro flashed a green overlay on
+    // the top screen that the DS hides behind a VRAM display frame.
+    const bool renderDisplayedNextFrame =
+        ((gpu.GPU2D_A.DispCnt >> 16u) & 0x3u) == 1u && bg0Uses3d;
+    if (ActiveBackendMode == BackendMode::GraphicsHardware
+        && !renderDisplayedNextFrame
+        && !captureNeedsGpuCaptureLineBase
+        && hasReusableColorTarget)
+    {
+        CurrentRenderScreenSwap = previousRenderScreenSwap;
+        HiddenRenderSkipped = true;
+        return;
+    }
+
+    FrameIdentical = !textureCacheChanged && gpu.GPU3D.RenderFrameIdentical;
+    const bool needsZeroGeometryRefresh =
+        gpu.GPU3D.RenderNumPolygons == 0u && LastSubmittedRenderPolygonCount != 0u;
+    // after a skipped render the target holds an older scene, so an unchanged frame still renders
+    const bool canReuseIdenticalFrame = FrameIdentical
+        && hasReusableColorTarget
+        && !needsZeroGeometryRefresh
+        && !HiddenRenderSkipped;
     if (canReuseIdenticalFrame)
     {
         if (ActiveBackendMode == BackendMode::GraphicsHardware && captureNeedsGpuCaptureLineBase)
@@ -1046,6 +1069,7 @@ void VulkanRenderer3D::RenderFrameCompatibilityBackend(GPU& gpu)
         }
         return;
     }
+    HiddenRenderSkipped = false;
 
     if (ActiveBackendMode == BackendMode::GraphicsHardware)
     {
@@ -2625,6 +2649,7 @@ void VulkanRenderer3D::StopActiveBackend(const GPU& gpu)
     InitFailed = false;
     HasCpuFrame = false;
     SkipRenderAtVCount215 = false;
+    HiddenRenderSkipped = false;
     GraphicsCadenceTopSourceValid = false;
     GraphicsCadenceBottomSourceValid = false;
     GraphicsCadenceLastSourceScreenSwap = false;
