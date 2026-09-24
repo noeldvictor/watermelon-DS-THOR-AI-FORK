@@ -64,6 +64,7 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
             context.debugCommandAction(ACTION_SET_SLOT2_ANALOG_MAPPING_SUFFIX) -> { handleSetSlot2AnalogMapping(entryPoint, intent); true }
             context.debugCommandAction(ACTION_SET_VULKAN_FALLBACKS_SUFFIX) -> { handleSetVulkanFallbacks(intent); true }
             context.debugCommandAction(ACTION_TOUCH_SCREEN_SUFFIX) -> { handleTouchScreen(intent); true }
+            context.debugCommandAction(ACTION_PRESS_INPUT_SUFFIX) -> { handlePressInput(intent); true }
             context.debugCommandAction(ACTION_LAUNCH_ROM_SUFFIX) -> handleLaunchRom(context, intent)
             context.debugCommandAction(ACTION_WAIT_ROM_READY_SUFFIX) -> handleWaitRomReady(intent)
             context.debugCommandAction(ACTION_SAVE_STATE_SUFFIX) -> handleSaveState(context, entryPoint, intent)
@@ -227,6 +228,28 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         MelonEmulator.onInputUp(Input.TOUCHSCREEN)
         MelonEmulator.onScreenRelease()
         Log.w(TAG, "action=touch_screen x=$x y=$y durationMs=$durationMs")
+    }
+
+    // Presses DS buttons in order, each held long enough for the game to poll it: `--es input A`
+    // or `--es input DOWN,DOWN,A`, `--ei duration_ms 120`, `--ei gap_ms 250`.
+    private suspend fun handlePressInput(intent: Intent) {
+        val names = intent.getStringExtra(EXTRA_INPUT)
+            ?.split(',')
+            ?.map { it.trim().uppercase(Locale.US) }
+            ?.filter { it.isNotEmpty() }
+            .orEmpty()
+        val durationMs = (intent.firstNullableIntExtra(EXTRA_DURATION_MS) ?: DEFAULT_PRESS_DURATION_MS).coerceIn(16, 2_000)
+        val gapMs = (intent.firstNullableIntExtra(EXTRA_GAP_MS) ?: DEFAULT_PRESS_GAP_MS).coerceIn(0, 5_000)
+        names.forEachIndexed { index, name ->
+            val input = Input.entries.firstOrNull { it.name == name && it.isSystemInput }
+                ?: throw IllegalArgumentException("Unknown DS input $name")
+            MelonEmulator.onInputDown(input)
+            delay(durationMs.toLong())
+            MelonEmulator.onInputUp(input)
+            if (index < names.lastIndex)
+                delay(gapMs.toLong())
+        }
+        Log.w(TAG, "action=press_input inputs=${names.joinToString(",")} durationMs=$durationMs gapMs=$gapMs")
     }
 
     private fun handleGetPreferences(entryPoint: DebugCommandEntryPoint, intent: Intent): Boolean {
@@ -981,6 +1004,8 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         private const val EXTRA_RESUME_MS = "resume_ms"
         private const val EXTRA_RESUME_FRAMES = "resume_frames"
         private const val EXTRA_DURATION_MS = "duration_ms"
+        private const val EXTRA_INPUT = "input"
+        private const val EXTRA_GAP_MS = "gap_ms"
         private const val EXTRA_TIMEOUT_MS = "timeout_ms"
         private const val EXTRA_FRAMES = "frames"
         private const val EXTRA_BURST_COUNT = "burst_count"
@@ -1003,6 +1028,8 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         private const val DEFAULT_TOUCH_X = 128
         private const val DEFAULT_TOUCH_Y = 96
         private const val DEFAULT_TOUCH_DURATION_MS = 80
+        private const val DEFAULT_PRESS_DURATION_MS = 120
+        private const val DEFAULT_PRESS_GAP_MS = 250
 
         private val receiverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -1017,6 +1044,7 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         private const val ACTION_SET_SLOT2_ANALOG_MAPPING_SUFFIX = "SET_SLOT2_ANALOG_MAPPING"
         private const val ACTION_SET_VULKAN_FALLBACKS_SUFFIX = "SET_VULKAN_FALLBACKS"
         private const val ACTION_TOUCH_SCREEN_SUFFIX = "TOUCH_SCREEN"
+        private const val ACTION_PRESS_INPUT_SUFFIX = "PRESS_INPUT"
         private const val ACTION_LAUNCH_ROM_SUFFIX = "LAUNCH_ROM"
         private const val ACTION_WAIT_ROM_READY_SUFFIX = "WAIT_ROM_READY"
         private const val ACTION_SAVE_STATE_SUFFIX = "SAVE_STATE"
