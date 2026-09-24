@@ -9888,7 +9888,13 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
                     const bool producerPixel =
                         (f0 & 0x1Fu) != 0u || (f0 & 0xC0u) == 0xC0u
                         || (f1 & 0x1Fu) != 0u || (f1 & 0xC0u) == 0xC0u;
+                    // a pure 2D composite (comp mode 7, no 3D slot) is content too, including a
+                    // black backdrop, whose packed word equals the 3D placeholder: a fade ending
+                    // on a black backdrop brought the last picture back at full brightness for a
+                    // frame (Mega Man ZX's logo fade-out)
+                    const bool pure2DComposite = ((control[rowBase + x] >> 24) & 0x4Fu) == 0x07u;
                     if (producerPixel
+                        || pure2DComposite
                         || ((p0 & 0x00FFFFFFu) != 0u && p0 != 0x20000000u)
                         || ((p1 & 0x00FFFFFFu) != 0u && p1 != 0x20000000u))
                     {
@@ -15912,7 +15918,13 @@ bool MelonInstance::latchSoftPackedFrameSnapshotFastPath(
                     const bool producerPixel =
                         (f0 & 0x1Fu) != 0u || (f0 & 0xC0u) == 0xC0u
                         || (f1 & 0x1Fu) != 0u || (f1 & 0xC0u) == 0xC0u;
+                    // a pure 2D composite (comp mode 7, no 3D slot) is content too, including a
+                    // black backdrop, whose packed word equals the 3D placeholder: a fade ending
+                    // on a black backdrop brought the last picture back at full brightness for a
+                    // frame (Mega Man ZX's logo fade-out)
+                    const bool pure2DComposite = ((control[rowBase + x] >> 24) & 0x4Fu) == 0x07u;
                     if (producerPixel
+                        || pure2DComposite
                         || ((p0 & 0x00FFFFFFu) != 0u && p0 != 0x20000000u)
                         || ((p1 & 0x00FFFFFFu) != 0u && p1 != 0x20000000u))
                     {
