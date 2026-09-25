@@ -376,6 +376,9 @@ const HDTexPackImage* HDTexPack::LookupBGTile(u64 tileHash, u64 palHash, bool ha
                 MapKey(8, 8, tileHash, 0, bpp, false));
     Lookups[2].fetch_add(1, std::memory_order_relaxed);
     if (img) Hits[2].fetch_add(1, std::memory_order_relaxed);
+    else if (ShouldLogMiss(2, MapKey(8, 8, tileHash, hasPal ? palHash : 0, bpp, hasPal)))
+        Platform::Log(Platform::LogLevel::Warn, "HDTexPack[Miss]: bg1_8x8_%s_%s_%u\n",
+                      Hash16(tileHash).c_str(), hasPal ? Hash16(palHash).c_str() : "none", bpp);
     return img;
 }
 

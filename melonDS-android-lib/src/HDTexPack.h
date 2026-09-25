@@ -159,8 +159,8 @@ private:
     // (ReportTextureMiss) because the filter disk cache shares LookupTexture and misses by design.
     bool ShouldLogMiss(int kind, u64 key) const;
     static constexpr u32 MaxLoggedMisses = 200;
-    mutable std::unordered_set<u64> MissKeys[2];
-    mutable u32 MissesLogged[2]{};
+    mutable std::unordered_set<u64> MissKeys[3];
+    mutable u32 MissesLogged[3]{};
 
     HDFontSet FontSet;
 
