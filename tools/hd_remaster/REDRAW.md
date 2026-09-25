@@ -48,13 +48,16 @@ the game's image. `gemini-3.1-flash-image` (half the price) invented details;
 **2. Redraw a character.**
 
 ```
-redraw.py portrait work\BSDE --match talk_f_tear_ --name Tia --ref work\BSDE\refs\tia.jpg --auto-hint --verify
+redraw.py portrait work\BSDE --match talk_f_tear_ --name Tia --ref work\BSDE\refs\tia.jpg --with-native --auto-hint --verify
 ```
 
 - The **master** expression (`normal`) is redrawn first; every other expression is an edit of
   the master, so the character's body and clothes stay identical between expressions. Only
   where the game's own expression differs from the master (the face, grown a little and
   softened) comes from the expression's redraw.
+- `--with-native` also sends the game's own pixels, enlarged without smoothing, and tells the
+  model to trust them for colours and for whether the eyes and mouth are open. Use it (see
+  [Give it the pixels too](#give-it-the-pixels-too)).
 - `--auto-hint` has a cheap vision model describe the game's face in words (eyes, eyebrows,
   mouth, eye colour) and puts that in the prompt. The game's expression names mislead image
   models: Lufia's "amazed" is an exasperated wince, and the name alone got wide-eyed surprise.
@@ -74,6 +77,20 @@ missing, a written `--hint "<expr>=eyes closed, mouth wide open, ..."`.
 **4. Build and install.** `hd_remaster.py build` uses `work/<CODE>/redrawn/` wherever it has an
 image and the upscale everywhere else; `push` installs the pack. Restart the game to see it.
 Look at every character in the game before calling it done.
+
+## Give it the pixels too
+
+The model's main input is the 4x upscale, because it can read features in it. But the upscale
+already carries the upscaler's guesses, and the model builds on them: Tia's crying face, with
+the upscale alone, came back squeezed shut and wailing, and her tense face wide-eyed. Sending
+the game's own pixels as well, enlarged without smoothing and marked as the truth for colours
+and open/closed eyes, fixed both:
+
+![Tia: game pixels, 4x upscale, redraw from the upscale, redraw with the pixels too](games/BSDE/media/tia_pixels_test.jpg)
+
+*Rows: normal, cry, tension. The last column had the pixels as well. Both hard expressions
+passed the automatic check on the first try; from the upscale alone they had failed twice and
+needed hand-written hints.*
 
 ## How a redraw fits the game exactly
 
