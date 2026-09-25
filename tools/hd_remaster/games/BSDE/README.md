@@ -7,6 +7,12 @@ powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 "Lufia.n
 About 20 minutes on an RTX 3060 for the whole game: 1777 textures, 9574 sprites and 26064
 background tiles, a 725 MB pack at 4x.
 
+## Before / after
+
+![Title screen: the logo and the ocean flyover texture, original vs HD pack](media/title.jpg)
+
+AYN Thor at 4x internal resolution, the same frame of a save state with the pack off and on.
+
 ## What was verified (2026-09-22)
 
 Against textures and sprites dumped while playing on an AYN Thor:

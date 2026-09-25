@@ -7,6 +7,14 @@ powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 "Phantom
 1934 textures, 4608 sprites and 7811 background tiles: a 281 MB pack at 4x, built in about
 23 minutes on an RTX 3060.
 
+## Before / after
+
+![Storybook page from the prologue, original vs HD pack](media/storybook.jpg)
+
+![Story text redrawn from the upscaled font, original vs HD pack](media/text.jpg)
+
+AYN Thor at 4x internal resolution, the same frame of a save state with the pack off and on.
+
 Everything is stored as standard Nitro files, so no game-specific reader or rule is needed, and
 1773 of the 1934 textures are paired with their palettes through the models' own materials.
 

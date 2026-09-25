@@ -7,6 +7,12 @@ powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 "Spirit 
 3156 textures, 5422 sprites and 21424 background tiles: a 438 MB pack at 4x, upscaled in
 about 23 minutes.
 
+## Before / after
+
+![Title logo over the sky, original vs HD pack](media/title.jpg)
+
+AYN Thor at 4x internal resolution, the same frame of a save state with the pack off and on.
+
 Same engine family as Phantom Hourglass: everything is stored as standard Nitro files in NARC
 archives, so no game-specific reader or rule is needed. Most textures are paired with their
 palettes through the models' own materials, plus each material palette's animation family (the

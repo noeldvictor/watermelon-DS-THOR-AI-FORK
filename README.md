@@ -8,6 +8,9 @@ Based on [WatermelonDS](https://github.com/SapphireRhodonite/WatermelonDS) (form
 SapphireRhodonite, itself built on [rafaelvcaetano's melonDS Android port](https://github.com/rafaelvcaetano/melonDS-android).
 Currently synced to WatermelonDS **0.7.0**.
 
+**HD packs:** [Games with HD pack recipes](tools/hd_remaster/games/GAMES.md) · [Recipes and how
+to add a game](tools/hd_remaster/games/README.md) · [The remastering tool](tools/hd_remaster/README.md)
+
 "Experimental" is meant literally: this fork exists to try renderer ideas on one specific handheld.
 Expect rough edges on anything that isn't a Thor.
 
@@ -52,9 +55,13 @@ whatever got dumped. [`tools/hd_remaster`](tools/hd_remaster/README.md) skips th
 powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 game.nds -Push
 ```
 
-Games with a [recipe](tools/hd_remaster/games/README.md) (Lufia: Curse of the Sinistrals, The
-Legend of Zelda: Phantom Hourglass so far) get the settings and game-specific rules that were
-verified for them, so anyone with the same ROM gets the same pack.
+Games with a [recipe](tools/hd_remaster/games/README.md) get the settings and game-specific
+rules that were verified for them, so anyone with the same ROM gets the same pack. **[The HD
+games list](tools/hd_remaster/games/GAMES.md)** has every one - Lufia: Curse of the Sinistrals,
+Phantom Hourglass, Spirit Tracks, Nostalgia and Chrono Trigger so far - with before/after
+screenshots, pack sizes, build times and what each pack covers, plus the games wanted next.
+
+![Spirit Tracks title logo, original vs HD pack](tools/hd_remaster/games/BKIE/media/title.jpg)
 
 It decodes every 3D texture, sprite and background in the ROM exactly as the emulator does,
 names each one by the key the emulator looks it up by, upscales them with an AI model
@@ -83,6 +90,8 @@ nothing covered it.
 * **2D sprite (OBJ) and BG tile dump & replace**: sprites and background tiles are dumped as
   assembled art and can be replaced with scaled versions (up to 4x).
 * Packs live in `files/texturepacks/<GAMECODE>/`; dumps are written to `files/texturedumps/`.
+* **Settings → Video → Load texture packs** turns packs on and off, also in a running game (on by
+  default).
 
 ### Per-layer upscaling filters
 * Independent filter selection for **3D textures**, **OBJ sprites**, and **BG layers**

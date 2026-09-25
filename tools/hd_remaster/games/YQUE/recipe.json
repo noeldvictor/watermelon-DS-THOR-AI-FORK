@@ -24,5 +24,9 @@
   "notes": [
     "Sprites only (22670 sprite images, 85% of them character sheets under Chara/). The game has no 3D textures and no NFTR fonts.",
     "Field and town backgrounds are not in the pack. They are the SNES port's format: Map/Bg/Bg_*_ncg.bin tile sets and BgPlt_*_ncl.bin palettes (11 rows of 16 colours), laid out at runtime from PS_BIN/ChipTable (16x16 chips) and PS_BIN/MapTable (maps, compressed). Without parsing those the tool cannot tell which palette row a tile uses, so it has no key for it."
-  ]
+  ],
+  "verified": {
+    "date": "2026-09-24",
+    "on_device": "AYN Thor: 54754 entries indexed; title logo sprites 2580/2640 lookups hit. Intro movie, pendulum and field BGs stay native (not in the pack)."
+  }
 }
