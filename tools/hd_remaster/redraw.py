@@ -309,7 +309,7 @@ def cmd_try(args) -> None:
 
 EXPRESSION_PROMPT = """\
 Image 1 is a finished high-resolution portrait of {name} from Lufia: Curse of the Sinistrals. \
-Image 2 is the same portrait from the game with a different facial expression ("{expr}"), but \
+Image 2 is the same portrait from the game with a different facial expression ({expr}), but \
 blurry and low resolution. Image 3 is official artwork of {name} for reference.
 
 Redraw image 1 with the facial expression of image 2, matched exactly: the same eye \
@@ -408,6 +408,7 @@ def cmd_portrait(args) -> None:
     master.save(out_dir / f"{m0['key']}.png")
     sheet = [label(flat(master), args.master)]
     native0 = Image.open(work / "native" / "assets2d" / f"{m0['key']}.png")
+    hints = dict(h.split("=", 1) for h in args.hint)
     mrgb = np.asarray(flat(master)).astype(np.float32)
     ma = np.asarray(master.getchannel("A")).astype(np.float32)
 
@@ -422,7 +423,10 @@ def cmd_portrait(args) -> None:
             continue
         best = None
         for attempt in range(args.tries):                  # a badly aligned answer leaves ghosts
-            raw = run(EXPRESSION_PROMPT.format(name=args.name, expr=expr),
+            # the game's expression names can mislead ('amazed' is an exasperated wince), so a
+            # --hint describes what image 2 actually shows instead of naming it
+            desc = hints.get(expr) or f'"{expr}"'
+            raw = run(EXPRESSION_PROMPT.format(name=args.name, expr=desc),
                       [flat(master).resize((up.width * 2, up.height * 2), Image.LANCZOS),
                        flat(up).resize((up.width * 2, up.height * 2), Image.LANCZOS)] + refs, expr)
             aligned, score = align(raw, flat(up))          # scored against its own expression
@@ -734,6 +738,8 @@ def main() -> None:
     p.add_argument("--grow", type=int, default=3, help="grow the changed area by this many native pixels")
     p.add_argument("--feather", type=int, default=12, help="blend width at its edge, in output pixels")
     p.add_argument("--only", help="comma-separated expressions to redo (the master is reused from --master-image)")
+    p.add_argument("--hint", action="append", default=[],
+                   help="expr=description of what the game's expression shows, used instead of its name")
     p.add_argument("--tries", type=int, default=2, help="calls per image when one returns nothing or aligns badly")
     p.add_argument("--min-score", type=float, default=0.85, help="alignment score below which an expression is redrawn")
     p.add_argument("--budget", type=float, default=20.0, help="stop before the game's ledger passes this (USD)")

@@ -8,14 +8,34 @@
     "lexis": "Lexis Shaia"
   },
   "refs": {
-    "gades": ["gades.jpg"],
-    "maxim": ["maxim.jpg"],
-    "selena": ["selan.jpg"],
-    "tear": ["tia.jpg"],
-    "arty": ["artea.jpg"],
-    "guy": ["guy.jpg"],
-    "iris": ["iris.jpg"],
-    "lexis": ["lexis-shaia.jpg"]
+    "gades": [
+      "gades.jpg"
+    ],
+    "maxim": [
+      "maxim.jpg"
+    ],
+    "selena": [
+      "selan.jpg"
+    ],
+    "tear": [
+      "tia.jpg"
+    ],
+    "arty": [
+      "artea.jpg"
+    ],
+    "guy": [
+      "guy.jpg"
+    ],
+    "iris": [
+      "iris.jpg"
+    ],
+    "lexis": [
+      "lexis-shaia.jpg"
+    ]
   },
-  "refs_source": "Official character art by Yusuke Naora from Creative Uncut: https://cucdn.creativeuncut.com/gallery-50/art/lcots-<name>.jpg, fetched with https://www.creativeuncut.com/gallery-50/lcots-<name>.html as Referer, saved as work/BSDE/refs/<name>.jpg. Not in the repo."
+  "refs_source": "Official character art by Yusuke Naora from Creative Uncut: https://cucdn.creativeuncut.com/gallery-50/art/lcots-<name>.jpg, fetched with https://www.creativeuncut.com/gallery-50/lcots-<name>.html as Referer, saved as work/BSDE/refs/<name>.jpg. Not in the repo.",
+  "hints": {
+    "maxim/amazed": "an exasperated wince: BOTH eyes fully closed as curved lines, eyebrows pinched together and raised in the middle, mouth slightly open in a tense grimace with the teeth barely showing. He is NOT surprised and his eyes are NOT open"
+  },
+  "hints_note": "Expression names can mislead the model ('amazed' drew wide-eyed surprise). Redo with: redraw.py portrait work/BSDE --match talk_f_maxim_ --name Maxim --ref work/BSDE/refs/maxim.jpg --master-image <cast normal_raw> --only amazed --hint \"amazed=<text>\""
 }
