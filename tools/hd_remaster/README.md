@@ -103,6 +103,15 @@ framing, pose, colours and expression, with the eyes, mouth and details redrawn 
   as an edit of the master, so the body stays the same between expressions. Only where the
   game's own expression differs from the master (grown a little and softened) comes from the
   expression's redraw.
+- **The whole cast, cheaper:** `redraw.py cast work\<CODE> --prefix talk_f_ --config
+  games\<CODE>\redraw.json` groups each character's expressions by frame (the game cuts some
+  to other sizes or poses; each group gets its own master), redraws each master in one call,
+  then the rest of the group four at a time: a 2x2 sheet of face close-ups (the box where the
+  expressions differ) in one call, split and blended back into the master. A quarter of the
+  cost per expression; faces drift from the game's expression a little more often than with
+  one call each. `redraw.json` maps character ids to display names and reference files.
+- **One image:** `redraw.py one work\<CODE> <key> --kind textures --ref refs\logo.jpg --what
+  "the title logo"` (the input is padded to the nearest shape the model returns, then cropped).
 - Every result is aligned back onto the upscale and cut out with the upscale's own alpha: the
   outline stays the game's, so the art drops into the pack in place. Soft edge pixels get the
   interior colours, not the model's grey background; grey the model left inside the outline is

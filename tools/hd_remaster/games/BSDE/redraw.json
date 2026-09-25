@@ -1,0 +1,21 @@
+{
+  "model": "google/gemini-3-pro-image",
+  "prefix": "talk_f_",
+  "names": {
+    "arty": "Artea",
+    "selena": "Selan",
+    "tear": "Tia",
+    "lexis": "Lexis Shaia"
+  },
+  "refs": {
+    "gades": ["gades.jpg"],
+    "maxim": ["maxim.jpg"],
+    "selena": ["selan.jpg"],
+    "tear": ["tia.jpg"],
+    "arty": ["artea.jpg"],
+    "guy": ["guy.jpg"],
+    "iris": ["iris.jpg"],
+    "lexis": ["lexis-shaia.jpg"]
+  },
+  "refs_source": "Official character art by Yusuke Naora from Creative Uncut: https://cucdn.creativeuncut.com/gallery-50/art/lcots-<name>.jpg, fetched with https://www.creativeuncut.com/gallery-50/lcots-<name>.html as Referer, saved as work/BSDE/refs/<name>.jpg. Not in the repo."
+}

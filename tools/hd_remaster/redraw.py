@@ -451,6 +451,265 @@ def cmd_portrait(args) -> None:
           f"spent so far ${ledger.total:.4f} of ${args.budget:.2f}")
 
 
+SHEET_PROMPT = """\
+Image 1 is a finished high-resolution close-up of {name} from Lufia: Curse of the Sinistrals, \
+with a neutral expression. Image 2 is a 2x2 grid of four close-ups of the same character with \
+different facial expressions, blurry and low resolution.{ref_line}
+
+Redraw image 2 as the same 2x2 grid: each of the four cells redrawn cleanly in the style and \
+detail of image 1, with that cell's own expression copied exactly. Where a cell's eyes are \
+closed or squeezed shut, keep them closed; where its mouth is open, keep it open by the same \
+amount, with teeth showing only if they show in that cell; keep that cell's eyebrows, gaze and \
+face shadows. Do not use image 1's expression, and do not exaggerate or soften any expression. \
+Keep each cell's framing, pose, hair and colours exactly as in that cell, the flat grey \
+background, and no borders, gaps or labels between cells.
+Return only the image, with the same aspect ratio as image 2."""
+
+
+def load_native(work: Path, key: str) -> Image.Image:
+    return Image.open(work / "native" / "assets2d" / f"{key}.png").convert("RGBA")
+
+
+def load_up(work: Path, key: str) -> Image.Image:
+    return Image.open(work / "upscaled" / "assets2d" / f"{key}.png").convert("RGBA")
+
+
+def group_expressions(work: Path, exprs: dict[str, str], min_iou: float = 0.85) -> list[list[str]]:
+    """Split a character's expressions into groups that share the master's frame: same native
+    size and a silhouette overlapping it by `min_iou`. The game cuts some expressions to other
+    sizes or poses (Gemine's angry is 128x112, Maxim's m* set is another pose); each group gets
+    its own master. The master is 'normal' where there is one."""
+    left = sorted(exprs)
+    groups = []
+    while left:
+        head = next((e for e in left if e == "normal"), None) or next((e for e in left if "normal" in e), left[0])
+        a0 = np.asarray(load_native(work, exprs[head]))[..., 3] > 0
+        group = [head]
+        for e in left:
+            if e == head:
+                continue
+            a = np.asarray(load_native(work, exprs[e]))[..., 3] > 0
+            if a.shape == a0.shape and (a & a0).sum() / max(1, (a | a0).sum()) >= min_iou:
+                group.append(e)
+        groups.append(group)
+        left = [e for e in left if e not in group]
+    return groups
+
+
+def face_box(work: Path, exprs: dict[str, str], group: list[str], pad: int = 4) -> tuple[int, int, int, int]:
+    """Native-pixel box (4:3) around where the group's expressions differ from its master."""
+    n0 = np.asarray(load_native(work, exprs[group[0]])).astype(np.int16)
+    h, w = n0.shape[:2]
+    acc = np.zeros((h, w), bool)
+    for e in group[1:]:
+        acc |= np.abs(np.asarray(load_native(work, exprs[e])).astype(np.int16) - n0).max(axis=2) > 40
+    if acc.sum() < 16:
+        return (0, 0, w, h)
+    ys, xs = np.nonzero(acc)
+    x0, x1 = np.percentile(xs, 1) - pad, np.percentile(xs, 99) + 1 + pad
+    y0, y1 = np.percentile(ys, 1) - pad, np.percentile(ys, 99) + 1 + pad
+    bw, bh = x1 - x0, y1 - y0
+    if bw / bh < 4 / 3:                                   # widen or heighten to 4:3
+        x0 -= (bh * 4 / 3 - bw) / 2; bw = bh * 4 / 3
+    else:
+        y0 -= (bw * 3 / 4 - bh) / 2; bh = bw * 3 / 4
+    bw, bh = min(bw, w), min(bh, h)
+    x0 = min(max(0, x0), w - bw); y0 = min(max(0, y0), h - bh)
+    return (int(round(x0)), int(round(y0)), int(round(x0 + bw)), int(round(y0 + bh)))
+
+
+def box_window(size: tuple[int, int], box: tuple[int, int, int, int], feather: int) -> np.ndarray:
+    """1 inside `box`, fading to 0 over `feather` pixels at its edges (0 outside)."""
+    w, h = size
+    yy, xx = np.mgrid[0:h, 0:w]
+    d = np.minimum.reduce([xx - box[0], box[2] - 1 - xx, yy - box[1], box[3] - 1 - yy]).astype(np.float32)
+    return np.clip((d + 1) / feather, 0, 1)
+
+
+def cmd_cast(args) -> None:
+    """Every character matching --prefix: a single-call master per expression group, the other
+    expressions of the group redrawn four at a time as a 2x2 sheet of face close-ups."""
+    work = Path(args.work)
+    ledger = Ledger(work, args.budget)
+    cfg = json.loads(Path(args.config).read_text(encoding="utf-8")) if args.config else {}
+    names, refmap = cfg.get("names", {}), cfg.get("refs", {})
+    chars: dict[str, dict[str, str]] = {}
+    for m in read_manifest(work):
+        stem = m["source"].split("/")[-1].split(".")[0] if m["kind"] == "asset2d" else ""
+        if stem.startswith(args.prefix):
+            ch, _, ex = stem[len(args.prefix):].partition("_")
+            chars.setdefault(ch, {})[ex or "normal"] = m["key"]
+    only = set(args.only.split(",")) if args.only else None
+    out_dir = work / "redrawn" / "assets2d"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    root = work / "redraw" / "cast"
+
+    def call_model(prompt, images, aspect, keep: Path, tag: str) -> Image.Image:
+        saved = sorted(keep.glob(f"{tag}_raw*.png"), key=lambda f: f.stat().st_mtime)
+        if args.reuse and saved:
+            return Image.open(saved[-1])
+        for _ in range(args.tries):
+            ledger.check()
+            t0 = time.time()
+            img, cost, text = generate(args.model, prompt, images, aspect)
+            ledger.add(model=args.model, key=f"{keep.name}/{tag}", cost=cost, seconds=round(time.time() - t0, 1),
+                       ok=img is not None)
+            if img is not None:
+                img.save(keep / f"{tag}_raw{time.strftime('%Y%m%d-%H%M%S')}.png")
+                return img
+            print(f"    {tag}: no image (${cost:.4f}): {text[:160]}")
+        raise RuntimeError(f"{tag}: no image")
+
+    for ch in sorted(chars):
+        if only and ch not in only:
+            continue
+        exprs = chars[ch]
+        if not args.force and all((out_dir / f"{k}.png").exists() for k in exprs.values()):
+            print(f"{ch}: done already")
+            continue
+        name = names.get(ch, ch.capitalize())
+        refs = [Image.open(work / "refs" / r).convert("RGB") for r in refmap.get(ch, [])]
+        keep = root / ch
+        keep.mkdir(parents=True, exist_ok=True)
+        groups = group_expressions(work, exprs)
+        print(f"{ch} ({name}): {len(exprs)} expressions in {len(groups)} group(s), {len(refs)} reference(s); "
+              f"${ledger.total:.2f} spent")
+        sheet_tiles = []
+        for group in groups:
+            head = group[0]
+            up0 = load_up(work, exprs[head])
+            scale = up0.width // load_native(work, exprs[head]).width
+            try:
+                raw = call_model(PORTRAIT_PROMPT.format(name=name) if refs else PORTRAIT_PROMPT_NOREF.format(name=name),
+                                 [flat(up0).resize((up0.width * 2, up0.height * 2), Image.LANCZOS)] + refs,
+                                 nearest_aspect(up0.width, up0.height), keep, head)
+            except RuntimeError as e:
+                print(f"    {e}")
+                continue
+            aligned, score = align(raw, flat(up0))
+            master = cut_out(aligned, up0)
+            master.save(out_dir / f"{exprs[head]}.png")
+            sheet_tiles.append(label(flat(master), head))
+            print(f"    {head}: master, alignment {score:.2f}")
+            rest = group[1:]
+            if not rest:
+                continue
+            box = face_box(work, exprs, group)
+            bx = tuple(v * scale for v in box)
+            cw, ch_ = (bx[2] - bx[0]), (bx[3] - bx[1])
+            f = max(1.0, 640 / cw)                          # cells at least 640 px wide for the model
+            cw, ch_ = round(cw * f), round(ch_ * f)
+            mface = flat(master).crop(bx).resize((cw, ch_), Image.LANCZOS)
+            mrgb = np.asarray(flat(master)).astype(np.float32)
+            ma = np.asarray(master.getchannel("A")).astype(np.float32)
+            win = box_window(master.size, bx, args.feather)
+            native0 = load_native(work, exprs[head])
+            for si in range(0, len(rest), 4):
+                part = rest[si:si + 4]
+                sheet = Image.new("RGB", (cw * 2, ch_ * 2), BG)
+                for i in range(4):
+                    src = flat(load_up(work, exprs[part[i]])).crop(bx).resize((cw, ch_), Image.LANCZOS) \
+                        if i < len(part) else mface
+                    sheet.paste(src, ((i % 2) * cw, (i // 2) * ch_))
+                ref_line = f" Image 3 is official artwork of {name} for reference." if refs else ""
+                try:
+                    raw = call_model(SHEET_PROMPT.format(name=name, ref_line=ref_line), [mface, sheet] + refs,
+                                     nearest_aspect(sheet.width, sheet.height), keep, f"{head}_sheet{si // 4}")
+                except RuntimeError as e:
+                    print(f"    {e}")
+                    continue
+                W, H = raw.size
+                for i, e in enumerate(part):
+                    cell = raw.crop(((i % 2) * W // 2, (i // 2) * H // 2, (i % 2 + 1) * W // 2, (i // 2 + 1) * H // 2))
+                    up = load_up(work, exprs[e])
+                    target = flat(up).crop(bx)
+                    al, sc = align(cell, target)
+                    own = np.asarray(flat(master)).astype(np.float32).copy()
+                    own[bx[1]:bx[3], bx[0]:bx[2]] = np.asarray(al).astype(np.float32)
+                    ua = np.asarray(up.getchannel("A")).astype(np.float32)
+                    own = fill_holes(own, ua, np.asarray(flat(up)).astype(np.float32))
+                    w = change_mask(load_native(work, exprs[e]), native0, scale, args.grow, args.feather) * win
+                    rgb = own * w[..., None] + mrgb * (1 - w[..., None])
+                    res = finish(rgb, ua * w + ma * (1 - w))
+                    res.save(out_dir / f"{exprs[e]}.png")
+                    sheet_tiles.append(label(flat(res), e))
+                    print(f"    {e}: sheet {si // 4} cell {i}, alignment {sc:.2f}")
+        if sheet_tiles:
+            hmax = max(t.height for t in sheet_tiles)
+            s = Image.new("RGB", (sum(t.width for t in sheet_tiles) + 8 * (len(sheet_tiles) - 1), hmax), (255, 255, 255))
+            x = 0
+            for t in sheet_tiles:
+                s.paste(t, (x, 0)); x += t.width + 8
+            s.save(keep / "sheet.png")
+    print(f"spent ${ledger.total:.2f} of ${args.budget:.2f} ({ledger.path})")
+
+
+LOGO_PROMPT = """\
+Image 1 is {what} from the Nintendo DS game Lufia: Curse of the Sinistrals, enlarged from a \
+low-resolution original, so its edges, lettering and metallic shading are soft and jagged. \
+Image 2 is the official high-resolution artwork of the same logo.
+
+Redraw image 1 as a clean, sharp, high-resolution version: the same letters, layout, size, \
+position, outline and colours as image 1 (it must line up with image 1 when laid on top of it), \
+with the crisp lettering, bevels and shading of image 2. Keep the flat grey background and add \
+nothing.
+Return only the image, with the same aspect ratio as image 1."""
+
+
+def cmd_one(args) -> None:
+    """Redraw one image (a texture or a 2D asset) with its reference, e.g. a title logo. The
+    input is padded to the nearest shape the model can return, and the padding cut off after."""
+    work = Path(args.work)
+    ledger = Ledger(work, args.budget)
+    up = Image.open(work / "upscaled" / args.kind / f"{args.key}.png").convert("RGBA")
+    aspect = nearest_aspect(up.width, up.height)
+    ar = ASPECTS[aspect]
+    cw, chh = (up.width, round(up.width / ar)) if up.width / up.height > ar else (round(up.height * ar), up.height)
+    ox, oy = (cw - up.width) // 2, (chh - up.height) // 2
+    canvas = Image.new("RGB", (cw, chh), BG)
+    canvas.paste(flat(up), (ox, oy))
+    refs = [Image.open(r).convert("RGB") for r in args.ref]
+    keep = work / "redraw" / "one" / args.key
+    keep.mkdir(parents=True, exist_ok=True)
+    saved = sorted(keep.glob("raw*.png"), key=lambda f: f.stat().st_mtime)
+    if args.reuse and saved:
+        raw = Image.open(saved[-1])
+    else:
+        ledger.check()
+        t0 = time.time()
+        raw, cost, text = generate(args.model, LOGO_PROMPT.format(what=args.what),
+                                   [canvas.resize((cw * 2, chh * 2), Image.LANCZOS)] + refs, aspect)
+        ledger.add(model=args.model, key=args.key, cost=cost, seconds=round(time.time() - t0, 1), ok=raw is not None)
+        if raw is None:
+            raise SystemExit(f"no image (${cost:.4f}): {text[:300]}")
+        raw.save(keep / f"raw{time.strftime('%Y%m%d-%H%M%S')}.png")
+        print(f"{raw.size[0]}x{raw.size[1]} in {time.time() - t0:.0f}s, ${cost:.4f}")
+    aligned, score = align(raw, canvas)
+    res = cut_out(aligned.crop((ox, oy, ox + up.width, oy + up.height)), up)
+    out = work / "redrawn" / args.kind
+    out.mkdir(parents=True, exist_ok=True)
+    res.save(out / f"{args.key}.png")
+    s = Image.new("RGB", (up.width, up.height * 2 + 8), (255, 255, 255))
+    s.paste(flat(up), (0, 0)); s.paste(flat(res), (0, up.height + 8))
+    s.save(keep / "compare.png")
+    print(f"alignment {score:.2f}; wrote {out / (args.key + '.png')}; ledger ${ledger.total:.2f}")
+
+
+PORTRAIT_PROMPT_NOREF = """\
+Image 1 is a character portrait of {name} from the Nintendo DS RPG Lufia: Curse of the \
+Sinistrals, enlarged from a tiny original, so the face, eyes and fine details are blurry or \
+malformed.
+
+Redraw image 1 as a clean, sharp, high-resolution version of the same painting:
+- Keep exactly the same framing, crop, pose, head angle, silhouette, colours and lighting as \
+image 1. It must line up with image 1 when laid on top of it.
+- Keep the original painted look and the same expression. Do not add or remove anything, and \
+keep the flat grey background.
+- Fix what the low resolution destroyed: clean, correct eyes, eyebrows, nose, mouth and small \
+details; crisp hair strands, clothing and armour edges.
+Return only the image, with the same aspect ratio as image 1."""
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -479,6 +738,28 @@ def main() -> None:
     p.add_argument("--min-score", type=float, default=0.85, help="alignment score below which an expression is redrawn")
     p.add_argument("--budget", type=float, default=20.0, help="stop before the game's ledger passes this (USD)")
     p.set_defaults(fn=cmd_portrait)
+    p = sub.add_parser("cast", help="every character: single-call masters, other expressions in 2x2 face sheets")
+    p.add_argument("work")
+    p.add_argument("--prefix", required=True, help="source-name prefix before the character, e.g. talk_f_")
+    p.add_argument("--config", help="JSON with 'names' (id -> display name) and 'refs' (id -> files in work/<CODE>/refs)")
+    p.add_argument("--only", help="comma-separated character ids")
+    p.add_argument("--force", action="store_true", help="redo characters already redrawn")
+    p.add_argument("--model", default="google/gemini-3-pro-image")
+    p.add_argument("--grow", type=int, default=3)
+    p.add_argument("--feather", type=int, default=12)
+    p.add_argument("--tries", type=int, default=2)
+    p.add_argument("--reuse", action="store_true", help="rebuild from the saved model outputs, no new calls")
+    p.add_argument("--budget", type=float, default=20.0)
+    p.set_defaults(fn=cmd_cast)
+    p = sub.add_parser("one", help="redraw a single image, e.g. a title logo, with its reference")
+    p.add_argument("work"); p.add_argument("key")
+    p.add_argument("--kind", default="textures", help="textures or assets2d")
+    p.add_argument("--what", default="the title logo", help="what the image is, for the prompt")
+    p.add_argument("--ref", action="append", default=[], help="reference image (repeatable)")
+    p.add_argument("--model", default="google/gemini-3-pro-image")
+    p.add_argument("--reuse", action="store_true")
+    p.add_argument("--budget", type=float, default=20.0)
+    p.set_defaults(fn=cmd_one)
     args = ap.parse_args()
     args.fn(args)
 
