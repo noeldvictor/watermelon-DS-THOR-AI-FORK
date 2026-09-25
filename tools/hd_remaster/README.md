@@ -40,8 +40,8 @@ The individual steps, run with the venv's python:
 .venv\Scripts\python hd_remaster.py push packs\<GAMECODE>       # install on the device
 ```
 
-Then start the game. The pack is picked up at game start; no setting needs changing, because a
-pack folder for the game switches loading on by itself. Packs apply with the Vulkan renderer
+Then start the game. The pack is picked up at game start; Settings → Video → Load texture packs
+is on by default (and switches packs off, also in a running game). Packs apply with the Vulkan renderer
 (the default) or the Compute renderer.
 
 The steps can also run one at a time (`extract`, `upscale`, `build`, `push`). `upscale` resumes
@@ -87,6 +87,8 @@ those bytes, so the key of every texture can be computed from the ROM.
 
 ## AI redraws (portraits)
 
+**The full guide, with what worked, what didn't and what it cost: [REDRAW.md](REDRAW.md).**
+
 An upscaler can only sharpen what the pixels hold. A 128x160 portrait has two or three pixels
 per eye, so even a good model draws the eyes wrong. `redraw.py` sends the upscale plus
 reference artwork (the game's official character art) to an image model on
@@ -108,8 +110,8 @@ framing, pose, colours and expression, with the eyes, mouth and details redrawn 
   to other sizes or poses; each group gets its own master), redraws each master in one call,
   then the rest of the group four at a time: a 2x2 sheet of face close-ups (the box where the
   expressions differ) in one call, split and blended back into the master. A quarter of the
-  cost per expression; faces drift from the game's expression a little more often than with
-  one call each. `redraw.json` maps character ids to display names and reference files.
+  cost per expression, but not recommended: on Lufia a third of the results failed the check
+  (eye colours, drifting expressions, seams); see [REDRAW.md](REDRAW.md#what-didnt-work). `redraw.json` maps character ids to display names and reference files.
 - **One image:** `redraw.py one work\<CODE> <key> --kind textures --ref refs\logo.jpg --what
   "the title logo"` (the input is padded to the nearest shape the model returns, then cropped).
 - Every result is aligned back onto the upscale and cut out with the upscale's own alpha: the

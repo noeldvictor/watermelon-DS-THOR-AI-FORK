@@ -13,6 +13,17 @@ background tiles, a 725 MB pack at 4x.
 
 AYN Thor at 4x internal resolution, the same frame of a save state with the pack off and on.
 
+## AI-redrawn portraits
+
+![Native pixels, 4x upscale and AI redraw: Tia, Gades, Guy](media/portraits.jpg)
+
+180 of the 229 character portraits are redrawn with `google/gemini-3-pro-image` from the
+official character art (Yusuke Naora, via Creative Uncut), one call per portrait, each checked
+against the game's face by a vision model. The other 49, minor characters whose redraw failed
+the check, keep the 4x upscale. Gades' armour is the upscale under a redrawn head. The title
+logo keeps the upscale: its redraw read worse. How to do this for another game:
+[REDRAW.md](../../REDRAW.md). Settings: [redraw.json](redraw.json).
+
 ## What was verified (2026-09-22)
 
 Against textures and sprites dumped while playing on an AYN Thor:

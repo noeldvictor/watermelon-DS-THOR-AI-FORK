@@ -9,7 +9,8 @@ SapphireRhodonite, itself built on [rafaelvcaetano's melonDS Android port](https
 Currently synced to WatermelonDS **0.7.0**.
 
 **HD packs:** [Games with HD pack recipes](tools/hd_remaster/games/GAMES.md) · [Recipes and how
-to add a game](tools/hd_remaster/games/README.md) · [The remastering tool](tools/hd_remaster/README.md)
+to add a game](tools/hd_remaster/games/README.md) · [The remastering tool](tools/hd_remaster/README.md) ·
+[AI portrait redraws](tools/hd_remaster/REDRAW.md)
 
 "Experimental" is meant literally: this fork exists to try renderer ideas on one specific handheld.
 Expect rough edges on anything that isn't a Thor.
@@ -25,6 +26,7 @@ external display support, RetroAchievements, RetroArch shader presets. On top of
 | HD texture packs | — | Dump and replace 3D textures, 2D sprites and BG tiles |
 | HD remastering | — | Build an AI-upscaled pack for a whole game straight from its ROM, no playthrough needed |
 | HD text | — | Text the game draws at runtime is redrawn from an upscaled copy of its own font |
+| AI redraws | — | Character portraits redrawn by an image model from the official art, checked against the game's faces ([guide](tools/hd_remaster/REDRAW.md)) |
 | Upscaling | Full-screen RetroArch shaders | Also per-layer filters for 3D, sprites and BG separately (ScaleFX, Anime4K, HQ2x, ...) with a disk cache |
 | In-game overlay | Pause menu | Adds a turbo speed picker, live texture-filter switching, and "stretch to fit both screens" |
 | Input | Single-button hotkeys | Adds modifier combos, so a hotkey can sit behind a chord; an unassigned stick click no longer washes out the top screen |
