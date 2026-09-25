@@ -135,8 +135,10 @@ Save yourself the money:
 6. Add a before/after image to the game's README (`beforeafter.py`) and a line to
    [GAMES.md](games/GAMES.md).
 
-## Known issue
+## Fades
 
-While a portrait fades in or out, the emulator shows the game's own pixels with the HD art's
-detail on top, and switches to the full HD art when the fade ends. A redraw that moved the eyes
-or mouth a little can look ghosted for those frames. Being looked at.
+A portrait that fades in or out is drawn by the game blended with what is behind it. The
+emulator used to keep the game's own pixels for those frames and add only the HD art's detail,
+so a redraw whose eyes or mouth moved a little showed as the pixelated original during the fade
+and popped to the redraw at the end. Since `557a8f21` the fading portrait is the HD art itself,
+blended exactly as the game blends its own pixels.
