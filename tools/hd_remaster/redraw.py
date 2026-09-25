@@ -699,6 +699,95 @@ def cmd_one(args) -> None:
     print(f"alignment {score:.2f}; wrote {out / (args.key + '.png')}; ledger ${ledger.total:.2f}")
 
 
+CHECK_PROMPT = """\
+Image A is a character portrait from a video game (low detail). Image B is a redrawn version \
+that must show the SAME character with the SAME facial expression. Compare the faces and \
+answer with JSON only, no other text:
+{"eyes_A": "open | closed | half-closed | one eye closed", "eyes_B": "...",
+ "mouth_A": "closed | slightly open | open | wide open", "mouth_B": "...",
+ "teeth_A": true/false, "teeth_B": true/false,
+ "eye_colour_A": "...", "eye_colour_B": "...",
+ "expression_A": "a few words", "expression_B": "a few words",
+ "same_person": true/false, "same_expression": true/false, "eye_colour_match": true/false,
+ "defects_B": "anything wrong in B: bulging, oversized or uneven eyes, distorted or melted \
+features, extra or missing features, smeared areas, text or labels; empty string if none"}
+Judge the expression by eyes, eyebrows and mouth. A only looks blurrier; that is not a \
+difference."""
+
+
+def ask_json(model: str, prompt: str, images: list[Image.Image]) -> tuple[dict | None, float, str]:
+    content = [{"type": "text", "text": prompt}]
+    content += [{"type": "image_url", "image_url": {"url": data_url(im)}} for im in images]
+    r = call("POST", "/chat/completions", {"model": model, "messages": [{"role": "user", "content": content}],
+                                           "usage": {"include": True}}, timeout=180)
+    cost = float((r.get("usage") or {}).get("cost") or 0.0)
+    text = ((r.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+    if isinstance(text, list):
+        text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
+    s, e = text.find("{"), text.rfind("}")
+    try:
+        return json.loads(text[s:e + 1]), cost, text
+    except ValueError:
+        return None, cost, text
+
+
+def cmd_check(args) -> None:
+    """Compare every redrawn portrait with the game's (its upscale) through a cheap vision
+    model; list the ones whose expression, eyes, mouth or eye colour differ, or that have
+    defects. Results go to work/<CODE>/redraw/check.json."""
+    from concurrent.futures import ThreadPoolExecutor
+    work = Path(args.work)
+    ledger = Ledger(work, args.budget)
+    ledger.check()
+    jobs = []
+    for m in read_manifest(work):
+        stem = m["source"].split("/")[-1].split(".")[0] if m["kind"] == "asset2d" else ""
+        if stem.startswith(args.prefix) and (work / "redrawn" / "assets2d" / f"{m['key']}.png").exists():
+            if args.only and not any(o in stem for o in args.only.split(",")):
+                continue
+            jobs.append((stem[len(args.prefix):], m["key"]))
+
+    def one(job):
+        name, key = job
+        a = flat(load_up(work, key))
+        b = flat(Image.open(work / "redrawn" / "assets2d" / f"{key}.png").convert("RGBA"))
+        for _ in range(2):
+            try:
+                res, cost, text = ask_json(args.model, CHECK_PROMPT, [a, b])
+            except RuntimeError as e:
+                res, cost, text = None, 0.0, str(e)
+            if res is not None:
+                return name, key, res, cost
+        return name, key, {"error": text[:300]}, cost
+
+    results, spent = {}, 0.0
+    with ThreadPoolExecutor(args.workers) as ex:
+        for name, key, res, cost in ex.map(one, jobs):
+            spent += cost
+            # the game's colour can't be judged through closed or unreadable eyes
+            colour_known = res.get("eyes_A") == "open" and str(res.get("eye_colour_A", "")).lower() not in (
+                "", "n/a", "unknown", "not visible", "none")
+            ok = (res.get("same_expression") and res.get("same_person")
+                  and (res.get("eye_colour_match") or not colour_known)
+                  and res.get("eyes_A") == res.get("eyes_B") and not res.get("defects_B"))
+            res["ok"] = bool(ok)
+            results[name] = {"key": key, **res}
+            if not ok:
+                why = [k for k in ("same_expression", "same_person") if not res.get(k)]
+                if colour_known and not res.get("eye_colour_match"):
+                    why.append(f"eye colour {res.get('eye_colour_A')} -> {res.get('eye_colour_B')}")
+                if res.get("eyes_A") != res.get("eyes_B"):
+                    why.append(f"eyes {res.get('eyes_A')} -> {res.get('eyes_B')}")
+                if res.get("defects_B"):
+                    why.append(f"defects: {res['defects_B']}")
+                print(f"FAIL {name} ({key}): {'; '.join(map(str, why)) or res.get('error', '')}")
+    ledger.add(model=args.model, key=f"check {len(jobs)}", cost=spent, seconds=0, ok=True)
+    out = work / "redraw" / "check.json"
+    out.write_text(json.dumps(results, indent=1), encoding="utf-8")
+    bad = sum(1 for r in results.values() if not r["ok"])
+    print(f"{len(results)} checked, {bad} flagged, ${spent:.3f}; {out}")
+
+
 PORTRAIT_PROMPT_NOREF = """\
 Image 1 is a character portrait of {name} from the Nintendo DS RPG Lufia: Curse of the \
 Sinistrals, enlarged from a tiny original, so the face, eyes and fine details are blurry or \
@@ -757,6 +846,14 @@ def main() -> None:
     p.add_argument("--reuse", action="store_true", help="rebuild from the saved model outputs, no new calls")
     p.add_argument("--budget", type=float, default=20.0)
     p.set_defaults(fn=cmd_cast)
+    p = sub.add_parser("check", help="vision-model check of every redrawn portrait against the game's")
+    p.add_argument("work")
+    p.add_argument("--prefix", default="talk_f_")
+    p.add_argument("--only", help="comma-separated name fragments")
+    p.add_argument("--model", default="google/gemini-3-flash-preview")
+    p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--budget", type=float, default=20.0)
+    p.set_defaults(fn=cmd_check)
     p = sub.add_parser("one", help="redraw a single image, e.g. a title logo, with its reference")
     p.add_argument("work"); p.add_argument("key")
     p.add_argument("--kind", default="textures", help="textures or assets2d")
