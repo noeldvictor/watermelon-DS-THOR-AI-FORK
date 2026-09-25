@@ -85,6 +85,36 @@ those bytes, so the key of every texture can be computed from the ROM.
 - **On the device**, pack images are indexed at game start and decoded the first time the game
   shows them, so a whole-game pack costs memory only for what is on screen.
 
+## AI redraws (portraits)
+
+An upscaler can only sharpen what the pixels hold. A 128x160 portrait has two or three pixels
+per eye, so even a good model draws the eyes wrong. `redraw.py` sends the upscale plus
+reference artwork (the game's official character art) to an image model on
+[OpenRouter](https://openrouter.ai) and asks for a cleaner version of the same painting: same
+framing, pose, colours and expression, with the eyes, mouth and details redrawn properly.
+
+- **Key:** put `OPENROUTER_API_KEY=...` in `tools/hd_remaster/.env` (git ignores it).
+- **Pick a model:** `redraw.py models` lists the image models; `redraw.py try work\<CODE> <key>
+  --models a,b,c --ref refs\x.jpg --name X` runs one image through several and writes a
+  side-by-side sheet. On Lufia, `google/gemini-3-pro-image` won (clean anatomy, kept the
+  character's own markings, aligns well; about $0.14 per image).
+- **A character:** `redraw.py portrait work\<CODE> --match talk_f_gades_ --name Gades --ref
+  refs\gades.jpg` redraws the master expression (`--master normal`), then every other expression
+  as an edit of the master, so the body stays the same between expressions. Only where the
+  game's own expression differs from the master (grown a little and softened) comes from the
+  expression's redraw.
+- Every result is aligned back onto the upscale and cut out with the upscale's own alpha: the
+  outline stays the game's, so the art drops into the pack in place. Soft edge pixels get the
+  interior colours, not the model's grey background; grey the model left inside the outline is
+  filled from the upscale.
+- Results go to `work\<CODE>\redrawn\`, which `build` prefers over `upscaled\`. Every call's
+  cost goes to `work\<CODE>\redraw\ledger.jsonl`; `--budget` (default $20) stops a run before
+  that total passes it. `--reuse` rebuilds from the saved model outputs without new calls.
+- References are not in the repo (the art belongs to its publisher). For Lufia they are the
+  official character art on Creative Uncut, e.g.
+  `https://cucdn.creativeuncut.com/gallery-50/art/lcots-gades.jpg` (the CDN wants the gallery
+  page as Referer), saved to `work\<CODE>\refs\`.
+
 ## Checking a pack against the real game
 
 If you have textures dumped in-game (Settings → Video → dump textures), compare them with an

@@ -5,3 +5,5 @@ work/
 packs/
 __pycache__/
 *.pyc
+# API keys for redraw.py (OpenRouter); never commit
+.env

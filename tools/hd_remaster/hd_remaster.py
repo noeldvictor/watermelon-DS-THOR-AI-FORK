@@ -397,7 +397,9 @@ def cmd_build(args) -> Path:
     out = Path(args.out or PACKS) / code
     if out.exists():
         shutil.rmtree(out)
-    scales, copied, absent = set(), 0, 0
+    scales, copied, absent, redrawn = set(), 0, 0, 0
+    # redrawn images first: a key two images share is written by the first one only
+    items.sort(key=lambda m: not (work / "redrawn" / KINDS[m["kind"]] / f"{m['key']}.png").exists())
     for sub in ("textures", "sprites", "bgtiles", "fonts"):
         (out / sub).mkdir(parents=True, exist_ok=True)
     # A BG tile whose pixels occur in only one image is stored under a '$' palette wildcard
@@ -414,6 +416,9 @@ def cmd_build(args) -> Path:
                 bg_images.setdefault((th, bpp), set()).add(m["key"])
     for m in items:
         src = work / stage / KINDS[m["kind"]] / f"{m['key']}.png"
+        if stage == "upscaled" and (work / "redrawn" / KINDS[m["kind"]] / src.name).exists():
+            src = work / "redrawn" / KINDS[m["kind"]] / src.name       # redraw.py's result
+            redrawn += 1
         if not src.exists():
             absent += 1
             continue
@@ -458,7 +463,8 @@ def cmd_build(args) -> Path:
     if stage == "upscaled" and up_info.exists():
         info["upscale"] = json.loads(up_info.read_text())
     (out / "pack.json").write_text(json.dumps(info, indent=1))
-    log(f"pack {out}: {copied} images at {info['scale']}x" + (f", {absent} not upscaled yet" if absent else ""))
+    log(f"pack {out}: {copied} images at {info['scale']}x" + (f", {absent} not upscaled yet" if absent else "")
+        + (f", {redrawn} sources redrawn" if redrawn else ""))
     return out
 
 
