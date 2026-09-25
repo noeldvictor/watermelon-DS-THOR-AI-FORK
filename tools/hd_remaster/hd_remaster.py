@@ -400,6 +400,18 @@ def cmd_build(args) -> Path:
     scales, copied, absent = set(), 0, 0
     for sub in ("textures", "sprites", "bgtiles", "fonts"):
         (out / sub).mkdir(parents=True, exist_ok=True)
+    # A BG tile whose pixels occur in only one image is stored under a '$' palette wildcard
+    # instead of its exact key. The exact key needs the palette guess to match the whole palette
+    # memory the game has loaded, which misses whenever the game keeps other colours there
+    # (Nostalgia's painted screens: tiles right, palettes not); with one image there is only one
+    # picture to show either way. It shows the guessed colours if the game recolours that tile
+    # through its palette.
+    bg_images: dict[tuple[str, str], set[str]] = {}
+    for m in items:
+        for en in m.get("entries", ()):
+            if en["key"].startswith("bg1"):
+                _, _, th, _, bpp = en["key"].split("_")
+                bg_images.setdefault((th, bpp), set()).add(m["key"])
     for m in items:
         src = work / stage / KINDS[m["kind"]] / f"{m['key']}.png"
         if not src.exists():
@@ -424,7 +436,12 @@ def cmd_build(args) -> Path:
         s = img.shape[1] // m["w"]
         scales.add(s)
         for en in m["entries"]:
-            dst = out / ("sprites" if en["key"].startswith("obj1") else "bgtiles") / f"{en['key']}.png"
+            name = en["key"]
+            if name.startswith("bg1"):
+                _, _, th, _, bpp = name.split("_")
+                if len(bg_images[(th, bpp)]) == 1:
+                    name = f"bg1_8x8_{th}_$_{bpp}"
+            dst = out / ("sprites" if en["key"].startswith("obj1") else "bgtiles") / f"{name}.png"
             if dst.exists():
                 continue
             crop = img[en["y"] * s:(en["y"] + en["h"]) * s, en["x"] * s:(en["x"] + en["w"]) * s]

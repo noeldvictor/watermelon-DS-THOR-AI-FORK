@@ -107,6 +107,10 @@ class NCLR:
         self.bpp = 8 if depth == 4 else 4
         self.extpal = u32(b, o + 0xC)
         size = u32(b, o + 0x10); doff = u32(b, o + 0x14)
+        if size == 0:
+            # some tools leave the size 0 and let the colours run to the end of the block
+            # (Nostalgia's title screens): read as empty, the screen came out all black
+            size = u32(b, o + 4)
         end = min(o + 8 + doff + size, o + u32(b, o + 4), len(b))
         raw = b[o + 8 + doff:end]
         self.raw = raw[:len(raw) & ~1]

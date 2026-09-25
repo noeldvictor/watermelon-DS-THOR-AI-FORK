@@ -1,0 +1,28 @@
+{
+  "game": "YQUE",
+  "title": "Chrono Trigger",
+  "roms": [
+    {
+      "sha256": "53da5573c9914d1a727e003d05abb74be580367059e7edfb7b1f92daf6384100",
+      "name": "USA (as tested)"
+    }
+  ],
+  "scale": 4,
+  "models": {
+    "textures": "4x-UltraSharp",
+    "sprites": "4x-UltraSharp",
+    "backgrounds": "4x-UltraSharp",
+    "fonts": "4x-UltraSharp"
+  },
+  "twod": {},
+  "baseline": {
+    "textures": 0,
+    "sprites": 54754,
+    "backgrounds": 0,
+    "fonts": 0
+  },
+  "notes": [
+    "Sprites only (22670 sprite images, 85% of them character sheets under Chara/). The game has no 3D textures and no NFTR fonts.",
+    "Field and town backgrounds are not in the pack. They are the SNES port's format: Map/Bg/Bg_*_ncg.bin tile sets and BgPlt_*_ncl.bin palettes (11 rows of 16 colours), laid out at runtime from PS_BIN/ChipTable (16x16 chips) and PS_BIN/MapTable (maps, compressed). Without parsing those the tool cannot tell which palette row a tile uses, so it has no key for it."
+  ]
+}

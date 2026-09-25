@@ -1,0 +1,29 @@
+{
+  "game": "CJKE",
+  "title": "Nostalgia",
+  "roms": [
+    {
+      "sha256": "5e6fd9e0a3b50ae8435907a1432c3be17657969023840eb5f77b3506b2f03c88",
+      "name": "USA (as tested)"
+    }
+  ],
+  "scale": 4,
+  "models": {
+    "textures": "4x-UltraSharp",
+    "sprites": "4x-UltraSharp",
+    "backgrounds": "4x-UltraSharp",
+    "fonts": "4x-UltraSharp"
+  },
+  "twod": {},
+  "baseline": {
+    "textures": 4434,
+    "sprites": 4200,
+    "backgrounds": 240488,
+    "fonts": 2
+  },
+  "notes": [
+    "Nearly every asset lives in MASS/*.dat archives ('SSAM': count, then offset/size/32-byte name entries from the end of the table), mostly LZ10. Maps (*.mmc) decompress to an offset table of parts, some nested, each part an 'NMDP' wrapper around a standard BMD0 or BTX0. nitro.files() unpacks all three; without them the ROM shows 1 texture.",
+    "71% of the BG tile keys (171k) are the painted world map in mass_navi_map.dat, which has almost no repeated tiles.",
+    "BG screens are 8bpp with palettes loaded into shared palette memory next to other colours, so the exact bg1 key (whole 256-colour palette) missed on 196/200 logged tiles whose tile hash was right. build stores tiles that occur in one image only under the '$' palette wildcard (183k of 240k files)."
+  ]
+}

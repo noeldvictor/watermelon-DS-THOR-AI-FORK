@@ -267,6 +267,52 @@ def mcd_archive(files: dict[str, bytes]) -> dict[str, bytes] | None:
     return out
 
 
+def ssam_archive(b: bytes) -> list[tuple[str, bytes]] | None:
+    """Nostalgia's MASS/*.dat: 'SSAM', u32 count, then per entry u32 offset (from the end of
+    the table), u32 size and a 32-byte name."""
+    if b[:4] != b"SSAM" or len(b) < 8:
+        return None
+    n = u32(b, 4)
+    base = 8 + 40 * n
+    if n == 0 or base > len(b):
+        return None
+    out = []
+    for i in range(n):
+        e = 8 + 40 * i
+        off, size = u32(b, e), u32(b, e + 4)
+        name = b[e + 8:e + 40].split(b"\0")[0].decode("latin1")
+        if size and base + off + size <= len(b):
+            out.append((name, b[base + off:base + off + size]))
+    return out
+
+
+def table_container(b: bytes) -> list[bytes] | None:
+    """Nostalgia's .mmc (and the containers nested in it): u32 count, three zero words, then
+    count (offset, size) pairs from the start of the container. Empty slots have size 0."""
+    if len(b) < 16:
+        return None
+    n = u32(b, 0)
+    if not 0 < n <= 256 or u32(b, 4) or u32(b, 8) or u32(b, 12) or 16 + 8 * n > len(b):
+        return None
+    out = []
+    for i in range(n):
+        off, size = u32(b, 16 + 8 * i), u32(b, 20 + 8 * i)
+        if not size:
+            continue
+        if off < 16 + 8 * n or off + size > len(b):
+            return None
+        out.append(b[off:off + size])
+    return out or None
+
+
+def nmdp_payload(b: bytes) -> bytes | None:
+    """Nostalgia's 'NMDP' wrapper around a standard Nitro file: size at +0x18, offset at +0x1C."""
+    if b[:4] != b"NMDP" or len(b) < 0x30:
+        return None
+    size, off = u32(b, 0x18), u32(b, 0x1C)
+    return b[off:off + size] if off + size <= len(b) else None
+
+
 NITRO = (b"BTX0", b"BMD0", b"BTP0", b"BCA0", b"BMA0", b"BTA0", b"NARC",
          b"RGCN", b"RLCN", b"RECN", b"RCSN", b"RNAN")
 _CARVE = re.compile(rb"[\x10\x11][\x00-\xff]{3}\x00(?:" + b"|".join(NITRO) + rb")")
@@ -284,8 +330,25 @@ def files(rom: bytes) -> dict[str, bytes]:
     out: dict[str, bytes] = {}
 
     def add(name: str, b: bytes, depth: int = 0) -> None:
-        if depth > 6 or not b:
+        if depth > 10 or not b:
             return
+        if b[:4] == b"SSAM":
+            subs = ssam_archive(b)
+            if subs is not None:
+                for nm, s in subs:
+                    add(f"{name}/{nm}", s, depth + 1)
+                return
+        if b[:4] == b"NMDP":
+            payload = nmdp_payload(b)
+            if payload is not None:
+                add(name + "#nmdp", payload, depth + 1)
+                return
+        if ".mmc" in name and b[:4] not in NITRO:
+            parts = table_container(b)
+            if parts is not None:
+                for i, s in enumerate(parts):
+                    add(f"{name}#{i}", s, depth + 1)
+                return
         if b[:4] == b"$FAB":
             b = _fab(b)
             if b is None:
