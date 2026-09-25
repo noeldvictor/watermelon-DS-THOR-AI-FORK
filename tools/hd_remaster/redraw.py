@@ -393,19 +393,44 @@ def cmd_portrait(args) -> None:
             print(f"  {tag}: no image (${cost:.4f}): {text[:200]}")
         raise SystemExit(f"{tag}: no image after {args.tries} tries")
 
+    def describe(up) -> str:
+        """The game's face in words (a vision model reads it), for the prompt."""
+        res, cost, _ = ask_json(CHECK_MODEL, DESCRIBE_PROMPT, [flat(up)])
+        ledger.add(model=CHECK_MODEL, key="describe", cost=cost, seconds=0, ok=res is not None)
+        if not res:
+            return ""
+        return (f"{res.get('summary', '')}: eyes {res.get('eyes', '')}; eyebrows {res.get('eyebrows', '')}; "
+                f"mouth {res.get('mouth', '')}; eye colour {res.get('eye_colour', '')}")
+
+    def verify(up, result) -> tuple[bool, list[str]]:
+        res, cost, text = ask_json(CHECK_MODEL, CHECK_PROMPT, [flat(up), flat(result)])
+        ledger.add(model=CHECK_MODEL, key="verify", cost=cost, seconds=0, ok=res is not None)
+        return check_ok(res or {"error": text[:200]})
+
     m0 = items[args.master]
     up0 = up_of(m0)
     scale = up0.width // m0["w"]
     aspect = nearest_aspect(up0.width, up0.height)
-    if args.master_image:                                  # a raw model output, e.g. from `try`
-        raw = Image.open(args.master_image)
-    else:
-        raw = run(PORTRAIT_PROMPT.format(name=args.name),
-                  [flat(up0).resize((up0.width * 2, up0.height * 2), Image.LANCZOS)] + refs, args.master)
-    aligned, score = align(raw, flat(up0))
-    print(f"  {args.master}: alignment {score:.2f}")
-    master = cut_out(aligned, up0)
-    master.save(out_dir / f"{m0['key']}.png")
+    master_ok = True
+    for attempt in range(args.tries if args.verify and not args.master_image else 1):
+        if args.master_image:                              # a raw model output, e.g. from `try`
+            raw = Image.open(args.master_image)
+        else:
+            prompt = PORTRAIT_PROMPT.format(name=args.name)
+            if args.auto_hint:
+                prompt += (f"\nThe face in image 1 shows: {describe(up0)}. Keep exactly that, "
+                           f"including the eye colour.")
+            raw = run(prompt, [flat(up0).resize((up0.width * 2, up0.height * 2), Image.LANCZOS)] + refs,
+                      args.master)
+        aligned, score = align(raw, flat(up0))
+        master = cut_out(aligned, up0)
+        master_ok, why = verify(up0, master) if args.verify and not args.master_image else (True, [])
+        print(f"  {args.master}: alignment {score:.2f}" + ("" if master_ok else f", check failed: {'; '.join(why)}"))
+        if master_ok:
+            break
+    # a master that fails the check still anchors the other expressions, but isn't shown itself
+    if master_ok:
+        master.save(out_dir / f"{m0['key']}.png")
     sheet = [label(flat(master), args.master)]
     native0 = Image.open(work / "native" / "assets2d" / f"{m0['key']}.png")
     hints = dict(h.split("=", 1) for h in args.hint)
@@ -421,31 +446,35 @@ def cmd_portrait(args) -> None:
         if not w.any():
             master.save(out_dir / f"{m['key']}.png")
             continue
+        # the game's expression names can mislead ('amazed' is an exasperated wince), so a
+        # --hint (or --auto-hint, a vision model's reading) describes what image 2 shows
+        desc = hints.get(expr) or (describe(up) if args.auto_hint else "") or f'"{expr}"'
+        ua = np.asarray(up.getchannel("A")).astype(np.float32)
         best = None
-        for attempt in range(args.tries):                  # a badly aligned answer leaves ghosts
-            # the game's expression names can mislead ('amazed' is an exasperated wince), so a
-            # --hint describes what image 2 actually shows instead of naming it
-            desc = hints.get(expr) or f'"{expr}"'
+        for attempt in range(args.tries):                  # badly aligned or failing the check: again
             raw = run(EXPRESSION_PROMPT.format(name=args.name, expr=desc),
                       [flat(master).resize((up.width * 2, up.height * 2), Image.LANCZOS),
                        flat(up).resize((up.width * 2, up.height * 2), Image.LANCZOS)] + refs, expr)
             aligned, score = align(raw, flat(up))          # scored against its own expression
-            if best is None or score > best[1]:
-                best = (aligned, score, raw)
-            if score >= args.min_score or args.reuse:
+            own = fill_holes(np.asarray(aligned).astype(np.float32), ua, np.asarray(flat(up)).astype(np.float32))
+            rgb = own * w[..., None] + mrgb * (1 - w[..., None])
+            res = finish(rgb, ua * w + ma * (1 - w))
+            ok, why = verify(up, res) if args.verify else (score >= args.min_score, [f"alignment {score:.2f}"])
+            if best is None or (ok, score) > (best[0], best[2]):
+                best = (ok, res, score, raw, why)
+            if ok or args.reuse:
                 break
-            print(f"  {expr}: alignment {score:.2f} < {args.min_score}, asking again")
-        aligned, score, raw = best
+            print(f"  {expr}: {'; '.join(why)}; asking again")
+        ok, res, score, raw, why = best
         if not args.reuse:
             raw.save(keep_dir / f"{expr}_best.png")        # what --reuse rebuilds from
-        ua = np.asarray(up.getchannel("A")).astype(np.float32)
-        own = fill_holes(np.asarray(aligned).astype(np.float32), ua, np.asarray(flat(up)).astype(np.float32))
-        rgb = own * w[..., None] + mrgb * (1 - w[..., None])
-        a = ua * w + ma * (1 - w)
-        res = finish(rgb, a)
-        res.save(out_dir / f"{m['key']}.png")
-        print(f"  {expr}: {100 * (w > 0).mean():.0f}% of the frame changed, alignment {score:.2f}")
-        sheet.append(label(flat(res), expr))
+        if ok or not args.verify:
+            res.save(out_dir / f"{m['key']}.png")
+        else:                                              # failed twice: the game's upscale stays
+            res.save(keep_dir / f"{expr}_failed.png")
+            (out_dir / f"{m['key']}.png").unlink(missing_ok=True)
+        print(f"  {expr}: {'ok' if ok else 'FAILED: ' + '; '.join(why)}, alignment {score:.2f}")
+        sheet.append(label(flat(res), expr + ("" if ok else " (failed)")))
     s = Image.new("RGB", (sum(t.width for t in sheet) + 8 * (len(sheet) - 1), sheet[0].height), (255, 255, 255))
     x = 0
     for t in sheet:
@@ -731,6 +760,33 @@ def ask_json(model: str, prompt: str, images: list[Image.Image]) -> tuple[dict |
         return None, cost, text
 
 
+DESCRIBE_PROMPT = """\
+This is a character portrait from a video game (low detail). Describe only the face, as JSON \
+with no other text:
+{"eyes": "open / closed / half-closed / one eye closed, and where they look",
+ "eyebrows": "...", "mouth": "closed / slightly open / open / wide open, teeth showing or not",
+ "eye_colour": "...", "summary": "the expression in a few words"}"""
+
+CHECK_MODEL = "google/gemini-3-flash-preview"
+
+
+def check_ok(res: dict) -> tuple[bool, list[str]]:
+    """The pass rule for a CHECK_PROMPT verdict, and why it failed."""
+    why = [k for k in ("same_expression", "same_person") if not res.get(k)]
+    # the game's colour can't be judged through closed or unreadable eyes
+    colour_known = res.get("eyes_A") == "open" and str(res.get("eye_colour_A", "")).lower() not in (
+        "", "n/a", "unknown", "not visible", "none")
+    if colour_known and not res.get("eye_colour_match"):
+        why.append(f"eye colour {res.get('eye_colour_A')} -> {res.get('eye_colour_B')}")
+    if res.get("eyes_A") != res.get("eyes_B"):
+        why.append(f"eyes {res.get('eyes_A')} -> {res.get('eyes_B')}")
+    if res.get("defects_B"):
+        why.append(f"defects: {res['defects_B']}")
+    if "error" in res:
+        why.append(str(res["error"])[:120])
+    return not why, why
+
+
 def cmd_check(args) -> None:
     """Compare every redrawn portrait with the game's (its upscale) through a cheap vision
     model; list the ones whose expression, eyes, mouth or eye colour differ, or that have
@@ -764,22 +820,10 @@ def cmd_check(args) -> None:
     with ThreadPoolExecutor(args.workers) as ex:
         for name, key, res, cost in ex.map(one, jobs):
             spent += cost
-            # the game's colour can't be judged through closed or unreadable eyes
-            colour_known = res.get("eyes_A") == "open" and str(res.get("eye_colour_A", "")).lower() not in (
-                "", "n/a", "unknown", "not visible", "none")
-            ok = (res.get("same_expression") and res.get("same_person")
-                  and (res.get("eye_colour_match") or not colour_known)
-                  and res.get("eyes_A") == res.get("eyes_B") and not res.get("defects_B"))
-            res["ok"] = bool(ok)
+            ok, why = check_ok(res)
+            res["ok"] = ok
             results[name] = {"key": key, **res}
             if not ok:
-                why = [k for k in ("same_expression", "same_person") if not res.get(k)]
-                if colour_known and not res.get("eye_colour_match"):
-                    why.append(f"eye colour {res.get('eye_colour_A')} -> {res.get('eye_colour_B')}")
-                if res.get("eyes_A") != res.get("eyes_B"):
-                    why.append(f"eyes {res.get('eyes_A')} -> {res.get('eyes_B')}")
-                if res.get("defects_B"):
-                    why.append(f"defects: {res['defects_B']}")
                 print(f"FAIL {name} ({key}): {'; '.join(map(str, why)) or res.get('error', '')}")
     ledger.add(model=args.model, key=f"check {len(jobs)}", cost=spent, seconds=0, ok=True)
     out = work / "redraw" / "check.json"
@@ -829,6 +873,10 @@ def main() -> None:
     p.add_argument("--only", help="comma-separated expressions to redo (the master is reused from --master-image)")
     p.add_argument("--hint", action="append", default=[],
                    help="expr=description of what the game's expression shows, used instead of its name")
+    p.add_argument("--auto-hint", action="store_true",
+                   help="describe each game face with a vision model and put that in the prompt")
+    p.add_argument("--verify", action="store_true",
+                   help="check each result against the game's face; retry, and leave the upscale if it fails")
     p.add_argument("--tries", type=int, default=2, help="calls per image when one returns nothing or aligns badly")
     p.add_argument("--min-score", type=float, default=0.85, help="alignment score below which an expression is redrawn")
     p.add_argument("--budget", type=float, default=20.0, help="stop before the game's ledger passes this (USD)")
