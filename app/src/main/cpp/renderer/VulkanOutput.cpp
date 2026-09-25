@@ -2575,6 +2575,12 @@ bool VulkanOutput::ensurePlaneOverlayResources(FrameResource& resource)
                              kOverlayStagingSize,
                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
         return false;
+    if (resource.overlayNativeBuffer == VK_NULL_HANDLE
+        && !createHostBuffer(resource.overlayNativeBuffer, resource.overlayNativeMemory,
+                             resource.overlayNativeMapped,
+                             kOverlayNativeWords * sizeof(u32),
+                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
+        return false;
     if (resource.overlayRankBuffer == VK_NULL_HANDLE)
     {
         if (!createHostBuffer(resource.overlayRankBuffer, resource.overlayRankMemory,
@@ -2709,14 +2715,15 @@ bool VulkanOutput::ensureHDEdgeResources(FrameResource& resource)
         return false;
     if (hdEdgeDescriptorSetLayout == VK_NULL_HANDLE)
     {
-        std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
-        const VkDescriptorType types[6] = {
+        std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
+        const VkDescriptorType types[7] = {
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   // instances
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    // atlas
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    // composed output
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   // sprite ranks
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   // top packed lines
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   // bottom packed lines
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   // native pixels of sprites under an effect
         };
         for (u32 i = 0; i < bindings.size(); i++)
         {
@@ -2735,7 +2742,7 @@ bool VulkanOutput::ensureHDEdgeResources(FrameResource& resource)
     if (hdEdgeDescriptorPool == VK_NULL_HANDLE)
     {
         std::array<VkDescriptorPoolSize, 2> poolSizes{};
-        poolSizes[0] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, FRAME_QUEUE_SIZE * 4};
+        poolSizes[0] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, FRAME_QUEUE_SIZE * 5};
         poolSizes[1] = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, FRAME_QUEUE_SIZE * 2};
         VkDescriptorPoolCreateInfo poolCreateInfo{};
         poolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -2811,7 +2818,8 @@ bool VulkanOutput::ensureHDEdgeResources(FrameResource& resource)
     if (resource.cachedHDEdgeImageView != resource.imageView
         || resource.cachedHDEdgeAtlasView != overlayAtlasView
         || resource.cachedHDEdgeTopPacked != resource.topPackedBuffer
-        || resource.cachedHDEdgeBottomPacked != resource.bottomPackedBuffer)
+        || resource.cachedHDEdgeBottomPacked != resource.bottomPackedBuffer
+        || resource.cachedHDEdgeNative != resource.overlayNativeBuffer)
     {
         VkDescriptorBufferInfo instanceInfo{resource.overlayInstanceBuffer, 0,
                                             kOverlayMaxInstances * sizeof(PlaneOverlayGpuInstance)};
@@ -2820,7 +2828,8 @@ bool VulkanOutput::ensureHDEdgeResources(FrameResource& resource)
         VkDescriptorBufferInfo rankInfo{resource.overlayRankBuffer, 0, melonDS::kObjRankSlots * melonDS::kObjRankEngineSize};
         VkDescriptorBufferInfo topInfo{resource.topPackedBuffer, 0, resource.packedBufferSize};
         VkDescriptorBufferInfo bottomInfo{resource.bottomPackedBuffer, 0, resource.packedBufferSize};
-        std::array<VkWriteDescriptorSet, 6> writes{};
+        VkDescriptorBufferInfo nativeInfo{resource.overlayNativeBuffer, 0, kOverlayNativeWords * sizeof(u32)};
+        std::array<VkWriteDescriptorSet, 7> writes{};
         for (u32 i = 0; i < writes.size(); i++)
         {
             writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2834,11 +2843,13 @@ bool VulkanOutput::ensureHDEdgeResources(FrameResource& resource)
         writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[3].pBufferInfo = &rankInfo;
         writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[4].pBufferInfo = &topInfo;
         writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[5].pBufferInfo = &bottomInfo;
+        writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[6].pBufferInfo = &nativeInfo;
         vkUpdateDescriptorSets(device, static_cast<u32>(writes.size()), writes.data(), 0, nullptr);
         resource.cachedHDEdgeImageView = resource.imageView;
         resource.cachedHDEdgeAtlasView = overlayAtlasView;
         resource.cachedHDEdgeTopPacked = resource.topPackedBuffer;
         resource.cachedHDEdgeBottomPacked = resource.bottomPackedBuffer;
+        resource.cachedHDEdgeNative = resource.overlayNativeBuffer;
     }
     return true;
 }
@@ -2847,6 +2858,7 @@ void VulkanOutput::recordHDEdgePasses(FrameResource& resource, const VulkanCompo
 {
     const u32 count = std::min<u32>(resource.overlayPreparedCount, static_cast<u32>(kOverlayMaxInstances));
     if (count == 0u || resource.overlayInstanceMapped == nullptr || resource.overlayRankBuffer == VK_NULL_HANDLE
+        || resource.overlayNativeBuffer == VK_NULL_HANDLE
         || overlayAtlasView == VK_NULL_HANDLE || !ensureHDEdgeResources(resource))
         return;
 
@@ -3004,6 +3016,8 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
         PlaneOverlayGpuInstance gpu;
         u8 screen;
         bool isSprite;
+        // held here: the instance vector can be cleared once the lock below is released
+        std::shared_ptr<const std::vector<u32>> native;
     };
     std::vector<PreparedInstance> prepared;
     // hold the lock across instance iteration: flushInFlightFrames may clear
@@ -3038,7 +3052,9 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
         out.screen = inst.Screen & 1u;
         out.gpu.screen = out.screen;
         out.isSprite = inst.RequireMask == 0x90;
-        prepared.push_back(out);
+        if (inst.BlendWeight < 16)
+            out.native = inst.Native;
+        prepared.push_back(std::move(out));
     };
 
     // BG tiles never overlap within their producer, so they go first without
@@ -3059,6 +3075,26 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
     for (size_t i = 0; i < prepared.size(); i++)
         instanceData[i] = prepared[i].gpu;
     resource.overlayPreparedCount = static_cast<u32>(prepared.size());
+    // native pixels of sprites under an effect: the edge pass swaps their share of the
+    // composed colour for the art's; an instance without them (or past the buffer's end)
+    // falls back to adding the art's detail
+    if (auto* nativeWords = static_cast<u32*>(resource.overlayNativeMapped))
+    {
+        size_t next = kOverlayMaxInstances;
+        for (size_t i = 0; i < prepared.size(); i++)
+        {
+            u32 offset = ~0u;
+            const auto& native = prepared[i].native;
+            const size_t pixels = static_cast<size_t>(prepared[i].gpu.nativeW) * prepared[i].gpu.nativeH;
+            if (native && native->size() == pixels && next + pixels <= kOverlayNativeWords)
+            {
+                std::memcpy(nativeWords + next, native->data(), pixels * sizeof(u32));
+                offset = static_cast<u32>(next);
+                next += pixels;
+            }
+            nativeWords[i] = offset;
+        }
+    }
     {
         // which sprite won each native pixel (HDPack2D::ObjRank); without one no sprite owns
         // anything, which only costs the replacements, never shows them over the wrong sprite
@@ -5582,6 +5618,15 @@ void VulkanOutput::destroyFrameResource(Frame* frame)
         vkDestroyBuffer(device, resource.overlayStagingBuffer, nullptr);
     if (resource.overlayStagingMemory != VK_NULL_HANDLE)
         vkFreeMemory(device, resource.overlayStagingMemory, nullptr);
+    if (resource.overlayNativeMapped != nullptr)
+    {
+        vkUnmapMemory(device, resource.overlayNativeMemory);
+        resource.overlayNativeMapped = nullptr;
+    }
+    if (resource.overlayNativeBuffer != VK_NULL_HANDLE)
+        vkDestroyBuffer(device, resource.overlayNativeBuffer, nullptr);
+    if (resource.overlayNativeMemory != VK_NULL_HANDLE)
+        vkFreeMemory(device, resource.overlayNativeMemory, nullptr);
 
     destroyTimestampQueryPool(resource.timestampQueryPool);
 

@@ -14,11 +14,13 @@
 //  - mode 1, 3D pixels next to the sprite: the art over the composed pixel
 //    (the overlay already spills art onto 2D neighbours)
 //  - mode 2, sprites under a blend or fade (weight below 16), which the overlay
-//    leaves native because their pixels carry the effect: the art's detail is
-//    added inside each native pixel (the art minus its own mean over that
-//    pixel) at the share of the sprite's colour that reaches the screen, so a
-//    fading portrait is HD all the way instead of popping to HD at the end.
-//    Their outline stays native until the effect ends.
+//    leaves native because their pixels carry the effect: the sprite's share of
+//    the composed colour (its own native colour, from binding 6, at the share of
+//    it that reaches the screen) is swapped for the art's, so a fading portrait
+//    is the HD art fading, not the native picture. Sprites without native pixels
+//    get the art's detail added instead (the art minus its own mean over each
+//    native pixel), which only looks right when the art matches the native
+//    picture. Their outline stays native until the effect ends.
 // Ownership comes from HDPack2D::ObjRank, the art from the overlay atlas, and
 // the art gets the line's master brightness like the compositor applies it.
 
@@ -57,6 +59,13 @@ layout(set = 0, binding = 4, std430) readonly buffer TopPackedBuffer
 layout(set = 0, binding = 5, std430) readonly buffer BottomPackedBuffer
 {
     uint bottomPacked[];
+};
+
+// native pixels of sprites under an effect: word [instance] is the offset of that sprite's
+// pixels (W*H, source orientation, RGBA8, alpha 0 where transparent) or ~0u
+layout(set = 0, binding = 6, std430) readonly buffer NativeBuffer
+{
+    uint nativeWords[];
 };
 
 layout(push_constant) uniform PushConsts
@@ -136,6 +145,31 @@ void main()
     {
         if (weight >= 16u || !own || hd.a <= 0.0)
             return;
+        // master brightness scales the sprite's colour by (16 - factor) / 16 either way
+        float effectStrength = float(weight) / 16.0;
+        uint brightness = ((meta >> 8u) & 0xFFu) >> 6u;
+        if (brightness == 1u || brightness == 2u)
+            effectStrength *= 1.0 - float(min(16u, meta & 0x1Fu)) / 16.0;
+        // with the sprite's own colour known, its share of the composed pixel becomes the
+        // art's: at 15/16 the pixel is the art at 15/16 over whatever is behind, where adding
+        // detail kept the native colours (a redraw's moved eyes showed as the native picture
+        // until the effect ended)
+        uint nativeOffset = nativeWords[pc.instanceIndex];
+        if (nativeOffset != 0xFFFFFFFFu)
+        {
+            uvec2 n = local / uint(scale);
+            if ((inst.flags & 1u) != 0u)
+                n.x = inst.nativeSize.x - 1u - n.x;
+            if ((inst.flags & 2u) != 0u)
+                n.y = inst.nativeSize.y - 1u - n.y;
+            vec4 spriteColor = unpackUnorm4x8(nativeWords[nativeOffset + n.y * inst.nativeSize.x + n.x]);
+            if (spriteColor.a > 0.5)
+            {
+                storeComposed(out0, clamp(loadComposed(out0)
+                                          + (hd.rgb - spriteColor.rgb) * hd.a * effectStrength, 0.0, 1.0));
+                return;
+            }
+        }
         // the art's mean over this native pixel
         ivec2 cell = ivec2(local) - ivec2(px - native.x * scale, py - native.y * scale);
         vec3 sum = vec3(0.0);

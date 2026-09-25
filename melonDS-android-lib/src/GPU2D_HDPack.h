@@ -23,6 +23,7 @@
 #include "types.h"
 #include "HDFont.h"
 
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -52,9 +53,15 @@ struct HDPack2DInstance
     // kNoObjRank for BG tiles and glyphs, which don't use the ownership map
     u8 Rank = 0xFF;
     // how much of the sprite's own colour reaches the screen, in 16ths: 16 normally, less
-    // while it is blended or faded. Below 16 the native pixels stay (they carry the
-    // effect) and the renderer only adds the art's detail at this strength.
+    // while it is blended or faded. Below 16 the composed pixels stay (they carry the
+    // effect) and the renderer swaps the sprite's share of them for the art's.
     u8 BlendWeight = 16;
+    // the sprite's own pixels before any effect (W*H, source orientation, RGBA8 with alpha
+    // 0 where transparent), only while BlendWeight is below 16: with them the renderer
+    // turns the composed colour into the art's at the effect's strength. Without them it
+    // can only add the art's detail over the native colours, which shows a redraw that
+    // moved features as the native picture until the fade ends.
+    std::shared_ptr<const std::vector<u32>> Native;
 };
 
 constexpr u8 kNoObjRank = 0xFF;
@@ -111,7 +118,12 @@ private:
     void ReplaceText(GPU& gpu, int num, HDTexPack* pack, size_t spriteStart);
     void WalkBGLayers(GPU& gpu, int num, HDTexPack* pack, bool dump, bool load);
     void EmitSpriteInstance(const HDTexPackImage* img, int num, u8 flip,
-                            s32 xpos, s32 ypos, int width, int height, u8 rank, u8 blendWeight);
+                            s32 xpos, s32 ypos, int width, int height, u8 rank, u8 blendWeight,
+                            std::shared_ptr<const std::vector<u32>> native = nullptr);
+    // a sprite's pixels as RGBA8 (the texture dump's format), unflipped
+    static void DecodeSprite(const u8* objvram, u32 objvrammask, const u16* stdPal, const u16* extPal,
+                             int type, int tileOffset, int tileStride, int palOffset,
+                             int width, int height, std::vector<u32>& out);
     void CarryAlternatingScreen(bool engineAOnTop, bool prevValid);
 
     // the previous frame's own sprite replacements and ownership, for CarryAlternatingScreen

@@ -906,6 +906,11 @@ private:
         VkBuffer overlayStagingBuffer{VK_NULL_HANDLE};
         VkDeviceMemory overlayStagingMemory{VK_NULL_HANDLE};
         void* overlayStagingMapped{};
+        // native pixels of sprites under an effect for the edge pass: one word per instance
+        // (offset of its pixels, or ~0u), then the pixels (HDPack2DInstance::Native)
+        VkBuffer overlayNativeBuffer{VK_NULL_HANDLE};
+        VkDeviceMemory overlayNativeMemory{VK_NULL_HANDLE};
+        void* overlayNativeMapped{};
         VkImageView cachedOverlayTopPlaneView{VK_NULL_HANDLE};
         // post-composition HD sprite edges (VulkanHDEdgeShader)
         VkDescriptorSet hdEdgeDescriptorSet{VK_NULL_HANDLE};
@@ -913,6 +918,7 @@ private:
         VkImageView cachedHDEdgeAtlasView{VK_NULL_HANDLE};
         VkBuffer cachedHDEdgeTopPacked{VK_NULL_HANDLE};
         VkBuffer cachedHDEdgeBottomPacked{VK_NULL_HANDLE};
+        VkBuffer cachedHDEdgeNative{VK_NULL_HANDLE};
         u32 overlayPreparedCount{};   // replacement instances the overlay drew this frame
         VkImageView cachedOverlayBottomPlaneView{VK_NULL_HANDLE};
         std::array<VkDescriptorSet, 2> overlayDescriptorSets{};
@@ -1244,6 +1250,8 @@ private:
     static constexpr u32 kOverlayAtlasSize = 4096;
     static constexpr size_t kOverlayMaxInstances = 4096;
     static constexpr VkDeviceSize kOverlayStagingSize = 4 * 1024 * 1024;
+    // words: the per-instance offsets, then native pixels (a 128x160 portrait is 20480)
+    static constexpr size_t kOverlayNativeWords = kOverlayMaxInstances + 256 * 1024;
     bool replacement2DActive{false};
     VkDescriptorSetLayout overlayDescriptorSetLayout{VK_NULL_HANDLE};
     VkDescriptorPool overlayDescriptorPool{VK_NULL_HANDLE};

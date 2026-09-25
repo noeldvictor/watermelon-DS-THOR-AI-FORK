@@ -280,8 +280,49 @@ void HDPack2D::CarryAlternatingScreen(bool engineAOnTop, bool prevValid)
     }
 }
 
+void HDPack2D::DecodeSprite(const u8* objvram, u32 objvrammask, const u16* stdPal, const u16* extPal,
+                            int type, int tileOffset, int tileStride, int palOffset,
+                            int width, int height, std::vector<u32>& out)
+{
+    out.resize((size_t)width * height);
+    for (int y = 0; y < height; y++)
+    {
+        for (int x = 0; x < width; x++)
+        {
+            u32 pixel;
+            if (type == 0)
+            {
+                u32 addr = (u32)(tileOffset + ((x >> 3) * 32) + ((y >> 3) * tileStride)
+                                 + ((x & 0x7) >> 1) + ((y & 0x7) << 2));
+                u8 byte = objvram[addr & objvrammask];
+                int col = (x & 1) ? (byte >> 4) : (byte & 0xF);
+                col += palOffset;
+                pixel = Pal555ToRGBA8(stdPal[col], (col & 0xF) != 0);
+            }
+            else if (type == 1)
+            {
+                u32 addr = (u32)(tileOffset + ((x >> 3) * 64) + ((y >> 3) * tileStride)
+                                 + (x & 0x7) + ((y & 0x7) << 3));
+                u8 col = objvram[addr & objvrammask];
+                u16 entry = (palOffset == 0)
+                    ? stdPal[col]
+                    : extPal[(palOffset - 1) * 256 + col];
+                pixel = Pal555ToRGBA8(entry, col != 0);
+            }
+            else
+            {
+                u32 addr = (u32)(tileOffset + (x * 2) + (y * tileStride)) & objvrammask;
+                u16 col = (u16)(objvram[addr] | (objvram[(addr + 1) & objvrammask] << 8));
+                pixel = Bitmap555ToRGBA8(col);
+            }
+            out[(size_t)y * width + x] = pixel;
+        }
+    }
+}
+
 void HDPack2D::EmitSpriteInstance(const HDTexPackImage* img, int num, u8 flip,
-                                  s32 xpos, s32 ypos, int width, int height, u8 rank, u8 blendWeight)
+                                  s32 xpos, s32 ypos, int width, int height, u8 rank, u8 blendWeight,
+                                  std::shared_ptr<const std::vector<u32>> native)
 {
     // the renderer draws sprite row r at scanline (ypos + r) & 0xFF, so a
     // sprite near the bottom edge also wraps to the top of the screen
@@ -305,6 +346,7 @@ void HDPack2D::EmitSpriteInstance(const HDTexPackImage* img, int num, u8 flip,
         inst.H = (u16)height;
         inst.Rank = rank;
         inst.BlendWeight = blendWeight;
+        inst.Native = native;
         Instances.push_back(inst);
     }
 }
@@ -495,40 +537,8 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
             }
             if (stable)
             {
-                PixelScratch.resize((size_t)width * height);
-                for (int y = 0; y < height; y++)
-                {
-                    for (int x = 0; x < width; x++)
-                    {
-                        u32 pixel;
-                        if (type == 0)
-                        {
-                            u32 addr = (u32)(tileOffset + ((x >> 3) * 32) + ((y >> 3) * tileStride)
-                                             + ((x & 0x7) >> 1) + ((y & 0x7) << 2));
-                            u8 byte = objvram[addr & objvrammask];
-                            int col = (x & 1) ? (byte >> 4) : (byte & 0xF);
-                            col += palOffset;
-                            pixel = Pal555ToRGBA8(stdPal[col], (col & 0xF) != 0);
-                        }
-                        else if (type == 1)
-                        {
-                            u32 addr = (u32)(tileOffset + ((x >> 3) * 64) + ((y >> 3) * tileStride)
-                                             + (x & 0x7) + ((y & 0x7) << 3));
-                            u8 col = objvram[addr & objvrammask];
-                            u16 entry = (palOffset == 0)
-                                ? stdPal[col]
-                                : extPal[(palOffset - 1) * 256 + col];
-                            pixel = Pal555ToRGBA8(entry, col != 0);
-                        }
-                        else
-                        {
-                            u32 addr = (u32)(tileOffset + (x * 2) + (y * tileStride)) & objvrammask;
-                            u16 col = (u16)(objvram[addr] | (objvram[(addr + 1) & objvrammask] << 8));
-                            pixel = Bitmap555ToRGBA8(col);
-                        }
-                        PixelScratch[(size_t)y * width + x] = pixel;
-                    }
-                }
+                DecodeSprite(objvram, objvrammask, stdPal, extPal, type, tileOffset, tileStride,
+                             palOffset, width, height, PixelScratch);
                 pack->DumpSprite((u32)width, (u32)height, tileHash, palHash, hasPal, bppTag,
                                  PixelScratch.data(), WalkBatch, screen, i, xpos, ypos);
             }
@@ -551,7 +561,20 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
             u8 flip = (u8)(((attrib[1] & (1 << 12)) ? 1 : 0)
                            | ((attrib[1] & (1 << 13)) ? 2 : 0));
             if (img)
-                EmitSpriteInstance(img, num, flip, xpos, ypos, width, height, rankOf[i], blendWeight);
+            {
+                // under an effect the renderer needs the sprite's own colours to swap them
+                // for the art's (see HDPack2DInstance::Native)
+                std::shared_ptr<const std::vector<u32>> native;
+                if (blendWeight < 16)
+                {
+                    auto pixels = std::make_shared<std::vector<u32>>();
+                    DecodeSprite(objvram, objvrammask, stdPal, extPal, type, tileOffset, tileStride,
+                                 palOffset, width, height, *pixels);
+                    native = std::move(pixels);
+                }
+                EmitSpriteInstance(img, num, flip, xpos, ypos, width, height, rankOf[i], blendWeight,
+                                   std::move(native));
+            }
             else if (fonts && type != 2 && blendWeight == 16)
                 Missed.push_back({ xpos, ypos, width, height, type, tileOffset, tileStride,
                                    palOffset, flip, tileHash });
