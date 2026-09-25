@@ -1330,7 +1330,7 @@ class SharedPreferencesSettingsRepository(
 
     private fun isTexturePackLoadEnabled(): Flow<Boolean> {
         return getOrCreatePreferenceSharedFlow("enable_texture_packs") {
-            preferences.getBoolean("enable_texture_packs", false)
+            preferences.getBoolean("enable_texture_packs", true)
         }
     }
 

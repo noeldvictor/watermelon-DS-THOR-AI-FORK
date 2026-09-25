@@ -76,7 +76,7 @@
             android:title="@string/load_texture_packs"
             android:summary="@string/load_texture_packs_summary"
             app:iconSpaceReserved="false"
-            android:defaultValue="false" />
+            android:defaultValue="true" />
 
     <SwitchPreference
             android:key="enable_texture_dumping"

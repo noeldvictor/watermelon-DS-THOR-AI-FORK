@@ -5451,8 +5451,7 @@ void MelonInstance::applyTexturePack(const EmulatorConfiguration& config)
     //   texturepacks/<GAMECODE>/textures/*.png  -> replacements
     //   texturedumps/<GAMECODE>/                -> dumped textures
     // Content-hash naming matches the desktop melonDS HD pack format. The
-    // settings toggles enable loading and dumping; a pre-existing per-game
-    // pack directory also opts in to loading.
+    // settings toggles enable loading and dumping.
     melonDS::HDTexPack* pack = nullptr;
 
     // only the Vulkan and compute renderers consume the pack; keeping it
@@ -5472,13 +5471,10 @@ void MelonInstance::applyTexturePack(const EmulatorConfiguration& config)
         std::string packDir = base + "/texturepacks/" + gameCode;
         std::string dumpDir = base + "/texturedumps/" + gameCode;
 
-        std::error_code ec;
-        // a pre-existing per-game pack directory keeps working as an opt-in
-        // fallback for loading; dumping is gated strictly by the preference
-        // so one dump session can't silently keep writing to disk for every
-        // game afterwards
-        bool loadEnabled = config.loadTexturePacks
-            || std::filesystem::is_directory(std::filesystem::u8path(packDir), ec);
+        // Loading follows the switch alone (on by default). An installed pack
+        // used to count as opted in, so switching packs off did nothing for a
+        // game that had one.
+        bool loadEnabled = config.loadTexturePacks;
         bool dumpEnabled = config.dumpTextures;
 
         if (loadEnabled || dumpEnabled)
