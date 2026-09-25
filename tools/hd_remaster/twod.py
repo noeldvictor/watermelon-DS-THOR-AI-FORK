@@ -313,6 +313,11 @@ def obj_palette(nclr, oam, extpal=False):
 # ============================================================ pairing
 def split_name(n):
     d, _, f = n.rpartition("/")
+    # a compressed file's name keeps its own type: 'ci_01_d.NSCR.lz~lz' is the screen
+    # 'ci_01_d', which must pair with ci_d.NCLR, not tie with ci_u.NCLR
+    f = f.split("~", 1)[0]
+    if f.lower().endswith(".lz"):
+        f = f[:-3]
     return d, f.rsplit(".", 1)[0]
 
 

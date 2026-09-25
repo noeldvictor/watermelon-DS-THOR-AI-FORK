@@ -17,13 +17,18 @@
   "twod": {},
   "baseline": {
     "textures": 4434,
-    "sprites": 4200,
-    "backgrounds": 240488,
+    "sprites": 4613,
+    "backgrounds": 231399,
     "fonts": 2
   },
   "notes": [
     "Nearly every asset lives in MASS/*.dat archives ('SSAM': count, then offset/size/32-byte name entries from the end of the table), mostly LZ10. Maps (*.mmc) decompress to an offset table of parts, some nested, each part an 'NMDP' wrapper around a standard BMD0 or BTX0. nitro.files() unpacks all three; without them the ROM shows 1 texture.",
-    "71% of the BG tile keys (171k) are the painted world map in mass_navi_map.dat, which has almost no repeated tiles.",
-    "BG screens are 8bpp with palettes loaded into shared palette memory next to other colours, so the exact bg1 key (whole 256-colour palette) missed on 196/200 logged tiles whose tile hash was right. build stores tiles that occur in one image only under the '$' palette wildcard (183k of 240k files)."
-  ]
+    "About 171k of the BG tile keys are the painted world map in mass_navi_map.dat, which has almost no repeated tiles.",
+    "BG screens are 8bpp with palettes loaded into shared palette memory next to other colours, so the exact bg1 key (whole 256-colour palette) missed on 196/200 logged tiles whose tile hash was right. build stores tiles that occur in one image only under the '$' palette wildcard (193k of 231k files).",
+    "Compressed names keep their type ('ci_01_d.NSCR.lz'); split_name strips both extensions so the painted intro screens pair with ci_d/ci_u by name instead of tying (each page was extracted twice, once in the wrong colours)."
+  ],
+  "verified": {
+    "date": "2026-09-25",
+    "on_device": "AYN Thor: painted intro BG tiles 91080/92160 lookups hit, title and main menu 92160/92160, title sprites 240/240. Towns, dungeons, battles not played yet."
+  }
 }
