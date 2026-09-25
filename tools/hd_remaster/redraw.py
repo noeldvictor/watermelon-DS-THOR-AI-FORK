@@ -366,13 +366,25 @@ def cmd_portrait(args) -> None:
     if args.master not in items:
         raise SystemExit(f"no '{args.match}{args.master}' in the manifest; found {sorted(items)}")
     refs = [Image.open(r).convert("RGB") for r in args.ref]
-    out_dir = work / "redrawn" / "assets2d"
+    out_dir = Path(args.out) if args.out else work / "redrawn" / "assets2d"
     out_dir.mkdir(parents=True, exist_ok=True)
-    keep_dir = work / "redraw" / "portrait" / args.match.rstrip("_")
+    keep_dir = work / "redraw" / "portrait" / (args.match.rstrip("_") + ("_" + args.tag if args.tag else ""))
     keep_dir.mkdir(parents=True, exist_ok=True)
 
     def up_of(m):
         return Image.open(work / "upscaled" / "assets2d" / f"{m['key']}.png").convert("RGBA")
+
+    def native_of(m, size):
+        """The game's own pixels, enlarged without smoothing, as the last image (--with-native)."""
+        if not args.with_native:
+            return []
+        n = Image.open(work / "native" / "assets2d" / f"{m['key']}.png").convert("RGBA")
+        return [flat(n).resize(size, Image.NEAREST)]
+
+    NATIVE_LINE = ("\nThe last image is the same portrait at the game's true resolution, enlarged "
+                   "without smoothing, so it looks pixelated. The smooth enlargement can blur or "
+                   "invent features; trust the pixelated one for the colours, the eye colour, and "
+                   "whether the eyes and mouth are open or closed.")
 
     def run(prompt, images, tag):
         if args.reuse:                                     # rebuild from earlier model output
@@ -420,8 +432,9 @@ def cmd_portrait(args) -> None:
             if args.auto_hint:
                 prompt += (f"\nThe face in image 1 shows: {describe(up0)}. Keep exactly that, "
                            f"including the eye colour.")
-            raw = run(prompt, [flat(up0).resize((up0.width * 2, up0.height * 2), Image.LANCZOS)] + refs,
-                      args.master)
+            size0 = (up0.width * 2, up0.height * 2)
+            raw = run(prompt + (NATIVE_LINE if args.with_native else ""),
+                      [flat(up0).resize(size0, Image.LANCZOS)] + refs + native_of(m0, size0), args.master)
         aligned, score = align(raw, flat(up0))
         master = cut_out(aligned, up0)
         master_ok, why = verify(up0, master) if args.verify and not args.master_image else (True, [])
@@ -452,9 +465,10 @@ def cmd_portrait(args) -> None:
         ua = np.asarray(up.getchannel("A")).astype(np.float32)
         best = None
         for attempt in range(args.tries):                  # badly aligned or failing the check: again
-            raw = run(EXPRESSION_PROMPT.format(name=args.name, expr=desc),
-                      [flat(master).resize((up.width * 2, up.height * 2), Image.LANCZOS),
-                       flat(up).resize((up.width * 2, up.height * 2), Image.LANCZOS)] + refs, expr)
+            size = (up.width * 2, up.height * 2)
+            raw = run(EXPRESSION_PROMPT.format(name=args.name, expr=desc) + (NATIVE_LINE if args.with_native else ""),
+                      [flat(master).resize(size, Image.LANCZOS), flat(up).resize(size, Image.LANCZOS)] + refs
+                      + native_of(m, size), expr)
             aligned, score = align(raw, flat(up))          # scored against its own expression
             own = fill_holes(np.asarray(aligned).astype(np.float32), ua, np.asarray(flat(up)).astype(np.float32))
             rgb = own * w[..., None] + mrgb * (1 - w[..., None])
@@ -873,6 +887,10 @@ def main() -> None:
     p.add_argument("--only", help="comma-separated expressions to redo (the master is reused from --master-image)")
     p.add_argument("--hint", action="append", default=[],
                    help="expr=description of what the game's expression shows, used instead of its name")
+    p.add_argument("--with-native", action="store_true",
+                   help="also send the game's own pixels (enlarged, unsmoothed) as the colour/expression truth")
+    p.add_argument("--out", help="write results here instead of work/<CODE>/redrawn/assets2d (for tests)")
+    p.add_argument("--tag", help="suffix for the folder the raw model outputs are kept in (for tests)")
     p.add_argument("--auto-hint", action="store_true",
                    help="describe each game face with a vision model and put that in the prompt")
     p.add_argument("--verify", action="store_true",
