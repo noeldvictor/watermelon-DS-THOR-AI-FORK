@@ -3094,7 +3094,9 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
         // bits 8-12: the sprite's blend weight (16 = drawn as-is; less = under an effect,
         // left native by the overlay and given the art's detail by the edge pass)
         out.gpu.flags = static_cast<u32>(inst.Flip) | (static_cast<u32>(std::min<u8>(inst.BlendWeight, 16)) << 8);
-        out.gpu.rank = static_cast<u32>(inst.Rank) | (static_cast<u32>(inst.Engine & 3u) << 8);
+        // bits 16-23: how many ranks past Rank the instance also owns (a glyph across text sprites)
+        out.gpu.rank = static_cast<u32>(inst.Rank) | (static_cast<u32>(inst.Engine & 3u) << 8)
+            | (static_cast<u32>(inst.RankSpan) << 16);
         // the walker recorded the screen each engine drew on (the swap latched with the
         // snapshot can already be the next frame's)
         out.screen = inst.Screen & 1u;

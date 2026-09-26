@@ -108,7 +108,7 @@ public:
     static u64 SpriteColorHash(const u32* rgba8, size_t count);
     // Logs a sprite miss once, like LookupSprite does, for callers that try more keys first
     void ReportSpriteMiss(u32 width, u32 height, u64 tileHash, u64 palHash, bool hasPal,
-                          const char* bppTag, u64 colorHash) const;
+                          const char* bppTag, u64 colorHash, int engine, int x, int y) const;
     // rgba8: assembled sprite pixels, 8-bit channels.
     void DumpSprite(u32 width, u32 height, u64 tileHash,
                     u64 palHash, bool hasPal, const char* bppTag, const u32* rgba8,
@@ -176,7 +176,7 @@ private:
     // alone produces hundreds of sprite misses. Texture misses are reported by the texcache
     // (ReportTextureMiss) because the filter disk cache shares LookupTexture and misses by design.
     bool ShouldLogMiss(int kind, u64 key) const;
-    static constexpr u32 MaxLoggedMisses = 200;
+    static constexpr u32 MaxLoggedMisses = 1000;
     mutable std::unordered_set<u64> MissKeys[3];
     mutable u32 MissesLogged[3]{};
 

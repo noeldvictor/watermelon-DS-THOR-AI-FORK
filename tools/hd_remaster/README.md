@@ -150,9 +150,10 @@ sprites. The per-layer filters still apply to those.
 
 - Anything a game builds at runtime can't be found in the ROM (see above), except text drawn
   from the game's fonts.
-- HD text needs the glyphs drawn exactly as the font stores them: text in background layers,
-  outlined or shadowed text drawn as two overlapping passes, and fonts that aren't NFTR stay
-  native.
+- HD text needs the glyphs drawn exactly as the font stores them. Text with a one-pixel
+  outline in its own palette index (Lufia's battle HUD, name plates, money and play time)
+  is recognised and drawn with an HD outline; text in background layers, drop shadows and
+  fonts that aren't NFTR stay native.
 - Games with fully custom formats (not Nitro TEX0 / NCGR) need their own reader.
 - Background tile keys haven't been checked against in-game dumps yet.
 - Replacement skips rotating/scaled sprites, as the emulator's 2D replacement does.

@@ -52,6 +52,9 @@ struct HDPack2DInstance
     // sprites: the sprite's place in the hardware drawing order (see HDPack2D::ObjRank);
     // kNoObjRank for BG tiles and glyphs, which don't use the ownership map
     u8 Rank = 0xFF;
+    // the instance also owns ranks Rank+1..Rank+RankSpan: an outlined glyph across two text
+    // sprites redraws both sprites' outline pixels
+    u8 RankSpan = 0;
     // how much of the sprite's own colour reaches the screen, in 16ths: 16 normally, less
     // while it is blended or faded. Below 16 the composed pixels stay (they carry the
     // effect) and the renderer swaps the sprite's share of them for the art's.
@@ -106,12 +109,16 @@ private:
         int Width, Height, Type, TileOffset, TileStride, PalOffset;
         u8 Flip;
         u64 TileHash;
+        u8 Rank = kNoObjRank;   // the sprite's place in the drawing order (ObjRank)
     };
     struct TextGroup
     {
         s32 X0, Y0;
         u16 Bg;
         std::vector<HDFontSet::Placement> Placements;
+        // glyphs drawn over a one-pixel outline of index Outline (none when empty)
+        std::vector<HDFontSet::Placement> Outlined;
+        u16 Outline = 0;
     };
 
     void WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool load);

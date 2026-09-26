@@ -35,7 +35,9 @@ struct OverlayInstance
     uvec2 atlasPos;     // scaled atlas texel origin
     uint masks;         // bits 0-7 required flag bits, bits 8-15 rejected bits
     uint flags;         // bit 0 flipH, bit 1 flipV, bits 8-12 blend weight (16 = as-is)
-    uint rank;          // bits 0-7 sprite rank (0xFF: BG tile or glyph), bits 8-9 ownership slot
+    uint rank;          // bits 0-7 sprite rank (0xFF: BG tile or glyph), bits 8-9 ownership slot,
+                        // bits 16-23 span: the instance owns ranks rank..rank+span (a glyph
+                        // across several text sprites)
     uint pad;
 };
 
@@ -118,10 +120,11 @@ void main()
     uint rejectMask = (inst.masks >> 8u) & 0xFFu;
     uint myRank = inst.rank & 0xFFu;
     uint engine = (inst.rank >> 8u) & 3u;
+    uint lastRank = myRank + ((inst.rank >> 16u) & 0xFFu);
     bool ranked = myRank != 0xFFu;
     uint winner = ranked ? rankAt(engine, ivec2(px, py)) : 0xFFu;
     if (ranked)
-        nativeInk = winner == myRank;
+        nativeInk = winner >= myRank && winner <= lastRank;
     for (int plane = 0; plane < 2; plane++)
     {
         ivec2 coord = ivec2(px, py + plane * planeHeight);
@@ -131,7 +134,7 @@ void main()
             continue;
 
         vec3 base = existing.rgb;
-        if (ownedBy(producer, requireMask, rejectMask) && (!ranked || winner == myRank))
+        if (ownedBy(producer, requireMask, rejectMask) && (!ranked || (winner >= myRank && winner <= lastRank)))
         {
             if (nativeInk && plane == 0)
             {
@@ -162,7 +165,7 @@ void main()
                     if ((dx == 0 && dy == 0) || n.x < 0 || n.x >= planeWidth || n.y < 0 || n.y >= planeHeight)
                         continue;
                     if (ownedBy(producerAt(n), requireMask, rejectMask)
-                        && (!ranked || rankAt(engine, n) == myRank))
+                        && (!ranked || (rankAt(engine, n) >= myRank && rankAt(engine, n) <= lastRank)))
                     {
                         besideOwn = true;
                         break;

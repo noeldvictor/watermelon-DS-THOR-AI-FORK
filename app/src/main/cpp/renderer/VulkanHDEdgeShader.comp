@@ -33,7 +33,8 @@ struct OverlayInstance
     uvec2 atlasPos;     // scaled atlas texel origin
     uint masks;
     uint flags;         // bit 0 flipH, bit 1 flipV, bits 8-12 blend weight (16 = as-is)
-    uint rank;          // bits 0-7 sprite rank (0xFF: not a sprite), bits 8-9 ownership slot
+    uint rank;          // bits 0-7 sprite rank (0xFF: not a sprite), bits 8-9 ownership slot,
+                        // bits 16-23 span: the instance owns ranks rank..rank+span
     uint screen;        // 0 top, 1 bottom
 };
 
@@ -110,6 +111,7 @@ void main()
     if (myRank == 0xFFu)
         return;
     uint engine = (inst.rank >> 8u) & 3u;
+    uint lastRank = myRank + ((inst.rank >> 16u) & 0xFFu);
     uint screen = inst.screen & 1u;
     int scale = int(pc.scale);
 
@@ -137,7 +139,7 @@ void main()
     vec4 hd = imageLoad(hdAtlas, ivec2(inst.atlasPos + srcTexel));
 
     uint winner = rankAtNative(engine, native);
-    bool own = winner == myRank;
+    bool own = winner >= myRank && winner <= lastRank;
     ivec2 out0 = ivec2(px, py + screenRowOffset(screen));
     uint weight = (inst.flags >> 8u) & 0x1Fu;
 
@@ -220,7 +222,7 @@ void main()
                 if (n.x < 0 || n.x >= 256 || n.y < 0 || n.y >= 192)
                     continue;
                 uint r = rankAtNative(engine, n);
-                if (r != 0xFFu && r <= myRank)
+                if (r != 0xFFu && r <= lastRank)
                     continue;
                 float w = (dx == 0 || dy == 0) ? 2.0 : 1.0;
                 sum += loadComposed(out0 + ivec2(dx, dy) * scale) * w;
@@ -263,7 +265,8 @@ void main()
             ivec2 n = native + ivec2(dx, dy);
             if ((dx == 0 && dy == 0) || n.x < 0 || n.x >= 256 || n.y < 0 || n.y >= 192)
                 continue;
-            if (rankAtNative(engine, n) == myRank)
+            uint nr = rankAtNative(engine, n);
+            if (nr >= myRank && nr <= lastRank)
             {
                 besideOwn = true;
                 break;

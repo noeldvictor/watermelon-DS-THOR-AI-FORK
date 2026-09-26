@@ -282,6 +282,21 @@ void HDFontSet::Recognize(const u16* canvas, int w, int h, u16 bg, std::vector<P
     }
 }
 
+void HDFontSet::Erase(const Placement& p, u16* canvas, int w, int h) const
+{
+    const Font& f = Fonts[p.Font];
+    const Glyph& g = f.Glyphs[p.Glyph];
+    for (int cy = g.InkY0; cy <= g.InkY1; cy++)
+    {
+        for (int cx = g.InkX0; cx <= g.InkX1; cx++)
+        {
+            const int x = p.X + cx, y = p.Y + cy;
+            if (g.Shades[(size_t)cy * f.CellW + cx] && x >= 0 && y >= 0 && x < w && y < h)
+                canvas[(size_t)y * w + x] = kEmpty;
+        }
+    }
+}
+
 void HDFontSet::GlyphBox(const Placement& p, int& x0, int& y0, int& w, int& h) const
 {
     const Glyph& g = Fonts[p.Font].Glyphs[p.Glyph];
@@ -291,12 +306,14 @@ void HDFontSet::GlyphBox(const Placement& p, int& x0, int& y0, int& w, int& h) c
 }
 
 const HDTexPackImage* HDFontSet::GlyphImage(const Placement& p, const u32* shadeRGBA,
-                                            bool opaqueBg, u32 bgRGBA)
+                                            bool opaqueBg, u32 bgRGBA,
+                                            bool outline, u32 outlineRGBA)
 {
     const Font& f = Fonts[p.Font];
-    struct Key { u16 Font, Glyph; u32 Opaque, Bg; u32 Colors[16]; } key{};
+    struct Key { u16 Font, Glyph; u32 Opaque, Bg; u32 Colors[16]; u32 Outline, OutlineColor; } key{};
     key.Font = p.Font; key.Glyph = p.Glyph;
     key.Opaque = opaqueBg ? 1 : 0; key.Bg = opaqueBg ? bgRGBA & 0xFFFFFF : 0;
+    key.Outline = outline ? 1 : 0; key.OutlineColor = outline ? outlineRGBA & 0xFFFFFF : 0;
     for (int s = 1; s <= f.MaxShade; s++) key.Colors[s] = shadeRGBA[s] & 0xFFFFFF;
     const u64 hash = XXH64(&key, sizeof(key), 0);
 
@@ -316,6 +333,8 @@ const HDTexPackImage* HDFontSet::GlyphImage(const Placement& p, const u32* shade
     HDTexPackImage& img = Images[hash];
     img.Width = (u32)bw * S; img.Height = (u32)bh * S; img.Scale = S;
     img.RGBA.resize((size_t)img.Width * img.Height);
+    std::vector<u32> fillColor((size_t)img.Width * img.Height);
+    std::vector<float> fillAlpha((size_t)img.Width * img.Height);
     for (u32 v = 0; v < img.Height; v++)
     {
         for (u32 u = 0; u < img.Width; u++)
@@ -337,13 +356,47 @@ const HDTexPackImage* HDFontSet::GlyphImage(const Placement& p, const u32* shade
                 color = Lerp8(shadeRGBA[k], shadeRGBA[k1], t - (float)k);
                 alpha = 1.0f;
             }
-            if (opaqueBg)
-            {
-                color = Lerp8(bgRGBA, color, alpha);
-                alpha = 1.0f;
-            }
-            img.RGBA[(size_t)v * img.Width + u] = color | ((u32)std::lround(alpha * 255.0f) << 24);
+            fillColor[(size_t)v * img.Width + u] = color;
+            fillAlpha[(size_t)v * img.Width + u] = alpha;
         }
+    }
+    // the outline: the glyph's coverage grown by one native pixel (a disc of radius S), under
+    // the glyph. The glyph box already has a native pixel of room on every side.
+    std::vector<float> outlineAlpha;
+    if (outline)
+    {
+        outlineAlpha.assign(fillAlpha.size(), 0.0f);
+        const int r = (int)S;
+        for (int v = 0; v < (int)img.Height; v++)
+            for (int u = 0; u < (int)img.Width; u++)
+            {
+                float a = 0.0f;
+                for (int dy = -r; dy <= r && a < 1.0f; dy++)
+                    for (int dx = -r; dx <= r; dx++)
+                    {
+                        const int uu = u + dx, vv = v + dy;
+                        if (uu < 0 || vv < 0 || uu >= (int)img.Width || vv >= (int)img.Height) continue;
+                        if (dx * dx + dy * dy > r * r) continue;
+                        a = std::max(a, fillAlpha[(size_t)vv * img.Width + uu]);
+                    }
+                outlineAlpha[(size_t)v * img.Width + u] = a;
+            }
+    }
+    for (size_t i = 0; i < fillAlpha.size(); i++)
+    {
+        u32 color = fillColor[i];
+        float alpha = fillAlpha[i];
+        if (outline)
+        {
+            color = Lerp8(outlineRGBA, color, alpha);
+            alpha = alpha + outlineAlpha[i] * (1.0f - alpha);
+        }
+        if (opaqueBg)
+        {
+            color = Lerp8(bgRGBA, color, alpha);
+            alpha = 1.0f;
+        }
+        img.RGBA[i] = color | ((u32)std::lround(alpha * 255.0f) << 24);
     }
     return &img;
 }

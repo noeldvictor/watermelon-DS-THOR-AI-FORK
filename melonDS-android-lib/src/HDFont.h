@@ -72,13 +72,20 @@ public:
     // its HD image covers. W/H 0 for a glyph without ink.
     void GlyphBox(const Placement& p, int& x0, int& y0, int& w, int& h) const;
     int MaxShade(const Placement& p) const { return Fonts[p.Font].MaxShade; }
+    // ink pixels of a placed glyph (how much of a canvas a recognition explains)
+    u32 InkCount(const Placement& p) const { return Fonts[p.Font].Glyphs[p.Glyph].InkCount; }
+    // clears a placed glyph's ink pixels to kEmpty, leaving what it doesn't explain
+    void Erase(const Placement& p, u16* canvas, int w, int h) const;
 
     // HD image for a placed glyph: shade s takes colour shadeRGBA[s] (packed r | g<<8 |
     // b<<16), shades in between blend, and coverage below the first shade fades out. With
     // an opaque canvas background the image is composited over bgRGBA and fully opaque.
-    // Cached per glyph and colours; nullptr once the cache is full.
+    // Cached per glyph and colours; nullptr once the cache is full. outline: text the game
+    // draws with a one-pixel outline in outlineRGBA (a second pass under the glyph); the HD
+    // image then carries an HD outline, the glyph's coverage grown by one native pixel.
     const HDTexPackImage* GlyphImage(const Placement& p, const u32* shadeRGBA,
-                                     bool opaqueBg, u32 bgRGBA);
+                                     bool opaqueBg, u32 bgRGBA,
+                                     bool outline = false, u32 outlineRGBA = 0);
 
 private:
     struct Glyph

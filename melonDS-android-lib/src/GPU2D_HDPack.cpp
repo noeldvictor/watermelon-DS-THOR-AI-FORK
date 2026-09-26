@@ -24,6 +24,7 @@
 #include "NDS.h"
 
 #include <algorithm>
+#include <functional>
 
 #define XXH_STATIC_LINKING_ONLY
 #include "xxhash/xxhash.h"
@@ -585,7 +586,7 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
                     ColorKeyCache.emplace(byteKey, img);
                     if (!img && logMiss)
                         pack->ReportSpriteMiss((u32)width, (u32)height, tileHash, palHash, hasPal,
-                                               bppTag, colorHash);
+                                               bppTag, colorHash, num, xpos, ypos);
                 }
             }
             u8 flip = (u8)(((attrib[1] & (1 << 12)) ? 1 : 0)
@@ -607,7 +608,7 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
             }
             else if (fonts && type != 2 && blendWeight == 16)
                 Missed.push_back({ xpos, ypos, width, height, type, tileOffset, tileStride,
-                                   palOffset, flip, tileHash });
+                                   palOffset, flip, tileHash, rankOf[i] });
         }
     }
 
@@ -708,6 +709,47 @@ void HDPack2D::ReplaceText(GPU& gpu, int num, HDTexPack* pack, size_t spriteStar
             }
             TextGroup group{ x0, y0, bg, {} };
             fonts->Recognize(TextCanvas.data(), w, h, bg, group.Placements);
+
+            // Outlined text (Lufia's HUD and name plates: white letters, dark outline) is the
+            // glyph drawn over a one-pixel ring of another index; the ring breaks the match. The
+            // same group can hold plain text too (a dialogue line beside its name plate), so
+            // outlined text is looked for only in the ink plain matching left: each of its most
+            // common indices is taken as the outline (i.e. as background) in turn, and the
+            // reading that explains the most ink is kept.
+            std::vector<u16> rest = TextCanvas;
+            for (const HDFontSet::Placement& p : group.Placements)
+                fonts->Erase(p, rest.data(), w, h);
+            u32 restInk = 0;
+            std::unordered_map<u16, u32> inkCounts;
+            for (u16 v : rest)
+                if (v != HDFontSet::kEmpty && v != bg) { restInk++; inkCounts[v]++; }
+            u32 outlinedInk = 0;
+            if (restInk >= 8 && inkCounts.size() >= 2)
+            {
+                std::vector<std::pair<u32, u16>> byCount;
+                for (const auto& e : inkCounts) byCount.push_back({ e.second, e.first });
+                std::sort(byCount.begin(), byCount.end(), std::greater<>());
+                if (byCount.size() > 3) byCount.resize(3);
+                std::vector<u16> stripped;
+                for (const auto& cand : byCount)
+                {
+                    stripped = rest;
+                    for (u16& v : stripped)
+                        if (v == cand.second) v = HDFontSet::kEmpty;
+                    std::vector<HDFontSet::Placement> placements;
+                    fonts->Recognize(stripped.data(), w, h, bg, placements);
+                    u32 got = 0;
+                    for (const HDFontSet::Placement& p : placements)
+                        got += fonts->InkCount(p);
+                    // the glyphs must explain nearly all of the ink the outline doesn't cover
+                    if (got > outlinedInk && got * 10 >= (restInk - cand.first) * 8)
+                    {
+                        outlinedInk = got;
+                        group.Outlined = std::move(placements);
+                        group.Outline = cand.second;
+                    }
+                }
+            }
             cached = TextGroups.emplace(groupKey, std::move(group)).first;
         }
 
@@ -719,14 +761,14 @@ void HDPack2D::ReplaceText(GPU& gpu, int num, HDTexPack* pack, size_t spriteStar
             else entry = extPal[(palOffset - 1) * 256 + (index & 0xFF)];
             return Pal555ToRGBA8(entry, true);
         };
-        for (const HDFontSet::Placement& p : group.Placements)
-        {
+        auto emitGlyph = [&](const HDFontSet::Placement& p, bool outlined) {
             u32 shades[16] = {};
             const int maxShade = fonts->MaxShade(p);
             for (int s = 1; s <= maxShade; s++)
                 shades[s] = colour(p.Base + (u32)s);
-            const HDTexPackImage* img = fonts->GlyphImage(p, shades, group.Bg != 0, colour(group.Bg));
-            if (!img) continue;
+            const HDTexPackImage* img = fonts->GlyphImage(p, shades, group.Bg != 0, colour(group.Bg),
+                                                          outlined, colour(group.Outline));
+            if (!img) return;
             int bx, by, bw, bh;
             fonts->GlyphBox(p, bx, by, bw, bh);
             HDPack2DInstance inst;
@@ -739,8 +781,34 @@ void HDPack2D::ReplaceText(GPU& gpu, int num, HDTexPack* pack, size_t spriteStar
             inst.Y = (s16)(group.Y0 + p.Y + by);
             inst.W = (u16)bw;
             inst.H = (u16)bh;
+            // outlined text: the glyph owns the text sprites it covers, so the renderer's edge
+            // pass redraws the game's blocky outline pixels as the HD outline over what is
+            // behind (plain text keeps drawing over its sprite as before)
+            if (outlined)
+            {
+                u8 lo = kNoObjRank, hi = 0;
+                for (size_t mi : members)
+                {
+                    const MissedSprite& m = Missed[mi];
+                    const s32 my = m.Y & 0xFF;
+                    if (m.Rank == kNoObjRank || inst.X + bw <= m.X || inst.X >= m.X + m.Width
+                        || inst.Y + bh <= my || inst.Y >= my + m.Height)
+                        continue;
+                    lo = std::min(lo, m.Rank);
+                    hi = std::max(hi, m.Rank);
+                }
+                if (lo != kNoObjRank)
+                {
+                    inst.Rank = lo;
+                    inst.RankSpan = (u8)(hi - lo);
+                }
+            }
             glyphs.push_back(inst);
-        }
+        };
+        for (const HDFontSet::Placement& p : group.Placements)
+            emitGlyph(p, false);
+        for (const HDFontSet::Placement& p : group.Outlined)
+            emitGlyph(p, true);
     }
 
     // the presenter draws sprite instances last to first, so glyphs placed ahead of this

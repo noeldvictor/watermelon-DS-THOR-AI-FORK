@@ -403,13 +403,14 @@ const HDTexPackImage* HDTexPack::LookupSpriteColors(u32 width, u32 height, u64 c
 }
 
 void HDTexPack::ReportSpriteMiss(u32 width, u32 height, u64 tileHash, u64 palHash, bool hasPal,
-                                 const char* bppTag, u64 colorHash) const
+                                 const char* bppTag, u64 colorHash, int engine, int x, int y) const
 {
     u32 disc = !strcmp(bppTag, "bmp") ? 0xB : (u32)atoi(bppTag);
     if (ShouldLogMiss(1, MapKey(width, height, tileHash, hasPal ? palHash : 0, disc, hasPal)))
-        Platform::Log(Platform::LogLevel::Warn, "HDTexPack[Miss]: obj1_%ux%u_%s_%s_%s (rgb %s)\n",
+        Platform::Log(Platform::LogLevel::Warn, "HDTexPack[Miss]: obj1_%ux%u_%s_%s_%s (rgb %s) at %c %d,%d\n",
                       width, height, Hash16(tileHash).c_str(),
-                      hasPal ? Hash16(palHash).c_str() : "none", bppTag, Hash16(colorHash).c_str());
+                      hasPal ? Hash16(palHash).c_str() : "none", bppTag, Hash16(colorHash).c_str(),
+                      engine ? 'B' : 'A', x, y);
 }
 
 const HDTexPackImage* HDTexPack::LookupBGTile(u64 tileHash, u64 palHash, bool hasPal, u32 bpp) const
