@@ -906,6 +906,8 @@ private:
         VkBuffer overlayStagingBuffer{VK_NULL_HANDLE};
         VkDeviceMemory overlayStagingMemory{VK_NULL_HANDLE};
         void* overlayStagingMapped{};
+        VkDeviceSize overlayStagingSize{};     // grows to overlayStagingWanted, up to kOverlayStagingMaxSize
+        VkDeviceSize overlayStagingWanted{};   // new art this frame, in bytes
         // native pixels of sprites under an effect for the edge pass: one word per instance
         // (offset of its pixels, or ~0u), then the pixels (HDPack2DInstance::Native)
         VkBuffer overlayNativeBuffer{VK_NULL_HANDLE};
@@ -1250,6 +1252,7 @@ private:
     static constexpr u32 kOverlayAtlasSize = 4096;
     static constexpr size_t kOverlayMaxInstances = 4096;
     static constexpr VkDeviceSize kOverlayStagingSize = 4 * 1024 * 1024;
+    static constexpr VkDeviceSize kOverlayStagingMaxSize = 64 * 1024 * 1024;
     // words: the per-instance offsets, then native pixels (a 128x160 portrait is 20480)
     static constexpr size_t kOverlayNativeWords = kOverlayMaxInstances + 256 * 1024;
     bool replacement2DActive{false};
@@ -1274,6 +1277,7 @@ private:
     u32 overlayAtlasScale{0};
     bool overlayAtlasFull{false};
     u64 lastOverlayAtlasFullLogNs{0};
+    u64 lastOverlayDeferredLogNs{0};
 
     std::unordered_map<Frame*, FrameResource> resources;
     std::mutex commandPoolLock;

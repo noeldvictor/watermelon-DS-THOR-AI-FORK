@@ -608,14 +608,47 @@ def cmd_misses(args) -> None:
                     if k in misses:
                         found.setdefault(k, set()).add((kinds["e"], pn))
     unknown = 0
+    new_pairs = {}
     for k, key in sorted(misses.items(), key=lambda x: x[1]):
         if k not in found:
             unknown += 1
             continue
+        # one match per miss is enough evidence; several mean the same pixels exist in several
+        # files (localized copies, shared glyph shapes), which a few-piece match can't settle
+        if len(found[k]) > 4:
+            continue
         for ename, pn in sorted(found[k])[:3]:
-            note = "pack has it under another palette" if pn not in paired.get(ename, set()) else "pack has this pairing (key differs: check load rules)"
+            new = pn not in paired.get(ename, set())
+            note = "pack has it under another palette" if new else "pack has this pairing (key differs: check load rules)"
             print(f"{key}: {ename} with {pn} - {note}")
+            if new:
+                new_pairs.setdefault(ename, set()).add(pn)
     log(f"{len(found)} identified, {unknown} not in the ROM's sprite files (built at runtime, e.g. text)")
+    if args.apply and new_pairs:
+        # siblings: cells in the same folder whose names share the prefix before the last '_'
+        # (main_b_item -> main_b_chara, main_b_eq, ...) usually share the palette too; they get
+        # it as a candidate as well, so screens not visited yet are covered
+        for ename, pns in list(new_pairs.items()):
+            d, _, stem = ename.rpartition("/")
+            stem = stem.split(".")[0]
+            if "_" not in stem:
+                continue
+            prefix = stem.rsplit("_", 1)[0] + "_"
+            for (dd, ss), kinds in lib.stems.items():
+                if dd == d and "e" in kinds and ss.startswith(prefix):
+                    new_pairs.setdefault(kinds["e"], set()).update(pns)
+        recipe_path = HERE / "games" / nitro.game_code(rom) / "recipe.json"
+        recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
+        pairs = recipe.setdefault("twod", {}).setdefault("pairs", {})
+        added = 0
+        for ename, pns in new_pairs.items():
+            cur = pairs.setdefault(ename, [])
+            for pn in sorted(pns):
+                if pn not in cur:
+                    cur.append(pn)
+                    added += 1
+        recipe_path.write_text(json.dumps(recipe, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        log(f"added {added} pairings to {recipe_path}; run extract, upscale and build to use them")
 
 
 def main() -> None:
@@ -631,6 +664,7 @@ def main() -> None:
     p.add_argument("work", help="work/<GAMECODE> from extract")
     p.add_argument("rom")
     p.add_argument("--log", help="a saved logcat instead of reading the device")
+    p.add_argument("--apply", action="store_true", help="add the pairings found to the game's recipe")
     p.add_argument("--serial")
     p.set_defaults(fn=cmd_misses)
 

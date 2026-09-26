@@ -396,6 +396,14 @@ class Library:
         return [(cn, "dir-best" if len(top) == 1 else "dir-tie") for cn in top]
 
 
+def with_known_pairs(lib, name, cands, profile):
+    """cands plus the palettes the recipe's "pairs" name for this cell or screen: pairings seen
+    in play (hd_remaster.py misses --apply) that name similarity can't find."""
+    extra = ((profile or {}).get("pairs") or {}).get(name, [])
+    have = {c for c, _ in cands}
+    return cands + [(p, "seen-in-play") for p in extra if p not in have and p in lib.leaves]
+
+
 # ============================================================ assembly
 def palram_for(lib, spec, self_nclr):
     out = b""
@@ -472,7 +480,7 @@ def build_cells(lib, profile, want_rgba=False):
         # 16-colour sprites hash only their own row, wherever it sits, and need none.
         if (rule and rule.get("color_keys")) or (g.bpp == 8 and (profile or {}).get("color_keys_8bpp", True)):
             alts.append(("rgb", None))
-        pcands = lib.partners(ename, "p") or [(None, "none")]
+        pcands = with_known_pairs(lib, ename, lib.partners(ename, "p"), profile) or [(None, "none")]
         for pname, pmode in pcands:
             p = lib.get(pname) if pname else None
             palram = palram_for(lib, rule["palram"], p) if (rule and "palram" in rule and p is not None) else None
@@ -583,7 +591,7 @@ def build_screens(lib, profile, want_rgba=False):
         if not gc: continue
         g = lib.get(gc[0][0])
         if g is None: continue
-        for pname, pmode in (lib.partners(sname, "p") or [(None, "none")]):
+        for pname, pmode in (with_known_pairs(lib, sname, lib.partners(sname, "p"), profile) or [(None, "none")]):
             p = lib.get(pname) if pname else None
             asset = assemble_screen(sc, g, p, want_rgba)
             if asset is None: continue

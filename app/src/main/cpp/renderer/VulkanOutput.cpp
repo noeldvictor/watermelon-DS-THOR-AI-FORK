@@ -1,5 +1,6 @@
 #include "VulkanOutput.h"
 
+#include <unordered_set>
 #include <algorithm>
 #include <android/log.h>
 #include <sys/system_properties.h>
@@ -2569,12 +2570,38 @@ bool VulkanOutput::ensurePlaneOverlayResources(FrameResource& resource)
                              kOverlayMaxInstances * sizeof(PlaneOverlayGpuInstance),
                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
         return false;
-    if (resource.overlayStagingBuffer == VK_NULL_HANDLE
-        && !createHostBuffer(resource.overlayStagingBuffer, resource.overlayStagingMemory,
-                             resource.overlayStagingMapped,
-                             kOverlayStagingSize,
-                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
-        return false;
+    if (resource.overlayStagingBuffer == VK_NULL_HANDLE)
+    {
+        if (!createHostBuffer(resource.overlayStagingBuffer, resource.overlayStagingMemory,
+                              resource.overlayStagingMapped,
+                              kOverlayStagingSize,
+                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
+            return false;
+        resource.overlayStagingSize = kOverlayStagingSize;
+    }
+    // a frame that brings more new art than the buffer holds (a scene change: a new painted
+    // background plus portraits) grows this frame's buffer instead of leaving the rest native
+    // for a frame, which showed as HD and native pieces flickering in as art appeared
+    if (resource.overlayStagingWanted > resource.overlayStagingSize)
+    {
+        const VkDeviceSize size = std::min<VkDeviceSize>(
+            (resource.overlayStagingWanted + (1u << 20) - 1) & ~static_cast<VkDeviceSize>((1u << 20) - 1),
+            kOverlayStagingMaxSize);
+        if (size > resource.overlayStagingSize)
+        {
+            vkUnmapMemory(device, resource.overlayStagingMemory);
+            vkDestroyBuffer(device, resource.overlayStagingBuffer, nullptr);
+            vkFreeMemory(device, resource.overlayStagingMemory, nullptr);
+            resource.overlayStagingBuffer = VK_NULL_HANDLE;
+            resource.overlayStagingMemory = VK_NULL_HANDLE;
+            resource.overlayStagingMapped = nullptr;
+            resource.overlayStagingSize = 0;
+            if (!createHostBuffer(resource.overlayStagingBuffer, resource.overlayStagingMemory,
+                                  resource.overlayStagingMapped, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
+                return false;
+            resource.overlayStagingSize = size;
+        }
+    }
     if (resource.overlayNativeBuffer == VK_NULL_HANDLE
         && !createHostBuffer(resource.overlayNativeBuffer, resource.overlayNativeMemory,
                              resource.overlayNativeMapped,
@@ -2957,7 +2984,7 @@ bool VulkanOutput::acquireOverlayAtlasSlot(const melonDS::HDTexPackImage* image,
     if (!slot.uploaded)
     {
         const VkDeviceSize bytes = static_cast<VkDeviceSize>(slotW) * slotH * 4;
-        if (stagingUsed + bytes > kOverlayStagingSize)
+        if (stagingUsed + bytes > resource.overlayStagingSize)
             return false; // staging budget spent; retried next frame
 
         // nearest resample from the pack image's own scale to the
@@ -2991,6 +3018,23 @@ bool VulkanOutput::acquireOverlayAtlasSlot(const melonDS::HDTexPackImage* image,
 void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const VulkanCompositionInputs& inputs)
 {
     const u32 scale = std::max(inputs.scale, 1u);
+    {
+        // bytes of art this frame shows that isn't in the atlas yet (ensurePlaneOverlayResources
+        // grows the staging buffer to fit)
+        std::scoped_lock estimateLock(replacementInstanceLock);
+        std::unordered_set<const void*> counted;
+        VkDeviceSize wanted = 0;
+        const bool startsOver = overlayAtlasScale != scale || overlayAtlasFull;
+        for (const auto& inst : resource.replacementInstances)
+        {
+            if (!inst.Image || !counted.insert(inst.Image).second)
+                continue;
+            auto slot = overlayAtlasSlots.find(inst.Image);
+            if (startsOver || slot == overlayAtlasSlots.end() || !slot->second.uploaded)
+                wanted += static_cast<VkDeviceSize>(inst.W) * scale * inst.H * scale * 4;
+        }
+        resource.overlayStagingWanted = wanted;
+    }
     if (!ensurePlaneOverlayResources(resource))
         return;
     VkPipeline pipeline = getPlaneOverlayPipeline();
@@ -3027,6 +3071,7 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
 
     VkDeviceSize stagingUsed = 0;
     std::vector<VkBufferImageCopy> pendingCopies;
+    u32 deferredArt = 0;   // instances drawn native this frame: their art didn't fit the upload
 
     auto addInstance = [&](const melonDS::HDPack2DInstance& inst) {
         if (prepared.size() >= kOverlayMaxInstances)
@@ -3034,7 +3079,10 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
         OverlayAtlasSlot slot{};
         if (!acquireOverlayAtlasSlot(inst.Image, scale, inst.W, inst.H, resource,
                                      stagingUsed, pendingCopies, slot))
+        {
+            deferredArt++;
             return;
+        }
         PreparedInstance out{};
         out.gpu.destX = inst.X;
         out.gpu.destY = inst.Y;
@@ -3067,6 +3115,18 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
         if (it->RequireMask == 0x90)
             addInstance(*it);
     instanceLock.unlock();
+    if (deferredArt > 0)
+    {
+        const u64 nowNs = PerfNowNs();
+        if (nowNs - lastOverlayDeferredLogNs >= 1'000'000'000ull)
+        {
+            lastOverlayDeferredLogNs = nowNs;
+            melonDS::Platform::Log(melonDS::Platform::LogLevel::Warn,
+                                   "VulkanOutput: %u HD pieces drawn native this frame (art upload %llu KiB of %llu)",
+                                   deferredArt, static_cast<unsigned long long>(resource.overlayStagingWanted >> 10),
+                                   static_cast<unsigned long long>(resource.overlayStagingSize >> 10));
+        }
+    }
 
     if (prepared.empty())
         return;

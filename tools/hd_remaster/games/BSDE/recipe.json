@@ -48,11 +48,186 @@
         "wildcard": true,
         "why2": "With two portraits on screen (dialogue between two characters) one is uploaded with the usual shift of 48 but into palette memory shared with the other portrait, and the other with a shift of 144; neither matched, so both showed native. Found from 59 missed keys in the ship scene: all 59 are Lexis/Maxim art at shift 48 or 144. The '$' keys match whatever the rest of palette memory holds."
       }
-    ]
+    ],
+    "pairs": {
+      "mcd:2d/localize/us/menu/menuber_menu.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/menu/H_IPgauge.ncer": [
+        "mcd:2d/menu/HP_IPgauge.nclr"
+      ],
+      "mcd:2d/localize/us/menu/main_b_item.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr",
+        "mcd:2d/menu/main_button.nclr"
+      ],
+      "mcd:2d/menu/menuber.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/main_b_chara.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr",
+        "mcd:2d/menu/main_button.nclr"
+      ],
+      "mcd:2d/localize/us/menu/main_b_info.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr",
+        "mcd:2d/menu/main_button.nclr"
+      ],
+      "mcd:2d/menu/main_b_log.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr"
+      ],
+      "mcd:2d/localize/us/menu/main_b_eq.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr",
+        "mcd:2d/menu/main_button.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_Blog.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_Treasure.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_buy.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_charaselect.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_eq.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_info.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_item.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_lode.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_m_shop.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_maseki.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_maseki_b.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_move.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_option.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_quest.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_sale.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_seve.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_shop_gear.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_shop_item.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_tuto.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_w_map.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/localize/us/menu/menuber_wold_m.ncer": [
+        "mcd:2d/localize/us/menu/icon_01.nclr",
+        "mcd:2d/menu/icon_01.nclr"
+      ],
+      "mcd:2d/menu/H_HPgauge.ncer": [
+        "mcd:2d/menu/HP_IPgauge.nclr"
+      ],
+      "mcd:2d/menu/H_anime1.ncer": [
+        "mcd:2d/menu/HP_IPgauge.nclr"
+      ],
+      "mcd:2d/localize/us/menu/main_b_Bmemo.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr",
+        "mcd:2d/menu/main_button.nclr"
+      ],
+      "mcd:2d/localize/us/menu/main_b_maseki.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr",
+        "mcd:2d/menu/main_button.nclr"
+      ],
+      "mcd:2d/localize/us/menu/main_b_option.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr",
+        "mcd:2d/menu/main_button.nclr"
+      ],
+      "mcd:2d/localize/us/menu/main_b_select_MAP.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr",
+        "mcd:2d/menu/main_button.nclr"
+      ],
+      "mcd:2d/localize/us/menu/main_b_start_M.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr",
+        "mcd:2d/menu/main_button.nclr"
+      ],
+      "mcd:2d/localize/us/menu/main_b_tutorial.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr",
+        "mcd:2d/menu/main_button.nclr"
+      ],
+      "mcd:2d/localize/us/menu/main_b_valuables.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr",
+        "mcd:2d/menu/main_button.nclr"
+      ],
+      "mcd:2d/localize/us/menu/main_b_wmap.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr",
+        "mcd:2d/menu/main_button.nclr"
+      ],
+      "mcd:2d/menu/main_b_Reset.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr"
+      ],
+      "mcd:2d/menu/main_b_blank.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr"
+      ],
+      "mcd:2d/menu/main_b_cursor.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr"
+      ],
+      "mcd:2d/menu/main_b_select_R.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr"
+      ],
+      "mcd:2d/menu/main_b_start_C.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr"
+      ],
+      "mcd:2d/menu/main_b_wing.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr"
+      ],
+      "mcd:2d/menu/main_b_wmap.ncer": [
+        "mcd:2d/localize/us/menu/main_button.nclr"
+      ]
+    }
   },
   "baseline": {
     "textures": 1777,
-    "sprites": 26645,
+    "sprites": 26865,
     "backgrounds": 26064,
     "fonts": 4
   },
