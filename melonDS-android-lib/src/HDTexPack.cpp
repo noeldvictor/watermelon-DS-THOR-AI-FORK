@@ -136,6 +136,8 @@ HDTexPack::HDTexPack(const std::string& packDir, const std::string& dumpDir,
                      bool loadEnabled, bool dumpEnabled)
     : PackDir(packDir), DumpDir(dumpDir), LoadEnabled(loadEnabled), DumpEnabled(dumpEnabled)
 {
+    static std::atomic<u64> nextId{1};
+    InstanceId = nextId.fetch_add(1);
     if (LoadEnabled)
     {
         LoadDir(PackDir + "/textures", "tex1");
@@ -146,11 +148,11 @@ HDTexPack::HDTexPack(const std::string& packDir, const std::string& dumpDir,
         // from a log whether a pack was found at all
         if (EntryCount > 0)
             Platform::Log(Platform::LogLevel::Warn,
-                          "HDTexPack: indexed %u entries from %s (textures %zu, sprites %zu, bg tiles %zu, "
-                          "scale %ux), images load on first use\n",
+                          "HDTexPack: indexed %u entries from %s (textures %zu, sprites %zu + %zu by colour, "
+                          "bg tiles %zu, scale %ux), images load on first use\n",
                           EntryCount, PackDir.c_str(), TexIndex.size() + TexWildIndex.size(),
-                          SpriteIndex.size() + SpriteWildIndex.size(), BGIndex.size() + BGWildIndex.size(),
-                          PackScale);
+                          SpriteIndex.size() + SpriteWildIndex.size(), SpriteColorIndex.size(),
+                          BGIndex.size() + BGWildIndex.size(), PackScale);
     }
     if (DumpEnabled)
     {
@@ -197,7 +199,9 @@ bool HDTexPack::AddEntry(const std::string& path, const std::string& name, const
     u64 hash1 = 0, palHash = 0;
     bool wc1 = false, none1 = false, wcPal = false, nonePal = false;
     if (!ParseHash16(parts[2], hash1, wc1, none1) || wc1 || none1) return false;
-    if (!ParseHash16(parts[3], palHash, wcPal, nonePal)) return false;
+    // sprites keyed by their colours: hash1 is a SpriteColorHash, no palette field
+    const bool colorKey = !strcmp(kind, "obj1") && parts.size() == 5 && parts[3] == "rgb";
+    if (!colorKey && !ParseHash16(parts[3], palHash, wcPal, nonePal)) return false;
 
     u32 disc;
     u32 rows = 0;
@@ -266,6 +270,12 @@ bool HDTexPack::AddEntry(const std::string& path, const std::string& name, const
         if (std::find(known.begin(), known.end(), rows) == known.end())
             known.push_back(rows);
         disc = TexDisc(disc, rows);
+    }
+    if (colorKey)
+    {
+        SpriteColorIndex[MapKey(w, h, hash1, 0, disc, false)] = Ref{path, (u32)pw, (u32)ph, scale};
+        EntryCount++;
+        return true;
     }
     u64 key = MapKey(w, h, hash1, wcPal ? 0 : palHash, disc, hasPal && !wcPal);
     auto& exact = isTex ? TexIndex : isBG ? BGIndex : SpriteIndex;
@@ -366,6 +376,40 @@ const HDTexPackImage* HDTexPack::LookupSprite(u32 width, u32 height, u64 tileHas
                       width, height, Hash16(tileHash).c_str(),
                       hasPal ? Hash16(palHash).c_str() : "none", bppTag);
     return img;
+}
+
+u64 HDTexPack::SpriteColorHash(const u32* rgba8, size_t count)
+{
+    // transparent pixels hash as 0: their RGB is whatever palette entry 0 holds in this scene
+    std::vector<u32> words(rgba8, rgba8 + count);
+    for (u32& w : words)
+        if ((w >> 24) == 0) w = 0;
+    return XXH64(words.data(), words.size() * sizeof(u32), 0x484443504958454CULL); // "HDCPIXEL"
+}
+
+const HDTexPackImage* HDTexPack::LookupSpriteColors(u32 width, u32 height, u64 colorHash, u32 bpp) const
+{
+    if (!LoadActive() || SpriteColorIndex.empty()) return nullptr;
+    const u64 key = MapKey(width, height, colorHash, 0, bpp, false);
+    const HDTexPackImage* img;
+    {
+        std::lock_guard<std::mutex> lock(CacheLock);
+        auto it = SpriteColorEntries.find(key);
+        img = it != SpriteColorEntries.end() ? &it->second : Load(SpriteColorIndex, SpriteColorEntries, key);
+    }
+    // LookupSprite already counted the lookup; this only turns it into a hit
+    if (img) Hits[1].fetch_add(1, std::memory_order_relaxed);
+    return img;
+}
+
+void HDTexPack::ReportSpriteMiss(u32 width, u32 height, u64 tileHash, u64 palHash, bool hasPal,
+                                 const char* bppTag, u64 colorHash) const
+{
+    u32 disc = !strcmp(bppTag, "bmp") ? 0xB : (u32)atoi(bppTag);
+    if (ShouldLogMiss(1, MapKey(width, height, tileHash, hasPal ? palHash : 0, disc, hasPal)))
+        Platform::Log(Platform::LogLevel::Warn, "HDTexPack[Miss]: obj1_%ux%u_%s_%s_%s (rgb %s)\n",
+                      width, height, Hash16(tileHash).c_str(),
+                      hasPal ? Hash16(palHash).c_str() : "none", bppTag, Hash16(colorHash).c_str());
 }
 
 const HDTexPackImage* HDTexPack::LookupBGTile(u64 tileHash, u64 palHash, bool hasPal, u32 bpp) const

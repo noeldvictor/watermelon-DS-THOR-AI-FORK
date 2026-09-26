@@ -143,6 +143,9 @@ private:
     std::unordered_set<u64> PrevLookedUpBitmaps, CurLookedUpBitmaps;
 
     std::vector<u32> PixelScratch;
+    // sprite byte key -> image found by its colours (or nullptr), for ColorKeyPack only
+    std::unordered_map<u64, const HDTexPackImage*> ColorKeyCache;
+    u64 ColorKeyPack = 0;   // HDTexPack::Id() of the pack the cache belongs to
 
     std::vector<MissedSprite> Missed;
     std::vector<u16> TextCanvas;

@@ -57,11 +57,14 @@ public:
               bool loadEnabled, bool dumpEnabled);
 
     bool LoadActive() const { return LoadEnabled && (EntryCount > 0 || !FontSet.Empty()); }
+    // unique per pack object, for callers that cache image pointers across frames (a new pack
+    // can be allocated at the old one's address)
+    u64 Id() const { return InstanceId; }
     bool DumpActive() const { return DumpEnabled; }
     u32 Scale() const { return PackScale; }
     bool Has2DEntries() const
     {
-        return !SpriteIndex.empty() || !SpriteWildIndex.empty()
+        return !SpriteIndex.empty() || !SpriteWildIndex.empty() || !SpriteColorIndex.empty()
             || !BGIndex.empty() || !BGWildIndex.empty() || !FontSet.Empty();
     }
     // the pack's fonts/ folder: HD glyphs for text the game draws at runtime (see HDFont.h)
@@ -94,6 +97,18 @@ public:
     const HDTexPackImage* LookupSprite(u32 width, u32 height, u64 tileHash,
                                        u64 palHash, bool hasPal, const char* bppTag,
                                        bool logMiss = true) const;
+    // Colour-keyed sprites ("obj1_WxH_<colourhash>_rgb_<bpp>.png"): keyed by the colours the
+    // sprite shows, not the bytes it is stored as. A game that places a sprite's colours
+    // wherever palette memory has room (Lufia's portraits land at a different index shift per
+    // scene) changes the tile and palette hashes but not these. Looked up after the byte key
+    // misses; see SpriteColorHash.
+    bool HasSpriteColorKeys() const { return !SpriteColorIndex.empty(); }
+    const HDTexPackImage* LookupSpriteColors(u32 width, u32 height, u64 colorHash, u32 bpp) const;
+    // XXH64 over the sprite's decoded RGBA8 words (Pal555ToRGBA8), transparent pixels as 0
+    static u64 SpriteColorHash(const u32* rgba8, size_t count);
+    // Logs a sprite miss once, like LookupSprite does, for callers that try more keys first
+    void ReportSpriteMiss(u32 width, u32 height, u64 tileHash, u64 palHash, bool hasPal,
+                          const char* bppTag, u64 colorHash) const;
     // rgba8: assembled sprite pixels, 8-bit channels.
     void DumpSprite(u32 width, u32 height, u64 tileHash,
                     u64 palHash, bool hasPal, const char* bppTag, const u32* rgba8,
@@ -131,6 +146,7 @@ private:
     void AppendManifest(const char* subdir, const std::string& line);
 
     std::string PackDir, DumpDir;
+    u64 InstanceId = 0;
     bool LoadEnabled = false, DumpEnabled = false;
     u32 PackScale = 1;
     u32 EntryCount = 0;
@@ -144,9 +160,11 @@ private:
     Index TexIndex, TexWildIndex;
     std::unordered_map<u32, std::vector<u32>> TexPartialRows;   // PartialRowsKey -> row counts
     Index SpriteIndex, SpriteWildIndex;
+    Index SpriteColorIndex;
     Index BGIndex, BGWildIndex;
     mutable Cache TexEntries, TexWildcard;
     mutable Cache SpriteEntries, SpriteWildcard;
+    mutable Cache SpriteColorEntries;
     mutable Cache BGEntries, BGWildcard;
     mutable std::unordered_set<const void*> FailedLoads;   // node addresses of index entries
     mutable std::mutex CacheLock;                           // 2D and 3D look up from different threads

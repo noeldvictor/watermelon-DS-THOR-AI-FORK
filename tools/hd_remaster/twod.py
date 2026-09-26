@@ -7,8 +7,9 @@ it afterwards keeps neighbouring sprites and tiles seamless.
 
 A palette the files don't pin down (8bpp content, whose key hashes the whole 256-colour
 palette memory, or a palette row the NCLR lacks) is guessed, and the key is built from the
-guess. A wrong guess then simply doesn't match at runtime. The '$' palette wildcard would
-match any palette instead and show the guessed colours where they are wrong, so it isn't used.
+guess. A wrong guess then simply doesn't match at runtime. 256-colour sprites also get a
+colour key (obj1_WxH_<hash>_rgb_8: the colours the sprite shows, see color_hash), which the
+runtime tries when the byte key misses, so it matches wherever the game puts the palette.
 
 Key formulas mirror melonDS-android-lib/src/GPU2D_HDPack.cpp:
   obj1_<W>x<H>_<tilehash>_<palhash>_<4|8|bmp>
@@ -311,6 +312,10 @@ def obj_palette(nclr, oam, extpal=False):
 #   also_shifts  other shifts the game sometimes uses; each adds a '$'-palette key per piece
 #   wildcard     also key every piece under the '$' palette wildcard (when the palette memory
 #                around the art depends on what else is on screen)
+#   color_keys   also key every piece by the colours it shows (obj1_WxH_<hash>_rgb_<bpp>), which
+#                matches however the game lays the art out in palette memory
+# and at the top level of "twod": color_keys_8bpp (default true) gives every 256-colour sprite
+# piece a colour key
 
 
 # ============================================================ pairing
@@ -415,6 +420,21 @@ def shift_indices(data, k):
     return np.where(a != 0, (a + k) & 255, 0).astype(np.uint8).tobytes()
 
 
+COLOR_SEED = 0x484443504958454C   # "HDCPIXEL", as HDTexPack::SpriteColorHash
+
+
+def color_hash(rgba):
+    """HDTexPack::SpriteColorHash: XXH64 over the sprite's RGBA8 words (R in the low byte),
+    unflipped, row-major, transparent pixels as 0."""
+    a = np.ascontiguousarray(rgba, dtype=np.uint8).copy()
+    a[a[..., 3] == 0] = 0
+    return xxh(a.tobytes(), COLOR_SEED)
+
+
+def color_key(w, h, rgba, bpp8):
+    return "obj1_%dx%d_%s_rgb_%s" % (w, h, h16(color_hash(rgba)), "8" if bpp8 else "4")
+
+
 def obj_key(w, h, th, ph, bpp8):
     return "obj1_%dx%d_%s_%s_%s" % (w, h, h16(th), "$" if ph is None else h16(ph), "8" if bpp8 else "4")
 
@@ -447,6 +467,11 @@ def build_cells(lib, profile, want_rgba=False):
         alts = [(shift_indices(g.data, s), True) for s in rule.get("also_shifts", ())] if rule else []
         if rule and rule.get("wildcard"):
             alts.insert(0, (data, True))
+        # 256-colour sprites are keyed with all of palette memory, so where the game puts their
+        # colours (which depends on what else is loaded) changes the key; the colour key doesn't.
+        # 16-colour sprites hash only their own row, wherever it sits, and need none.
+        if (rule and rule.get("color_keys")) or (g.bpp == 8 and (profile or {}).get("color_keys_8bpp", True)):
+            alts.append(("rgb", None))
         pcands = lib.partners(ename, "p") or [(None, "none")]
         for pname, pmode in pcands:
             p = lib.get(pname) if pname else None
@@ -493,6 +518,9 @@ def assemble_cell(e, ci, cell, data, p, palram, want_rgba, alts=()):
         rgba = indices_to_rgba(idx, praw)
         alt_keys = []
         for adata, wild in alts:
+            if isinstance(adata, str):              # "rgb": keyed by the colours shown
+                alt_keys.append(color_key(o.w, o.h, rgba, o.bpp8))
+                continue
             avram = adata
             if e.vram is not None:
                 so, sz = e.vram[ci]

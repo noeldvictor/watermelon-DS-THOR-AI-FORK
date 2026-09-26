@@ -556,8 +556,35 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
                 logMiss = PrevLookedUpBitmaps.count(k) != 0;
                 CurLookedUpBitmaps.insert(k);
             }
+            const bool colorKeys = type != 2 && pack->HasSpriteColorKeys();
             const HDTexPackImage* img = pack->LookupSprite((u32)width, (u32)height, tileHash,
-                                                           palHash, hasPal, bppTag, logMiss);
+                                                           palHash, hasPal, bppTag, logMiss && !colorKeys);
+            if (!img && colorKeys)
+            {
+                // the byte key missed: try the colours the sprite shows (HDTexPack::SpriteColorHash),
+                // decoded once per byte key while the pack stays the same
+                if (ColorKeyPack != pack->Id() || ColorKeyCache.size() > 16384)
+                {
+                    ColorKeyCache.clear();
+                    ColorKeyPack = pack->Id();
+                }
+                const u64 byteKey = XXH64(&palHash, sizeof(palHash),
+                                          tileHash ^ ((u64)width << 48) ^ ((u64)height << 40) ^ (u64)type);
+                auto cached = ColorKeyCache.find(byteKey);
+                if (cached != ColorKeyCache.end())
+                    img = cached->second;
+                else
+                {
+                    DecodeSprite(objvram, objvrammask, stdPal, extPal, type, tileOffset, tileStride,
+                                 palOffset, width, height, PixelScratch);
+                    const u64 colorHash = HDTexPack::SpriteColorHash(PixelScratch.data(), PixelScratch.size());
+                    img = pack->LookupSpriteColors((u32)width, (u32)height, colorHash, type == 1 ? 8u : 4u);
+                    ColorKeyCache.emplace(byteKey, img);
+                    if (!img && logMiss)
+                        pack->ReportSpriteMiss((u32)width, (u32)height, tileHash, palHash, hasPal,
+                                               bppTag, colorHash);
+                }
+            }
             u8 flip = (u8)(((attrib[1] & (1 << 12)) ? 1 : 0)
                            | ((attrib[1] & (1 << 13)) ? 2 : 0));
             if (img)
