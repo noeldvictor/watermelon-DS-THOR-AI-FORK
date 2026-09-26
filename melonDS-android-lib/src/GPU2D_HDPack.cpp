@@ -245,15 +245,18 @@ void HDPack2D::CarryAlternatingScreen(bool engineAOnTop, bool prevValid)
     std::vector<HDPack2DInstance> carried;
     if (prevValid && PrevEngineAOnTop != engineAOnTop)
     {
-        bool hasSprites[2] = { false, false };
+        // per screen and engine: the other engine's own sprites on that screen (a HUD gauge,
+        // an icon) must not stop this engine's sprites being carried, or a portrait over the
+        // alternating 3D fell back to native every other frame once the HUD was replaced too
+        bool hasSprites[2][2] = { { false, false }, { false, false } };
         for (const HDPack2DInstance& inst : Instances)
-            if (inst.RequireMask == 0x90)
-                hasSprites[inst.Screen & 1] = true;
+            if (inst.RequireMask == 0x90 && inst.Engine < 2)
+                hasSprites[inst.Screen & 1][inst.Engine] = true;
         // one carry slot, so the sprites of one engine
         int source = -1;
         for (const HDPack2DInstance& prev : PrevInstances)
         {
-            if (prev.RequireMask != 0x90 || hasSprites[prev.Screen & 1])
+            if (prev.RequireMask != 0x90 || prev.Engine >= 2 || hasSprites[prev.Screen & 1][prev.Engine])
                 continue;
             if (source < 0)
                 source = prev.Engine;
