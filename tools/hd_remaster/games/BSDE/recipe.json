@@ -41,13 +41,18 @@
             208
           ]
         ],
-        "why": "Dialogue portraits are uploaded with every non-zero colour index shifted by 48, into a 256-colour palette built from the font, window and name-plate palettes followed by the portrait's own first 208 colours. Found by matching in-game sprite dumps."
+        "why": "Dialogue portraits are uploaded with every non-zero colour index shifted by 48, into a 256-colour palette built from the font, window and name-plate palettes followed by the portrait's own first 208 colours. Found by matching in-game sprite dumps.",
+        "also_shifts": [
+          144
+        ],
+        "wildcard": true,
+        "why2": "With two portraits on screen (dialogue between two characters) one is uploaded with the usual shift of 48 but into palette memory shared with the other portrait, and the other with a shift of 144; neither matched, so both showed native. Found from 59 missed keys in the ship scene: all 59 are Lexis/Maxim art at shift 48 or 144. The '$' keys match whatever the rest of palette memory holds."
       }
     ]
   },
   "baseline": {
     "textures": 1777,
-    "sprites": 9574,
+    "sprites": 20354,
     "backgrounds": 26064,
     "fonts": 4
   },

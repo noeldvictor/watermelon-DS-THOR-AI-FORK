@@ -47,3 +47,9 @@ Dialogue portraits (`2d/bustup/`) are uploaded with every non-zero colour index 
 into a 256-colour palette built from the font, window and name-plate palettes followed by the
 portrait's own first 208 colours. Without that rule none of the 228 portrait sprites match; with
 it all of them do.
+
+When two characters talk (two portraits on screen), the game loads one portrait with the usual
+shift but into palette memory it shares with the other, and the other portrait with a shift of
+144. Neither matched, so both stayed native. The rule's `also_shifts: [144]` and `wildcard`
+options add, for every portrait piece, a key for the 144 shift and a `$`-palette key; the ship
+scene's 59 missed pieces all match now.

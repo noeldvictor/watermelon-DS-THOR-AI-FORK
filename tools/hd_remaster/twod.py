@@ -308,6 +308,9 @@ def obj_palette(nclr, oam, extpal=False):
 #   index_shift  every non-zero colour index is uploaded shifted by this much
 #   palram       the 256-colour palette memory the key hashes, as [file, first colour, count]
 #                pieces ("@self" = the cell's own NCLR)
+#   also_shifts  other shifts the game sometimes uses; each adds a '$'-palette key per piece
+#   wildcard     also key every piece under the '$' palette wildcard (when the palette memory
+#                around the art depends on what else is on screen)
 
 
 # ============================================================ pairing
@@ -440,19 +443,25 @@ def build_cells(lib, profile, want_rgba=False):
         if g is None: continue
         rule = next((r for r in rules if r["dir"] in ename and r.get("bpp", g.bpp) == g.bpp), None)
         data = shift_indices(g.data, rule.get("index_shift", 0)) if rule else g.data
+        # other ways the game uploads the same art: other index shifts, and (wildcard) any palette
+        alts = [(shift_indices(g.data, s), True) for s in rule.get("also_shifts", ())] if rule else []
+        if rule and rule.get("wildcard"):
+            alts.insert(0, (data, True))
         pcands = lib.partners(ename, "p") or [(None, "none")]
         for pname, pmode in pcands:
             p = lib.get(pname) if pname else None
             palram = palram_for(lib, rule["palram"], p) if (rule and "palram" in rule and p is not None) else None
             for ci, cell in enumerate(e.cells):
-                asset = assemble_cell(e, ci, cell, data, p, palram, want_rgba)
+                asset = assemble_cell(e, ci, cell, data, p, palram, want_rgba, alts)
                 if asset is None: continue
                 asset.update(name=f"{ename}#cell{ci}", ncer=ename, ncgr=g.name, nclr=pname,
                              pairing=pmode, gpair=gcands[0][1])
                 yield asset
 
 
-def assemble_cell(e, ci, cell, data, p, palram, want_rgba):
+def assemble_cell(e, ci, cell, data, p, palram, want_rgba, alts=()):
+    """alts: (data, wildcard) pairs for other ways the game uploads this art; each OBJ gets an
+    extra entry per alt, the same crop keyed by the alt's tile hash ('$' palette if wildcard)."""
     objs = []
     for oi, o in enumerate(cell):
         off, stride, tb = obj_layout(o.tile, o.w, o.bpp8, e.boundary_shift, e.is2d)
@@ -482,8 +491,17 @@ def assemble_cell(e, ci, cell, data, p, palram, want_rgba):
             continue                                # no palette at all: nothing to key by
         ph = xxh(praw)
         rgba = indices_to_rgba(idx, praw)
+        alt_keys = []
+        for adata, wild in alts:
+            avram = adata
+            if e.vram is not None:
+                so, sz = e.vram[ci]
+                avram = adata[so:so + sz]
+            atiles = obj_tiles(avram, off, stride, tb, o.w, o.h)
+            if atiles is not None:
+                alt_keys.append(obj_key(o.w, o.h, chain_hash(atiles), None if wild else ph, o.bpp8))
         objs.append(dict(oam=oi, o=o, th=th, ph=ph, guessed=guessed, rgba=rgba,
-                         key=obj_key(o.w, o.h, th, ph, o.bpp8)))
+                         key=obj_key(o.w, o.h, th, ph, o.bpp8), alt_keys=alt_keys))
     if not objs: return None
     x0 = min(ob["o"].x for ob in objs); y0 = min(ob["o"].y for ob in objs)
     x1 = max(ob["o"].x + ob["o"].w for ob in objs); y1 = max(ob["o"].y + ob["o"].h for ob in objs)
@@ -507,15 +525,22 @@ def assemble_cell(e, ci, cell, data, p, palram, want_rgba):
         own = owner[ys:ys + o.h, xs:xs + o.w]
         mine = flip_img(ob["rgba"], o.hflip, o.vflip)[..., 3] > 0
         foreign = (own != -1) & (own != i)
-        entries.append(dict(key=ob["key"], x=int(xs), y=int(ys), w=o.w, h=o.h,
-                            hflip=o.hflip, vflip=o.vflip, oam=ob["oam"],
-                            clean=not bool(foreign.any()),
-                            covered=int((foreign & mine).sum()),
-                            opaque=bool(ob["rgba"][..., 3].any()),
-                            rotscale=o.rotscale, objmode=o.mode, pal_guess=ob["guessed"]))
+        base = dict(key=ob["key"], x=int(xs), y=int(ys), w=o.w, h=o.h,
+                    hflip=o.hflip, vflip=o.vflip, oam=ob["oam"],
+                    clean=not bool(foreign.any()),
+                    covered=int((foreign & mine).sum()),
+                    opaque=bool(ob["rgba"][..., 3].any()),
+                    rotscale=o.rotscale, objmode=o.mode, pal_guess=ob["guessed"])
+        entries.append(base)
+    # alternate keys after all primary ones, so the primaries keep their order
+    for ob, base in zip(objs, list(entries)):
+        for k in ob["alt_keys"]:
+            if k != ob["key"]:
+                entries.append(dict(base, key=k))
     asset = dict(kind="cell", image=canvas, origin=(int(x0), int(y0)), entries=entries)
     if want_rgba:
         asset["obj_rgba"] = {ob["key"]: ob["rgba"] for ob in objs}
+        asset["obj_rgba"].update({k: ob["rgba"] for ob in objs for k in ob["alt_keys"]})
     return asset
 
 
