@@ -376,7 +376,7 @@ class Library:
                 self.cache[name] = None
         return self.cache[name]
 
-    def partners(self, name, kind, limit=4):
+    def partners(self, name, kind, limit=16):
         """ranked candidate files of `kind` for resource `name`:
         same stem first, then same (normalised) dir by name similarity."""
         d, s = split_name(name)

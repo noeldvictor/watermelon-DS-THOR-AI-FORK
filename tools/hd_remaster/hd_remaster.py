@@ -74,6 +74,14 @@ def cmd_extract(args) -> Path:
     log(f"3D: {sum(1 for b in blocks if b.textures)} texture blocks, {ntex} textures, "
         f"{len(ents)} keys (pairing: {by})")
 
+    # 2D image names from the last extraction, by what each image is, so a tool change that adds
+    # or drops images elsewhere doesn't rename (and so mismatch) existing upscales and redraws
+    previous = {}
+    if (out / "manifest.jsonl").exists():
+        for line in (out / "manifest.jsonl").open(encoding="utf-8"):
+            m = json.loads(line)
+            if m.get("kind") == "asset2d" and not m["key"].startswith("solo_"):
+                previous[(m.get("source"), m.get("palette"))] = m["key"]
     with open(out / "manifest.jsonl", "w", encoding="utf-8") as mf:
         for e in ents:
             img = tex3d.decode(e.tex, e.pal)
@@ -85,7 +93,7 @@ def cmd_extract(args) -> Path:
                 "source": e.source, "wrap": e.tex.wrap, "alpha": alpha_kind(img),
             }) + "\n")
         log(f"wrote {len(ents)} textures to {tex_dir} in {time.time() - t0:.0f}s")
-        n_obj, n_bg = extract_2d(files, out, mf, recipe["twod"])
+        n_obj, n_bg = extract_2d(files, out, mf, recipe["twod"], previous)
         n_fonts = extract_fonts(files, out, mf)
     log(f"done in {time.time() - t0:.0f}s")
     recipes.check_baseline(recipe, {"textures": len(ents), "sprites": n_obj, "backgrounds": n_bg,
@@ -108,11 +116,13 @@ def write_native(work: Path, sub: str, name: str, img: np.ndarray) -> None:
     Image.fromarray(img, "RGBA").save(path, optimize=False, compress_level=1)
 
 
-def extract_2d(files: dict[str, bytes], out: Path, mf, rules: dict) -> tuple[int, int]:
+def extract_2d(files: dict[str, bytes], out: Path, mf, rules: dict,
+               previous: dict | None = None) -> tuple[int, int]:
     """Sprites and BG tiles: whole cells and screens, each with the crops its keys cut out.
 
-    rules: the recipe's game-specific 2D load rules (see twod.py). Returns the sprite and BG
-    tile key counts.
+    rules: the recipe's game-specific 2D load rules (see twod.py). previous: (source, palette)
+    -> image name from the last extraction; those images keep their names, new ones are
+    numbered after the highest name in use. Returns the sprite and BG tile key counts.
     """
     import twod
 
@@ -122,6 +132,18 @@ def extract_2d(files: dict[str, bytes], out: Path, mf, rules: dict) -> tuple[int
     adir.mkdir(parents=True, exist_ok=True)
     seen: set[str] = set()
     n_assets = n_solo = n_obj = n_bg = 0
+    previous = previous or {}
+    used: set[str] = set()
+    next_number = max([int(k[1:]) for k in previous.values() if k[1:].isdigit()] + [0])
+
+    def asset_name(asset: dict) -> str:
+        nonlocal next_number
+        name = previous.get((asset["name"], asset.get("nclr")))
+        if name is None or name in used:
+            next_number += 1
+            name = f"a{next_number:05d}"
+        used.add(name)
+        return name
 
     def write_asset(name: str, img: np.ndarray, entries: list[dict], asset: dict) -> None:
         write_native(out, "assets2d", name, img)
@@ -160,7 +182,7 @@ def extract_2d(files: dict[str, bytes], out: Path, mf, rules: dict) -> tuple[int
                     n_bg += 1
             if keep:
                 n_assets += 1
-                write_asset(f"a{n_assets:05d}", asset["image"], keep, asset)
+                write_asset(asset_name(asset), asset["image"], keep, asset)
     log(f"2D: {n_assets} cells/screens + {n_solo} standalone sprites -> {n_obj} sprite keys, {n_bg} BG tile keys")
     return n_obj, n_bg
 
