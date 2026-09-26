@@ -41,7 +41,12 @@ graphics.
    have (up to 200 per kind). A miss whose tile or texture hash is in the pack but whose palette
    hash isn't means the game loads its palette differently from the files; one whose hash isn't
    anywhere was built at runtime.
-3. Sprites whose tiles match but whose palettes don't, or that only match after a transform,
+3. Name what's still missing: after playing, `hd_remaster.py misses work\<CODE> game.nds`
+   reads the device log and, for every sprite the game looked up and the pack didn't have,
+   finds the ROM file and palette that show exactly those colours. "Pack has it under another
+   palette" means the pairing picked the wrong palette (Lufia's battle icons: fixed by keeping
+   every tied candidate); a sprite found nowhere is built at runtime (text, captures).
+   Sprites whose tiles match but whose palettes don't, or that only match after a transform,
    need a `twod` rule. Lufia's portrait rule is the worked example.
 4. Fill in `verified.on_device` with what you played and the hit counts. (`verify` still
    compares an extraction with texture dumps, for anyone who has them; this fork no longer

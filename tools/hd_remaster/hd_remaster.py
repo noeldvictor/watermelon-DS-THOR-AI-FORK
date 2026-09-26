@@ -543,6 +543,81 @@ def cmd_all(args) -> None:
 
 # ---------------------------------------------------------------------------- main
 
+def cmd_misses(args) -> None:
+    """Name every sprite the running game looked up but the pack didn't have.
+
+    Reads the 'HDTexPack[Miss]: obj1_... (rgb <hash>)' lines (from the device's log, or a saved
+    log with --log) and finds, for each colour hash, which ROM sprite piece shows exactly those
+    colours and with which palette file. A piece found under a palette the pack didn't pair it
+    with is a pairing problem (fix: the recipe or the pairing rules); a hash found nowhere is art
+    the game builds at runtime (text, captures), which a ROM-built pack can't hold.
+    """
+    import re
+    import twod
+    work = Path(args.work)
+    if args.log:
+        text = Path(args.log).read_text(encoding="utf-8", errors="replace")
+    else:
+        serial = find_device(args.serial)
+        text = adb(serial, "logcat", "-d")
+    misses = {}
+    for m in re.finditer(r"HDTexPack\[Miss\]: (obj1_(\d+)x(\d+)_[0-9a-f]+_(?:[0-9a-f]+|none)_(4|8)) \(rgb ([0-9a-f]{16})\)", text):
+        key, w, h, bpp, rgb = m.groups()
+        misses[(int(w), int(h), bpp == "8", int(rgb, 16))] = key
+    log(f"{len(misses)} distinct sprite misses with a colour hash in the log")
+    if not misses:
+        return
+    rom = Path(args.rom).read_bytes()
+    lib = twod.Library(nitro.files(rom))
+    pals = [(n, lib.get(n)) for n in lib.leaves if lib.leaves[n][:4] == b"RLCN"]
+    pals = [(n, p) for n, p in pals if p is not None]
+    sizes = {(w, h, b8) for w, h, b8, _ in misses}
+    paired = {}
+    for line in (work / "manifest.jsonl").open(encoding="utf-8"):
+        m = json.loads(line)
+        if m.get("kind") == "asset2d":
+            paired.setdefault(m["source"].split("#")[0], set()).add(m.get("palette"))
+    found = {}
+    for (d, s), kinds in sorted(lib.stems.items()):
+        if "e" not in kinds:
+            continue
+        e = lib.get(kinds["e"])
+        gc = lib.partners(kinds["e"], "g", limit=1)
+        g = lib.get(gc[0][0]) if gc else None
+        if e is None or g is None:
+            continue
+        for ci, cell in enumerate(e.cells):
+            for o in cell:
+                if (o.w, o.h, o.bpp8) not in sizes:
+                    continue
+                off, stride, tb = twod.obj_layout(o.tile, o.w, o.bpp8, e.boundary_shift, e.is2d)
+                vram = g.data
+                if e.vram is not None:
+                    so, sz = e.vram[ci]
+                    vram = g.data[so:so + sz]
+                tiles = twod.obj_tiles(vram, off, stride, tb, o.w, o.h)
+                if tiles is None:
+                    continue
+                idx = twod.tiles_to_indices(tiles, o.w, o.h, o.bpp8)
+                for pn, p in pals:
+                    # the colours shown don't depend on where the game loads the palette
+                    raw = p.raw[:512].ljust(512, b"\0") if o.bpp8 else p.row(o.pal, 16)
+                    if raw is None:
+                        continue
+                    k = (o.w, o.h, o.bpp8, twod.color_hash(twod.indices_to_rgba(idx, raw)))
+                    if k in misses:
+                        found.setdefault(k, set()).add((kinds["e"], pn))
+    unknown = 0
+    for k, key in sorted(misses.items(), key=lambda x: x[1]):
+        if k not in found:
+            unknown += 1
+            continue
+        for ename, pn in sorted(found[k])[:3]:
+            note = "pack has it under another palette" if pn not in paired.get(ename, set()) else "pack has this pairing (key differs: check load rules)"
+            print(f"{key}: {ename} with {pn} - {note}")
+    log(f"{len(found)} identified, {unknown} not in the ROM's sprite files (built at runtime, e.g. text)")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -551,6 +626,13 @@ def main() -> None:
     p.add_argument("rom")
     p.add_argument("--out", help=f"work root (default {WORK})")
     p.set_defaults(fn=cmd_extract)
+
+    p = sub.add_parser("misses", help="name the sprites a running game missed (from the device log)")
+    p.add_argument("work", help="work/<GAMECODE> from extract")
+    p.add_argument("rom")
+    p.add_argument("--log", help="a saved logcat instead of reading the device")
+    p.add_argument("--serial")
+    p.set_defaults(fn=cmd_misses)
 
     p = sub.add_parser("verify", help="compare an extraction with textures dumped in-game")
     p.add_argument("work", help="work/<GAMECODE> from extract")
