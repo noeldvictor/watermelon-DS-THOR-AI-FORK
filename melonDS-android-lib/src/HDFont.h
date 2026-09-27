@@ -76,6 +76,9 @@ public:
     u32 InkCount(const Placement& p) const { return Fonts[p.Font].Glyphs[p.Glyph].InkCount; }
     // clears a placed glyph's ink pixels to kEmpty, leaving what it doesn't explain
     void Erase(const Placement& p, u16* canvas, int w, int h) const;
+    // canvas offsets (y * w + x) of the one-pixel ring around a placed glyph's ink (its
+    // 8-neighbourhood), where an outline drawn under the glyph lies
+    void RingPixels(const Placement& p, int w, int h, std::vector<int>& out) const;
 
     // HD image for a placed glyph: shade s takes colour shadeRGBA[s] (packed r | g<<8 |
     // b<<16), shades in between blend, and coverage below the first shade fades out. With

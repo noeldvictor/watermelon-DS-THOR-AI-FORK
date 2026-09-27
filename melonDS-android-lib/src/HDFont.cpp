@@ -231,11 +231,20 @@ bool HDFontSet::Verify(const Font& f, const Glyph& g, const u16* canvas, int w, 
         }
     }
     // the ring above, below and right of the ink box is background too, so a small glyph
-    // ('.', 'l') doesn't match inside a bigger shape; the left side may touch the glyph before
+    // ('.', 'l') doesn't match inside a bigger shape
     for (int cx = g.InkX0; cx <= g.InkX1 + 1; cx++)
         if (!isBg(ox + cx, oy + g.InkY0 - 1) || !isBg(ox + cx, oy + g.InkY1 + 1)) return false;
     for (int cy = g.InkY0; cy <= g.InkY1; cy++)
         if (!isBg(ox + g.InkX1 + 1, oy + cy)) return false;
+    // the left side may touch the glyph before, which is drawn in the same colours; another
+    // index there (the fill of outlined text next to its outline) means a bigger shape
+    for (int cy = g.InkY0 - 1; cy <= g.InkY1 + 1; cy++)
+    {
+        const int x = ox + g.InkX0 - 1, y = oy + cy;
+        if (isBg(x, y)) continue;
+        const int c = canvas[(size_t)y * w + x];
+        if (c <= base || c > base + f.MaxShade) return false;
+    }
     return true;
 }
 
@@ -293,6 +302,35 @@ void HDFontSet::Erase(const Placement& p, u16* canvas, int w, int h) const
             const int x = p.X + cx, y = p.Y + cy;
             if (g.Shades[(size_t)cy * f.CellW + cx] && x >= 0 && y >= 0 && x < w && y < h)
                 canvas[(size_t)y * w + x] = kEmpty;
+        }
+    }
+}
+
+void HDFontSet::RingPixels(const Placement& p, int w, int h, std::vector<int>& out) const
+{
+    out.clear();
+    const Font& f = Fonts[p.Font];
+    const Glyph& g = f.Glyphs[p.Glyph];
+    if (!g.InkCount)
+        return;
+    auto ink = [&](int cx, int cy) {
+        return cx >= 0 && cy >= 0 && cx < f.CellW && cy < f.CellH
+            && g.Shades[(size_t)cy * f.CellW + cx] != 0;
+    };
+    // the ink box grown by one pixel holds the whole ring
+    for (int cy = g.InkY0 - 1; cy <= g.InkY1 + 1; cy++)
+    {
+        for (int cx = g.InkX0 - 1; cx <= g.InkX1 + 1; cx++)
+        {
+            const int x = p.X + cx, y = p.Y + cy;
+            if (ink(cx, cy) || x < 0 || y < 0 || x >= w || y >= h)
+                continue;
+            bool touches = false;
+            for (int dy = -1; dy <= 1 && !touches; dy++)
+                for (int dx = -1; dx <= 1 && !touches; dx++)
+                    touches = ink(cx + dx, cy + dy);
+            if (touches)
+                out.push_back(y * w + x);
         }
     }
 }

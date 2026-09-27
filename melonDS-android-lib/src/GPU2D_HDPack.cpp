@@ -712,25 +712,32 @@ void HDPack2D::ReplaceText(GPU& gpu, int num, HDTexPack* pack, size_t spriteStar
 
             // Outlined text (Lufia's HUD and name plates: white letters, dark outline) is the
             // glyph drawn over a one-pixel ring of another index; the ring breaks the match. The
-            // same group can hold plain text too (a dialogue line beside its name plate), so
-            // outlined text is looked for only in the ink plain matching left: each of its most
-            // common indices is taken as the outline (i.e. as background) in turn, and the
-            // reading that explains the most ink is kept.
+            // same group can hold plain text too (a dialogue line beside its name plate) and
+            // outlined text in more than one colour (the HUD beside a damage number), so it is
+            // looked for in the ink plain matching left, one outline colour per round: each of
+            // the most common indices is taken as the outline (i.e. as background) in turn, and a
+            // glyph found that way only counts if the ring around its ink really is that index.
             std::vector<u16> rest = TextCanvas;
             for (const HDFontSet::Placement& p : group.Placements)
                 fonts->Erase(p, rest.data(), w, h);
-            u32 restInk = 0;
-            std::unordered_map<u16, u32> inkCounts;
-            for (u16 v : rest)
-                if (v != HDFontSet::kEmpty && v != bg) { restInk++; inkCounts[v]++; }
-            u32 outlinedInk = 0;
-            if (restInk >= 8 && inkCounts.size() >= 2)
+            std::vector<u16> stripped;
+            std::vector<int> ring;
+            for (int round = 0; round < 3; round++)
             {
+                u32 restInk = 0;
+                std::unordered_map<u16, u32> inkCounts;
+                for (u16 v : rest)
+                    if (v != HDFontSet::kEmpty && v != bg) { restInk++; inkCounts[v]++; }
+                if (restInk < 8 || inkCounts.size() < 2)
+                    break;
                 std::vector<std::pair<u32, u16>> byCount;
                 for (const auto& e : inkCounts) byCount.push_back({ e.second, e.first });
                 std::sort(byCount.begin(), byCount.end(), std::greater<>());
                 if (byCount.size() > 3) byCount.resize(3);
-                std::vector<u16> stripped;
+
+                u32 bestInk = 0;
+                u16 bestOutline = 0;
+                std::vector<HDFontSet::Placement> best;
                 for (const auto& cand : byCount)
                 {
                     stripped = rest;
@@ -738,16 +745,39 @@ void HDPack2D::ReplaceText(GPU& gpu, int num, HDTexPack* pack, size_t spriteStar
                         if (v == cand.second) v = HDFontSet::kEmpty;
                     std::vector<HDFontSet::Placement> placements;
                     fonts->Recognize(stripped.data(), w, h, bg, placements);
+                    std::vector<HDFontSet::Placement> kept;
                     u32 got = 0;
                     for (const HDFontSet::Placement& p : placements)
-                        got += fonts->InkCount(p);
-                    // the glyphs must explain nearly all of the ink the outline doesn't cover
-                    if (got > outlinedInk && got * 10 >= (restInk - cand.first) * 8)
                     {
-                        outlinedInk = got;
-                        group.Outlined = std::move(placements);
-                        group.Outline = cand.second;
+                        fonts->RingPixels(p, w, h, ring);
+                        u32 outlinePixels = 0;
+                        for (int o : ring)
+                            if (rest[o] == cand.second) outlinePixels++;
+                        // most of the ring (ring pixels between letters are shared, and a
+                        // neighbour's ink can touch it)
+                        if (!ring.empty() && outlinePixels * 10 >= (u32)ring.size() * 7)
+                        {
+                            kept.push_back(p);
+                            got += fonts->InkCount(p);
+                        }
                     }
+                    // a lone '.' or 'l' shape inside other art isn't text
+                    if (kept.size() >= 2 && got > bestInk)
+                    {
+                        bestInk = got;
+                        bestOutline = cand.second;
+                        best = std::move(kept);
+                    }
+                }
+                if (best.empty())
+                    break;
+                for (const HDFontSet::Placement& p : best)
+                {
+                    fonts->RingPixels(p, w, h, ring);
+                    for (int o : ring)
+                        if (rest[o] == bestOutline) rest[o] = HDFontSet::kEmpty;
+                    fonts->Erase(p, rest.data(), w, h);
+                    group.Outlined.push_back({ p, bestOutline });
                 }
             }
             cached = TextGroups.emplace(groupKey, std::move(group)).first;
@@ -761,13 +791,13 @@ void HDPack2D::ReplaceText(GPU& gpu, int num, HDTexPack* pack, size_t spriteStar
             else entry = extPal[(palOffset - 1) * 256 + (index & 0xFF)];
             return Pal555ToRGBA8(entry, true);
         };
-        auto emitGlyph = [&](const HDFontSet::Placement& p, bool outlined) {
+        auto emitGlyph = [&](const HDFontSet::Placement& p, bool outlined, u16 outlineIndex) {
             u32 shades[16] = {};
             const int maxShade = fonts->MaxShade(p);
             for (int s = 1; s <= maxShade; s++)
                 shades[s] = colour(p.Base + (u32)s);
             const HDTexPackImage* img = fonts->GlyphImage(p, shades, group.Bg != 0, colour(group.Bg),
-                                                          outlined, colour(group.Outline));
+                                                          outlined, colour(outlineIndex));
             if (!img) return;
             int bx, by, bw, bh;
             fonts->GlyphBox(p, bx, by, bw, bh);
@@ -806,9 +836,9 @@ void HDPack2D::ReplaceText(GPU& gpu, int num, HDTexPack* pack, size_t spriteStar
             glyphs.push_back(inst);
         };
         for (const HDFontSet::Placement& p : group.Placements)
-            emitGlyph(p, false);
-        for (const HDFontSet::Placement& p : group.Outlined)
-            emitGlyph(p, true);
+            emitGlyph(p, false, 0);
+        for (const auto& [p, outline] : group.Outlined)
+            emitGlyph(p, true, outline);
     }
 
     // the presenter draws sprite instances last to first, so glyphs placed ahead of this

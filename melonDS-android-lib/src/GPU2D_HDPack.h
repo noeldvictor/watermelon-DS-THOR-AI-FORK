@@ -116,9 +116,8 @@ private:
         s32 X0, Y0;
         u16 Bg;
         std::vector<HDFontSet::Placement> Placements;
-        // glyphs drawn over a one-pixel outline of index Outline (none when empty)
-        std::vector<HDFontSet::Placement> Outlined;
-        u16 Outline = 0;
+        // glyphs drawn over a one-pixel outline, with the outline's palette index
+        std::vector<std::pair<HDFontSet::Placement, u16>> Outlined;
     };
 
     void WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool load);
