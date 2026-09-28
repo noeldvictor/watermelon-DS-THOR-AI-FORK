@@ -58,7 +58,7 @@ class Migration21to22(
 
         val romListType: Type = object : TypeToken<List<Rom21>>(){}.type
         return runCatching {
-            gson.fromJson<List<Rom21>>(FileReader(cacheFile), romListType)
+            FileReader(cacheFile).use { gson.fromJson<List<Rom21>>(it, romListType) }
         }.getOrElse { emptyList() }
     }
 

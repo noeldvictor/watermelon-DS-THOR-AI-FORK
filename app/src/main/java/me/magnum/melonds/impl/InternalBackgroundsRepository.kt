@@ -107,7 +107,7 @@ class InternalBackgroundsRepository(
         }
 
         return try {
-            val backgrounds = gson.fromJson<List<Background>>(FileReader(dataFile), backgroundListType)
+            val backgrounds = FileReader(dataFile).use { gson.fromJson<List<Background>>(it, backgroundListType) }
             backgrounds ?: emptyList()
         } catch (_: Exception) {
             emptyList()

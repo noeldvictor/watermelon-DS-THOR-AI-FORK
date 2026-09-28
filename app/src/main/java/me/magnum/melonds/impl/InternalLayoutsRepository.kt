@@ -139,7 +139,9 @@ class InternalLayoutsRepository(
         }
 
         return try {
-            val layouts = gson.fromJson<List<LayoutConfigurationDto>>(FileReader(dataFile), layoutListType)?.map {
+            val layouts = FileReader(dataFile).use { reader ->
+                gson.fromJson<List<LayoutConfigurationDto>>(reader, layoutListType)
+            }?.map {
                 it.toModel()
             }
             layouts ?: emptyList()

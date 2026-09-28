@@ -33,7 +33,7 @@ class GenericJsonArrayMigrationHelper(
 
         val dataListType = TypeToken.getParameterized(List::class.java, fromClass).type
         return runCatching {
-            gson.fromJson<List<T>>(FileReader(dataFile), dataListType)
+            FileReader(dataFile).use { gson.fromJson<List<T>>(it, dataListType) }
         }.getOrElse { emptyList() }
     }
 

@@ -359,7 +359,9 @@ class FileSystemRomsRepository(
         }
 
         return runCatching {
-            gson.fromJson<List<RomMetadataMirrorDto>>(FileReader(metadataFile), romMetadataMirrorListType).orEmpty()
+            FileReader(metadataFile).use {
+                gson.fromJson<List<RomMetadataMirrorDto>>(it, romMetadataMirrorListType)
+            }.orEmpty()
         }.onFailure {
             Log.w(TAG, "Failed to parse restored ROM metadata", it)
         }.getOrElse { emptyList() }

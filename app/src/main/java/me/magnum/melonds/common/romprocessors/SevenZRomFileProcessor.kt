@@ -52,7 +52,7 @@ class SevenZRomFileProcessor(private val context: Context, uriHandler: UriHandle
         }
 
         return try {
-            val entryStream = SevenZEntryInputStream(sevenZFile.getInputStream(ndsEntry), sevenZFile)
+            val entryStream = SevenZEntryInputStream(sevenZFile.getInputStream(ndsEntry), sevenZFile, fileStream)
             RomFileStream(entryStream, SizeUnit.Bytes(ndsEntry.size))
         } catch (e: Exception) {
             sevenZFile.close()
@@ -78,7 +78,13 @@ class SevenZRomFileProcessor(private val context: Context, uriHandler: UriHandle
         return null
     }
 
-    private class SevenZEntryInputStream(stream: InputStream, private val sevenZFile: SevenZFile) : FilterInputStream(stream) {
+    // Closes the archive and the file stream it reads through. Closing the archive only closes
+    // the stream's channel, which left the content resolver's descriptor for CloseGuard to reap.
+    private class SevenZEntryInputStream(
+        stream: InputStream,
+        private val sevenZFile: SevenZFile,
+        private val source: InputStream,
+    ) : FilterInputStream(stream) {
         override fun close() {
             try {
                 super.close()
@@ -87,6 +93,11 @@ class SevenZRomFileProcessor(private val context: Context, uriHandler: UriHandle
                     sevenZFile.close()
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to close 7z archive", e)
+                }
+                try {
+                    source.close()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to close 7z source stream", e)
                 }
             }
         }

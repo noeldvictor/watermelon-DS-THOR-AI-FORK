@@ -110,8 +110,11 @@ abstract class CompressedRomFileProcessor(private val context: Context, private 
         return if (cachedRomUri != null) {
             context.contentResolver.openInputStream(cachedRomUri)
         } else {
-            context.contentResolver.openInputStream(rom.uri)?.let {
-                getNdsEntryStreamInFileStream(it)
+            context.contentResolver.openInputStream(rom.uri)?.let { stream ->
+                getNdsEntryStreamInFileStream(stream) ?: run {
+                    stream.close()
+                    null
+                }
             }
         }
     }

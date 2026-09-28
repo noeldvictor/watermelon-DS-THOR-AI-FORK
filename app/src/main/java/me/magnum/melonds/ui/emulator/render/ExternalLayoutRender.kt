@@ -387,7 +387,7 @@ class ExternalLayoutRender(
             val sample = BitmapUtils.calculateMinimumSampleSize(context, it, viewWidth, viewHeight)
 
             val bitmapResult = runCatching {
-                context.contentResolver.openInputStream(it)?.let { stream ->
+                context.contentResolver.openInputStream(it)?.use { stream ->
                     val options = BitmapFactory.Options().apply {
                         inSampleSize = sample
                     }

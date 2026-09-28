@@ -353,7 +353,7 @@ class DSRenderer(private val context: Context) : EmulatorRenderer {
             val backgroundSampleSize = BitmapUtils.calculateMinimumSampleSize(context, it, width.roundToInt(), height.roundToInt())
 
             val bitmapResult = runCatching {
-                context.contentResolver.openInputStream(it)?.let { stream ->
+                context.contentResolver.openInputStream(it)?.use { stream ->
                     val options = BitmapFactory.Options().apply {
                         inSampleSize = backgroundSampleSize
                     }
