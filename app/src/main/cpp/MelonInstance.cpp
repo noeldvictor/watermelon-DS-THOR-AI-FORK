@@ -7382,6 +7382,8 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
             std::array<u32, SoftPackedFrameSnapshot::kPixelCount>& control,
             const std::array<u32, SoftPackedFrameSnapshot::kLineCount>& lineMeta,
             const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>* previousControl,
+            const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>* previousPlane0,
+            const std::array<u32, SoftPackedFrameSnapshot::kPixelCount>* previousPlane1,
             bool allowTemporalContinuation,
             bool allowClass4VramAlternation,
             bool partialCapture3dMask,
@@ -7458,6 +7460,35 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
                         continue;
                     if (plane0[index] == 0u || plane0[index] == kPacked3dPlaceholder)
                         continue;
+
+                    // The capture being replayed also holds the 2D the previous frame drew above its
+                    // 3D (text on a 3D panel). Where that frame had 2D above a slot at this pixel,
+                    // in the colour the capture shows here, carry its structured pixel instead of a
+                    // bare slot, or the 3D history paints over the 2D: Hotel Dusk's "Select
+                    // Handedness" showed on every other frame only.
+                    if (previousControl != nullptr && previousPlane0 != nullptr && previousPlane1 != nullptr)
+                    {
+                        const u32 previousAlpha = (*previousControl)[index] >> 24u;
+                        const u32 previousAbove = (*previousPlane1)[index];
+                        const u32 replayed = plane0[index];
+                        const auto channelClose = [](u32 a, u32 b, u32 shift) {
+                            const int ca = static_cast<int>((a >> shift) & 0x3Fu);
+                            const int cb = static_cast<int>((b >> shift) & 0x3Fu);
+                            return std::abs(ca - cb) <= 2;
+                        };
+                        if ((previousAlpha & 0xC0u) == 0xC0u
+                            && previousAbove != 0u
+                            && previousAbove != kPacked3dPlaceholder
+                            && channelClose(previousAbove, replayed, 0u)
+                            && channelClose(previousAbove, replayed, 8u)
+                            && channelClose(previousAbove, replayed, 16u))
+                        {
+                            plane0[index] = (*previousPlane0)[index];
+                            plane1[index] = previousAbove;
+                            control[index] = (*previousControl)[index];
+                            continue;
+                        }
+                    }
 
                     const u32 compMode = controlAlpha & 0x0Fu;
                     plane0[index] = 0u;
@@ -8331,6 +8362,8 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
         lastSoftPackedFrameSnapshot.packedTopControl,
         lastSoftPackedFrameSnapshot.packedTopLineMeta,
         previousSoftPackedFrameSnapshot.valid ? &previousSoftPackedFrameSnapshot.packedTopControl : nullptr,
+        previousSoftPackedFrameSnapshot.valid ? &previousSoftPackedFrameSnapshot.packedTopPlane0 : nullptr,
+        previousSoftPackedFrameSnapshot.valid ? &previousSoftPackedFrameSnapshot.packedTopPlane1 : nullptr,
         isInAlternatingMode,
         captureBackedClass4Only && screenSwapToggledThisFrame,
         partialCapture3dMask,
@@ -8343,6 +8376,8 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
         lastSoftPackedFrameSnapshot.packedBottomControl,
         lastSoftPackedFrameSnapshot.packedBottomLineMeta,
         previousSoftPackedFrameSnapshot.valid ? &previousSoftPackedFrameSnapshot.packedBottomControl : nullptr,
+        previousSoftPackedFrameSnapshot.valid ? &previousSoftPackedFrameSnapshot.packedBottomPlane0 : nullptr,
+        previousSoftPackedFrameSnapshot.valid ? &previousSoftPackedFrameSnapshot.packedBottomPlane1 : nullptr,
         isInAlternatingMode,
         captureBackedClass4Only && screenSwapToggledThisFrame,
         partialCapture3dMask,
