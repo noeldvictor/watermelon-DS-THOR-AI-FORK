@@ -46,34 +46,40 @@ object RomProcessor {
 		var arm9Bootcode: ByteArray? = null
 		var arm7Bootcode: ByteArray? = null
 		var banner: ByteArray? = null
-		val requiredSections = listOf(
+		// Homebrew often has no banner (offset 0). The banner is optional: without it the title
+		// comes from the file name. Asking the forward-only reader for offset 0 failed and dropped
+		// the whole ROM from the list.
+		val hasBanner = bannerOffset >= 0x160
+		val requiredSections = listOfNotNull(
 			RequiredRomSection(arm9Offset, arm9Size, RequiredRomSection.Type.ARM9),
 			RequiredRomSection(arm7Offset, arm7Size, RequiredRomSection.Type.ARM7),
-			RequiredRomSection(bannerOffset, 0xA00, RequiredRomSection.Type.BANNER),
+			if (hasBanner) RequiredRomSection(bannerOffset, 0xA00, RequiredRomSection.Type.BANNER) else null,
 		).sortedBy { it.offset }
 
 		for (section in requiredSections) {
-			val data = sectionReader.readSection(section.offset, section.size) ?: return null
+			val data = sectionReader.readSection(section.offset, section.size)
 			when (section.type) {
-				RequiredRomSection.Type.ARM9 -> arm9Bootcode = data
-				RequiredRomSection.Type.ARM7 -> arm7Bootcode = data
+				RequiredRomSection.Type.ARM9 -> arm9Bootcode = data ?: return null
+				RequiredRomSection.Type.ARM7 -> arm7Bootcode = data ?: return null
+				// a banner past the end of the file or overlapping the code is ignored too
 				RequiredRomSection.Type.BANNER -> banner = data
 			}
 		}
 
 		val arm9Data = arm9Bootcode ?: return null
 		val arm7Data = arm7Bootcode ?: return null
-		val bannerData = banner ?: return null
+		val bannerData = banner
 
-		val bannerText = readBannerTitleAndDeveloper(bannerData)
+		val bannerText = bannerData?.let { readBannerTitleAndDeveloper(it) }
 		val romName = bannerText?.first.orEmpty()
 		val developerName = bannerText?.second.orEmpty()
 
+		// rcheevos hashes the icon/title block only when the ROM has one
 		val retroAchievementsMd5Digest = MessageDigest.getInstance("MD5").run {
 			update(header)
 			update(arm9Data)
 			update(arm7Data)
-			update(bannerData)
+			bannerData?.let { update(it) }
 			digest()
 		}
 
@@ -112,6 +118,8 @@ object RomProcessor {
 		inputStream.read(offsetData)
 
 		val bannerOffset = byteArrayToInt(offsetData)
+		// no banner (homebrew): the callers fall back to the default icon
+		require(bannerOffset >= 0x160) { "ROM has no banner" }
 		inputStream.skipStreamBytes(bannerOffset.toLong() + 32 - (0x68 + 4))
 		val tileData = ByteArray(512)
 		inputStream.read(tileData)
