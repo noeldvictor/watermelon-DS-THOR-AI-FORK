@@ -319,8 +319,14 @@ namespace MelonDSAndroid
     void startAudio()
     {
         isAudioOutputRunning = true;
+        // Launch starts the stream from start() and again from the activity's resume();
+        // the second request hit a stream still starting (AAUDIO_ERROR_INVALID_STATE)
         if (audioStream)
-            audioStream->requestStart();
+        {
+            const oboe::StreamState state = audioStream->getState();
+            if (state != oboe::StreamState::Starting && state != oboe::StreamState::Started)
+                audioStream->requestStart();
+        }
 
         startMicStreamIfAllowed();
     }
