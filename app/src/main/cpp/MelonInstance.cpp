@@ -2406,7 +2406,10 @@ MelonInstance::VulkanFrameTailResult MelonInstance::processFrameTail(
     {
         lastCompletedVulkanFrame = nullptr;
         lastCompletedVulkanScale = 1;
-        screenshotRenderer->renderScreenshot(&nds->GPU, currentRenderer, renderFrame);
+        // A screenshot costs a readback: render one only for a rewind state (and when one is
+        // requested, after the frame tail). The renderer debug tools read it at any time.
+        if (tailInputs.shouldCaptureRewindState || areRendererDebugToolsEnabled())
+            screenshotRenderer->renderScreenshot(&nds->GPU, currentRenderer, renderFrame);
     }
 
     const int nextFrame = frame + 1;
