@@ -1113,7 +1113,15 @@ void CompatibilitySoftRenderer::DrawScanline(u32 line, Unit* unit)
                     dst[i] = r | (g << 8) | (b << 16);
                 }
                 if (useStructuredVulkan2D)
+                {
+                    // The BG/OBJ composition rendered above is not what this line shows, but it
+                    // is in the structured planes, and the frontend merged it over the VRAM
+                    // picture: a CPU-written video there (Castlevania: Dawn of Sorrow's intro
+                    // anime) came out black. Only a capture's stored planes describe a VRAM
+                    // display; without one the frontend shows the VRAM pixels as they are.
+                    ClearStructuredVulkan2DLine(line);
                     CopyStructuredVulkan2DCaptureLineToCurrentScreen(line, vrambank);
+                }
             }
             else
             {
@@ -1121,6 +1129,8 @@ void CompatibilitySoftRenderer::DrawScanline(u32 line, Unit* unit)
                 {
                     dst[i] = 0;
                 }
+                if (useStructuredVulkan2D)
+                    ClearStructuredVulkan2DLine(line);
             }
         }
         break;
