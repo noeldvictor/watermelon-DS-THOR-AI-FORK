@@ -30,7 +30,7 @@ external display support, RetroAchievements, RetroArch shader presets. On top of
 | Upscaling | Full-screen RetroArch shaders | Also per-layer filters for 3D, sprites and BG separately (ScaleFX, Anime4K, HQ2x, ...) with a disk cache |
 | In-game overlay | Pause menu | Adds a turbo speed picker, live texture-filter switching, and "stretch to fit both screens" |
 | Input | Single-button hotkeys | Adds modifier combos, so a hotkey can sit behind a chord; an unassigned stick click no longer washes out the top screen |
-| Cheats | Starts with an empty database | Ships a cheat database, imported on first launch |
+| Cheats | XML imports drop every cheat that is not inside a folder | XML imports keep cheats listed directly under a game (often the master code); a cheat list placed in the APK is imported on first launch |
 | Default renderer | Software | Vulkan on devices that support it (software otherwise), so packs and filters work out of the box |
 | Dual-screen rendering | Dual-screen presets and layouts | Adds fixes for flicker, stale lines and wrong-screen content on alternating dual-3D scenes, in both the Compatibility and FastPath profiles; videos shown in VRAM display mode play (Castlevania: Dawn of Sorrow's intro was black), 2D drawn over captured 3D no longer blinks (Hotel Dusk), and white boot screens no longer flash black for a frame (Star Fox Command, Solatorobo) |
 | ROM list | Homebrew without a banner is missing (#200); overlapping scans | Homebrew is listed; scans and icon loading read one ROM at a time |
@@ -126,9 +126,13 @@ nothing covered it.
   key still works on its own. Existing configurations load unchanged.
 
 ### Cheats
-* A cheat database bundled at `app/src/main/assets/usrcheat.xml` is imported on first launch when
-  the cheat database is empty, so a fresh install starts with cheats available. The format is the
-  R4CCE/DeSmuME `codelist` XML the in-app importer already understands.
+* **Cheats outside folders**: R4CCE and DeSmuME cheat XMLs list some cheats (often the master
+  code) directly under the game. The importer only read cheats inside a `<folder>` and dropped
+  the rest; they now go into a folder named after the game, listed first.
+* **Bundled cheat list**: `app/src/main/assets/usrcheat.xml` is imported on first launch when the
+  cheat database is empty. The file shipped in this repository is an empty placeholder; replace
+  it with a real `codelist` XML (and bump `SEED_VERSION` in `BundledCheatDatabaseImporter`) to
+  ship cheats.
 
 ### Fixes not in upstream
 These are bugs present in WatermelonDS, rafaelvcaetano's port and (for the JIT ones) the melonDS

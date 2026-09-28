@@ -41,6 +41,9 @@ class XmlCheatDatabaseSAXHandler(private val listener: HandlerListener) : Defaul
 
     private val currentFolderCheats = mutableListOf<Cheat>()
     private val currentGameFolders = mutableListOf<CheatFolder>()
+    // cheats directly under <game>, outside any <folder>
+    private val currentGameRootCheats = mutableListOf<Cheat>()
+    private var parsingRootCheat = false
 
     override fun startElement(uri: String?, localName: String?, qName: String?, attributes: Attributes?) {
         if (!parsingDatabase) {
@@ -82,8 +85,9 @@ class XmlCheatDatabaseSAXHandler(private val listener: HandlerListener) : Defaul
             parsingText = true
         }
 
-        if (parsingFolder && !parsingCheat && qName == "cheat") {
+        if (!parsingCheat && qName == "cheat") {
             parsingCheat = true
+            parsingRootCheat = !parsingFolder
             parsingText = true
         }
 
@@ -163,7 +167,13 @@ class XmlCheatDatabaseSAXHandler(private val listener: HandlerListener) : Defaul
             parsingCheatDescription = false
             parsingCheatCodes = false
 
-            currentFolderCheats.add(Cheat(null, cheatDatabase!!.id!!, cheatName!!, cheatDescription, cheatCodes!!, false))
+            val cheat = Cheat(null, cheatDatabase!!.id!!, cheatName!!, cheatDescription, cheatCodes!!, false)
+            if (parsingRootCheat) {
+                currentGameRootCheats.add(cheat)
+            } else {
+                currentFolderCheats.add(cheat)
+            }
+            parsingRootCheat = false
             cheatName = null
             cheatDescription = null
             cheatCodes = null
@@ -186,17 +196,24 @@ class XmlCheatDatabaseSAXHandler(private val listener: HandlerListener) : Defaul
             parsingGame = false
             parsingGameName = false
 
+            // R4CCE and DeSmuME lists put cheats (often the master code) straight under the
+            // game; they go into a folder named after the game, first, like the usrcheat.dat
+            // importer does. They used to be dropped.
+            if (currentGameRootCheats.isNotEmpty()) {
+                currentGameFolders.add(0, CheatFolder(null, gameName!!, ArrayList(currentGameRootCheats)))
+            }
             if (currentGameFolders.isNotEmpty()) {
                 emitGame(Game(null, gameName!!, gameCode!!, gameChecksum!!, ArrayList(currentGameFolders)))
             }
             currentGameFolders.clear()
+            currentGameRootCheats.clear()
             gameName = null
         }
     }
 
     override fun characters(ch: CharArray?, start: Int, length: Int) {
         if (parsingText && ch != null) {
-            textStringBuilder.append(ch, 0, length)
+            textStringBuilder.append(ch, start, length)
         }
     }
 

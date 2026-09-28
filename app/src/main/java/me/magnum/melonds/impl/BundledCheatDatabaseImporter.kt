@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.runBlocking
 import me.magnum.melonds.common.cheats.CheatDatabaseParserListener
 import me.magnum.melonds.common.cheats.ProgressTrackerInputStream
 import me.magnum.melonds.common.cheats.XmlCheatDatabaseParser
@@ -38,6 +37,8 @@ class BundledCheatDatabaseImporter @Inject constructor(
 
         /** Bump when [ASSET_NAME] changes so existing installs re-seed. */
         private const val SEED_VERSION = 1
+
+        private const val PENDING_DATABASE_ID = -1L
     }
 
     private val preferences: SharedPreferences
@@ -55,8 +56,15 @@ class BundledCheatDatabaseImporter @Inject constructor(
             return
         }
 
-        val imported = runCatching { parseBundledDatabase() }.getOrElse {
+        val imported = runCatching { importBundledDatabase() }.getOrElse {
             Log.w(TAG, "Could not import the bundled cheat database", it)
+            return
+        }
+
+        if (imported == 0) {
+            // A seed with no <game> entries is the shipped placeholder. Leave
+            // the version unset so a later real database still gets imported.
+            Log.i(TAG, "The bundled cheat database holds no games; nothing imported")
             return
         }
 
@@ -64,23 +72,26 @@ class BundledCheatDatabaseImporter @Inject constructor(
         Log.i(TAG, "Imported $imported game(s) from the bundled cheat database")
     }
 
-    private fun parseBundledDatabase(): Int {
-        var gameCount = 0
+    private suspend fun importBundledDatabase(): Int {
+        var parsedDatabaseName: String? = null
+        val games = mutableListOf<Game>()
 
+        // Parse everything first: the database is created only when the file
+        // holds games, so the placeholder never leaves an empty entry behind.
+        // Cheats carry a pending database id until then.
         context.assets.open(ASSET_NAME).use { assetStream ->
             XmlCheatDatabaseParser().parseCheatDatabase(
                 ProgressTrackerInputStream(assetStream),
                 object : CheatDatabaseParserListener {
-                    override fun onDatabaseParseStart(databaseName: String): CheatDatabase = runBlocking {
-                        cheatsRepository.deleteCheatDatabaseIfExists(databaseName)
-                        cheatsRepository.addCheatDatabase(databaseName)
+                    override fun onDatabaseParseStart(databaseName: String): CheatDatabase {
+                        parsedDatabaseName = databaseName
+                        return CheatDatabase(PENDING_DATABASE_ID, databaseName)
                     }
 
                     override fun onGameParseStart(gameName: String) = Unit
 
                     override fun onGameParsed(game: Game) {
-                        runBlocking { cheatsRepository.addGameCheats(game) }
-                        gameCount++
+                        games.add(game)
                     }
 
                     override fun onParseComplete() = Unit
@@ -88,13 +99,22 @@ class BundledCheatDatabaseImporter @Inject constructor(
             )
         }
 
-        if (gameCount == 0) {
-            // A seed with no <game> entries is the shipped placeholder. Leave
-            // the version unset so a later real database still gets imported.
-            throw IOException("bundled cheat database contains no games")
+        val name = parsedDatabaseName ?: return 0
+        if (games.isEmpty()) {
+            return 0
         }
 
-        return gameCount
+        cheatsRepository.deleteCheatDatabaseIfExists(name)
+        val databaseId = cheatsRepository.addCheatDatabase(name).id
+            ?: throw IOException("cheat database $name was not stored")
+        games.forEach { game ->
+            val cheats = game.cheats.map { folder ->
+                folder.copy(cheats = folder.cheats.map { it.copy(cheatDatabaseId = databaseId) })
+            }
+            cheatsRepository.addGameCheats(game.copy(cheats = cheats))
+        }
+
+        return games.size
     }
 
     private fun markSeeded() {

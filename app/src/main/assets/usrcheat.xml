@@ -13,7 +13,7 @@
           <name>Database display name</name>
           <game>
             <name>Game title</name>
-            <gameid>AAAA 12345678</gameid>   <!-- gamecode, space, header CRC -->
+            <gameid>AAAA 12345678</gameid>   (gamecode, space, header CRC)
             <folder>
               <name>Folder name</name>
               <cheat>
