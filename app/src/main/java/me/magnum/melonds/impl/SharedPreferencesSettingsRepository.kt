@@ -27,6 +27,8 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
 import kotlinx.serialization.json.encodeToStream
+import me.magnum.melonds.MelonDSAndroidInterface
+import me.magnum.melonds.NativeCoreLoader
 import me.magnum.melonds.common.retroarch.RetroArchShaderPreset
 import me.magnum.melonds.common.retroarch.RetroArchShaderRootResolver
 import me.magnum.melonds.domain.model.HdFilterTarget
@@ -205,6 +207,7 @@ class SharedPreferencesSettingsRepository(
         preferences.registerOnSharedPreferenceChangeListener(this)
         setDefaultThemeIfRequired()
         setDefaultMacAddressIfRequired()
+        setDefaultVideoRendererIfRequired()
 
         val coreRenderInputsFlow = combine(
             combine(
@@ -353,6 +356,23 @@ class SharedPreferencesSettingsRepository(
         val defaultTheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) "system" else "light"
         preferences.edit {
             putString("theme", defaultTheme)
+        }
+    }
+
+    // A fresh install renders with Vulkan where the device can create a Vulkan instance (HD packs,
+    // filters and the dual-screen presenter live there), with the software renderer otherwise.
+    // Written once so the settings screen shows what the emulator uses.
+    private fun setDefaultVideoRendererIfRequired() {
+        if (preferences.getString("video_renderer", null) != null)
+            return
+
+        val vulkanSupported = runCatching {
+            NativeCoreLoader.load()
+            MelonDSAndroidInterface.isVulkanRendererSupported()
+        }.getOrDefault(false)
+        val defaultRenderer = if (vulkanSupported) VideoRenderer.VULKAN else VideoRenderer.SOFTWARE
+        preferences.edit {
+            putString("video_renderer", defaultRenderer.name.lowercase())
         }
     }
 
