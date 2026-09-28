@@ -66,11 +66,12 @@ class RomSaveFileManager @Inject constructor(
             return
         }
 
-        openInputStream(sourceUri).use { input ->
-            openOutputStream(targetUri).use { output ->
-                input.copyTo(output)
-            }
-        }
+        copySaveWithSnapshot(
+            cacheDirectory = context.cacheDir,
+            maxBytes = MAX_PLAUSIBLE_SAVE_FILE_SIZE,
+            openSource = { openInputStream(sourceUri) },
+            openTarget = { openOutputStream(targetUri) },
+        )
     }
 
     fun isPlausibleSaveFile(uri: Uri): Boolean {

@@ -85,7 +85,6 @@ class RomListFragment : Fragment() {
                 romListViewModel.navigateUp()
             }
         }
-        requireActivity().onBackPressedDispatcher.addCallback(this, backPressedCallback)
 
         return ComposeView(requireContext()).apply {
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
@@ -157,6 +156,12 @@ class RomListFragment : Fragment() {
                 }
             }
         }
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        // tied to the view: a recreated view registered another callback on the fragment each time
+        requireActivity().onBackPressedDispatcher.addCallback(viewLifecycleOwner, backPressedCallback)
     }
 
     private fun openRomDetails(rom: Rom) {
