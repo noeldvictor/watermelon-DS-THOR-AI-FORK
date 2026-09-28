@@ -1380,7 +1380,22 @@ void main()
     Rgba6 pixel;
     if ((isTopScreen && pc.fastHighresOnlyTop != 0u)
         || (isBottomScreen && pc.fastHighresOnlyBottom != 0u))
+    {
         pixel = sampleFastHighresOnly(isTopScreen, scaledX, scaledY);
+        // the shortcut skips the 2D composition, not the screen's master brightness: without
+        // it a fade (DQ IV's opening clouds) showed full brightness on the shortcut's frames
+        uint masterBrightness = isTopScreen ? readTopPacked(dsY, 256 * 3) : readBottomPacked(dsY, 256 * 3);
+        int displayMode = int((masterBrightness >> 16u) & 0x3u);
+        int brightnessMode = int(((masterBrightness >> 8u) & 0xFFu) >> 6u);
+        int brightnessFactor = min(16, int(masterBrightness & 0x1Fu));
+        if (displayMode != 0 && (masterBrightness & kMetaFlagCompMode2StructuredPair) == 0u)
+        {
+            if (brightnessMode == 1)
+                applyBrightnessUp(pixel, brightnessFactor);
+            else if (brightnessMode == 2)
+                applyBrightnessDown(pixel, brightnessFactor, 0xF);
+        }
+    }
     else if (isTopScreen)
         pixel = composeTopScreenPixel(sourceX, dsY, scaledX, scaledY, safeScale);
     else
