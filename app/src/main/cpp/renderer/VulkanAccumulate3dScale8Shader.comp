@@ -193,6 +193,28 @@ bool packedAllowsOpaqueBlackAccumulator(int dsX, int dsY, bool protectedBlack2D,
     return isOpaqueBlack2D(plane0);
 }
 
+// whether a neighbour one native pixel away in the new render has colour
+bool hasNearbyVisibleSnapshotSupport(ivec2 coord, ivec2 size)
+{
+    int distance = int(pc.scale);
+    for (int dy = -1; dy <= 1; dy++)
+    {
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            if (dx == 0 && dy == 0)
+                continue;
+            ivec2 sampleCoord = coord + ivec2(dx, dy) * distance;
+            if (sampleCoord.x < 0 || sampleCoord.y < 0
+                || sampleCoord.x >= size.x || sampleCoord.y >= size.y)
+                continue;
+            vec4 samplePixel = imageLoad(newSnapshot, sampleCoord);
+            if (samplePixel.a > 0.0 && any(greaterThan(samplePixel.rgb, vec3(0.0))))
+                return true;
+        }
+    }
+    return false;
+}
+
 void main()
 {
     int dsX = int(gl_WorkGroupID.x);
@@ -222,7 +244,10 @@ void main()
 
     vec4 newPixel = imageLoad(newSnapshot, coord);
     bool newPixelVisible = newPixel.a > 0.0 && any(greaterThan(newPixel.rgb, vec3(0.0)));
-    bool newPixelAllowedBlack = newPixel.a > 0.0 && sPackedAllowsOpaqueBlackAccumulator;
+    // black drawn next to coloured 3D is content (see VulkanAccumulate3dShader.comp)
+    bool newPixelAllowedBlack = newPixel.a > 0.0
+        && (sPackedAllowsOpaqueBlackAccumulator
+            || (!newPixelVisible && hasNearbyVisibleSnapshotSupport(coord, size)));
     if (newPixelVisible || newPixelAllowedBlack)
     {
         imageStore(accumulated, coord, newPixel);

@@ -260,9 +260,14 @@ void main()
         return;
 
     bool newPixelVisible = newPixel.a > 0.0 && any(greaterThan(newPixel.rgb, vec3(0.0)));
+    // Black the render drew next to coloured 3D (an outline, a logo's shading) is content: without
+    // it the history kept whatever was there before, and a screen shown from its history (the
+    // other half of an alternating dual-3D scene, Lufia's title) had white where its logo's black
+    // outline should be. A black pixel with no coloured neighbour stays refused (dropouts).
     bool newPixelAllowedBlack = newPixel.a > 0.0
         && (packedAllowsOpaqueBlackAccumulator(dsX, dsY)
-            || exactRegularBottomAllowsBlack3D(coord, size, dsX, dsY, newPixel));
+            || exactRegularBottomAllowsBlack3D(coord, size, dsX, dsY, newPixel)
+            || hasNearbyVisibleSnapshotSupport(coord, size));
     if (newPixelVisible || newPixelAllowedBlack)
     {
         imageStore(accumulated, coord, newPixel);
