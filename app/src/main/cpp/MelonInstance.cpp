@@ -7778,6 +7778,12 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
                 const size_t rowBase = static_cast<size_t>(y) * static_cast<size_t>(kScreenshotScreenWidth);
                 const u32 previousMeta = previousLineMeta[static_cast<size_t>(y)];
                 const u32 currentMeta = lineMeta[static_cast<size_t>(y)];
+                // A display-off line (display mode 0) shows white and holds no overlay. Carried
+                // into the frame that turns the display on, its white replaced the real line under
+                // capture-uses-3D meta, and the compositor filled it from the empty 3D history:
+                // one black frame on Star Fox Command's and Solatorobo's boot screens.
+                if (((previousMeta >> 16u) & 0x3u) == 0u)
+                    continue;
                 const bool previousLineUsesCapture3D =
                     (previousMeta & (kSoftPackedMetaFlagRegularCaptureUses3d
                         | kSoftPackedMetaFlagVramCaptureUses3d)) != 0u;
@@ -10044,6 +10050,50 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
             heldBottomPlane0, heldBottomPlane1, heldBottomControl, heldBottomLineAge,
             heldBottomColorStreak, heldBottomHeldStreak, heldBottomRecentHold,
             planeHoldBottomLines);
+    }
+
+    // The 3D composed with this frame's 2D was rendered at line 215 for the NEXT frame, and the
+    // game's VBlank handler has already set the next frame's blend registers. A brightness
+    // effect on live 3D takes the next frame's EVY, so render and effect change together as on
+    // hardware. Solatorobo's boot swaps a white scene at EVY 0 for a black one at EVY 16 in one
+    // frame; with this frame's EVY the black render showed for a frame.
+    if (!renderer2dDebugControlsActive && !isInAlternatingMode)
+    {
+        const auto& unitA = nds->GPU.GPU2D_A;
+        const u32 blendMode = (unitA.BlendCnt >> 6u) & 0x3u;
+        const bool bg0FirstTarget = (unitA.BlendCnt & 0x1u) != 0u;
+        const bool captureEnabled = (unitA.CaptureCnt & (1u << 31u)) != 0u;
+        if ((blendMode == 2u || blendMode == 3u) && bg0FirstTarget && !captureEnabled)
+        {
+            auto& control = screenSwap
+                ? lastSoftPackedFrameSnapshot.packedTopControl
+                : lastSoftPackedFrameSnapshot.packedBottomControl;
+            const auto& lineMeta = screenSwap
+                ? lastSoftPackedFrameSnapshot.packedTopLineMeta
+                : lastSoftPackedFrameSnapshot.packedBottomLineMeta;
+            const u32 nextEvy = std::min<u32>(unitA.EVY, 16u);
+            for (int y = 0; y < kScreenshotScreenHeight; y++)
+            {
+                const u32 meta = lineMeta[static_cast<size_t>(y)];
+                if (((meta >> 16u) & 0x3u) != 1u
+                    || (meta & (kSoftPackedMetaFlagRegularCaptureUses3d
+                        | kSoftPackedMetaFlagVramCaptureUses3d
+                        | kSoftPackedMetaFlagForceLive3dCompMode7)) != 0u)
+                {
+                    continue;
+                }
+                const size_t rowBase = static_cast<size_t>(y) * static_cast<size_t>(kScreenshotScreenWidth);
+                for (int x = 0; x < kScreenshotScreenWidth; x++)
+                {
+                    u32& pixelControl = control[rowBase + static_cast<size_t>(x)];
+                    const u32 controlAlpha = pixelControl >> 24u;
+                    // live 3D on top (slot, nothing above) with the same effect as next frame
+                    if ((controlAlpha & 0xC0u) != 0x40u || (controlAlpha & 0xFu) != blendMode)
+                        continue;
+                    pixelControl = (pixelControl & 0xFFFF00FFu) | (nextEvy << 8u);
+                }
+            }
+        }
     }
 
     lastSoftPackedFrameSnapshot.valid = true;
@@ -12424,6 +12474,12 @@ bool MelonInstance::latchSoftPackedFrameSnapshotFastPath(
                 const size_t rowBase = static_cast<size_t>(y) * static_cast<size_t>(kScreenshotScreenWidth);
                 const u32 previousMeta = previousLineMeta[static_cast<size_t>(y)];
                 const u32 currentMeta = lineMeta[static_cast<size_t>(y)];
+                // A display-off line (display mode 0) shows white and holds no overlay. Carried
+                // into the frame that turns the display on, its white replaced the real line under
+                // capture-uses-3D meta, and the compositor filled it from the empty 3D history:
+                // one black frame on Star Fox Command's and Solatorobo's boot screens.
+                if (((previousMeta >> 16u) & 0x3u) == 0u)
+                    continue;
                 const bool previousLineUsesCapture3D =
                     (previousMeta & (kSoftPackedMetaFlagRegularCaptureUses3d
                         | kSoftPackedMetaFlagVramCaptureUses3d)) != 0u;
