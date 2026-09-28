@@ -129,6 +129,11 @@ android {
             useLegacyPackaging = true
         }
     }
+    androidResources {
+        // The bundled cheat database is already a zip; stored as-is it can be opened as a file
+        // descriptor (BundledCheatDatabase checks its length before copying it out)
+        noCompress += "zip"
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21

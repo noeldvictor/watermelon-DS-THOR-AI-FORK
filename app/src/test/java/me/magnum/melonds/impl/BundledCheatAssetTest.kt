@@ -6,19 +6,23 @@ import me.magnum.melonds.common.cheats.XmlCheatDatabaseParser
 import me.magnum.melonds.domain.model.CheatDatabase
 import me.magnum.melonds.domain.model.Game
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.InputStream
+import java.util.zip.ZipFile
 
 class BundledCheatAssetTest {
 
     private class Result(var databaseName: String? = null, val games: MutableList<Game> = mutableListOf())
 
-    private fun parse(bytes: ByteArray): Result {
+    private fun parse(stream: InputStream): Result {
         val result = Result()
         XmlCheatDatabaseParser().parseCheatDatabase(
-            ProgressTrackerInputStream(ByteArrayInputStream(bytes)),
+            ProgressTrackerInputStream(stream),
             object : CheatDatabaseParserListener {
                 override fun onDatabaseParseStart(databaseName: String): CheatDatabase {
                     result.databaseName = databaseName
@@ -37,15 +41,55 @@ class BundledCheatAssetTest {
         return result
     }
 
-    @Test
-    fun shippedAssetIsWellFormed() {
-        // A nested "<!--" in its header comment made every launch fail to parse it
-        val asset = listOf(File("src/main/assets/usrcheat.xml"), File("app/src/main/assets/usrcheat.xml"))
+    private fun bundledZip(): ZipFile {
+        val asset = listOf(File("src/main/assets/cheats/bundled_cheats.zip"), File("app/src/main/assets/cheats/bundled_cheats.zip"))
             .first { it.isFile }
+        return ZipFile(asset)
+    }
 
-        val result = parse(asset.readBytes())
+    @Test
+    fun bundledDatabaseHasTheGameMatchingCodeAndChecksum() {
+        bundledZip().use { zip ->
+            val entry = zip.getEntry("BSDE.xml")
+            val bundled = zip.getInputStream(entry).use { findGameInCodelist(it, "BSDE", "d2d1805e") }
 
-        assertEquals("Bundled cheats", result.databaseName)
+            assertNotNull(bundled)
+            assertEquals("DeadSkullzJr's NDS Cheat Database", bundled!!.databaseName)
+            assertEquals("BSDE", bundled.game.gameCode)
+            assertEquals("D2D1805E", bundled.game.gameChecksum)
+            val cheats = bundled.game.cheats.flatMap { it.cheats }
+            assertEquals(37, cheats.size)
+            assertTrue(cheats.all { it.cheatDatabaseId == BundledCheatDatabase.PENDING_DATABASE_ID })
+            // the anti-piracy code sits directly under <game>
+            assertTrue(cheats.any { it.name == "Anti-Piracy Bypass Code" })
+        }
+    }
+
+    @Test
+    fun bundledDatabaseIgnoresOtherChecksums() {
+        bundledZip().use { zip ->
+            val bundled = zip.getInputStream(zip.getEntry("BSDE.xml")).use { findGameInCodelist(it, "BSDE", "00000000") }
+            assertNull(bundled)
+        }
+    }
+
+    @Test
+    fun everyBundledEntryParses() {
+        var games = 0
+        var cheats = 0
+        bundledZip().use { zip ->
+            for (entry in zip.entries()) {
+                val result = zip.getInputStream(entry).use { parse(it) }
+                assertTrue(entry.name, result.games.isNotEmpty())
+                assertTrue(entry.name, result.games.all { "${it.gameCode}.xml" == entry.name })
+                games += result.games.size
+                cheats += result.games.sumOf { game -> game.cheats.sumOf { it.cheats.size } }
+            }
+        }
+
+        // tools/cheats/build_bundled_cheats.py reports these for the 20211225 database
+        assertEquals(4079, games)
+        assertEquals(597353, cheats)
     }
 
     @Test
@@ -77,7 +121,7 @@ class BundledCheatAssetTest {
             </codelist>
         """.trimIndent()
 
-        val result = parse(xml.toByteArray())
+        val result = parse(ByteArrayInputStream(xml.toByteArray()))
 
         assertEquals("Test", result.databaseName)
         assertEquals(1, result.games.size)

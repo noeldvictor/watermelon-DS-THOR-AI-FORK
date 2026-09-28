@@ -7,10 +7,15 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import me.magnum.melonds.common.workers.CheatImportWorker
 import me.magnum.melonds.database.MelonDatabase
 import me.magnum.melonds.database.entities.CheatDatabaseEntity
@@ -33,8 +38,12 @@ class RoomCheatsRepository(
     private val settingsBackupManager: SettingsBackupManager,
 ) : CheatsRepository {
     companion object {
+        private const val TAG = "RoomCheatsRepository"
         private const val IMPORT_WORKER_NAME = "cheat_import_worker"
     }
+
+    private val bundledCheatDatabase = BundledCheatDatabase(context)
+    private val bundledImportMutex = Mutex()
 
     override suspend fun getGames(): List<Game> {
         return database.gameDao().getGames().map { game ->
@@ -49,7 +58,11 @@ class RoomCheatsRepository(
     }
 
     override suspend fun findGameForRom(romInfo: RomInfo): Game? {
-        return database.gameDao().findGame(romInfo.gameCode, romInfo.headerChecksumString())?.let {
+        val gameChecksum = romInfo.headerChecksumString()
+        val gameEntity = database.gameDao().findGame(romInfo.gameCode, gameChecksum)
+            ?: importBundledGame(romInfo.gameCode, gameChecksum)
+
+        return gameEntity?.let {
             Game(
                 it.id,
                 it.name,
@@ -58,6 +71,31 @@ class RoomCheatsRepository(
                 emptyList(),
             )
         }
+    }
+
+    /**
+     * Copies a game's cheats from the bundled database the first time they are asked for. Only
+     * games the user opens end up in the app database (and in the settings mirror).
+     */
+    private suspend fun importBundledGame(gameCode: String, gameChecksum: String): GameEntity? = bundledImportMutex.withLock {
+        database.gameDao().findGame(gameCode, gameChecksum)?.let { return@withLock it }
+
+        val bundled = withContext(Dispatchers.IO) {
+            runCatching { bundledCheatDatabase.findGame(gameCode, gameChecksum) }
+                .onFailure { Log.w(TAG, "Could not read the bundled cheat database", it) }
+                .getOrNull()
+        } ?: return@withLock null
+
+        val databaseId = database.cheatDatabaseDao().findCheatDatabase(bundled.databaseName)?.id
+            ?: addCheatDatabase(bundled.databaseName).id
+            ?: return@withLock null
+        val cheats = bundled.game.cheats.map { folder ->
+            folder.copy(cheats = folder.cheats.map { it.copy(cheatDatabaseId = databaseId) })
+        }
+        addGameCheats(bundled.game.copy(cheats = cheats))
+        Log.i(TAG, "Added ${cheats.sumOf { it.cheats.size }} bundled cheats for $gameCode $gameChecksum")
+
+        database.gameDao().findGame(gameCode, gameChecksum)
     }
 
     override fun getAllGameCheats(game: Game): Flow<List<CheatFolder>> {
