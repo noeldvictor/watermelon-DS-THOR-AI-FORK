@@ -68,6 +68,10 @@ class FileSystemRomsRepository(
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
+    // Scans open and unpack ROM files (a 7z is decompressed to read its header). Overlapping
+    // scans (cached list, rescan, a newly added folder) each did that at once and all added to
+    // the same list; one at a time keeps memory bounded and the list consistent.
+    private val fileAccessDispatcher = Dispatchers.IO.limitedParallelism(1)
     private val romListType: Type = object : TypeToken<List<RomDto>>(){}.type
     private val romMetadataMirrorListType: Type = object : TypeToken<List<RomMetadataMirrorDto>>(){}.type
     private val directoryStateListType: Type = object : TypeToken<List<RomDirectoryStateDto>>(){}.type
@@ -125,7 +129,7 @@ class FileSystemRomsRepository(
         }
 
         if (addedDirectoryStrings.isNotEmpty()) {
-            coroutineScope.launch {
+            coroutineScope.launch(fileAccessDispatcher) {
                 scanningStatusSubject.emit(RomScanningStatus.SCANNING)
                 scanForNewRoms(targetDirectories = addedDirectoryStrings).collect {
                     addRom(it)
@@ -137,7 +141,7 @@ class FileSystemRomsRepository(
 
     override fun getRoms(): Flow<List<Rom>> = flow {
         if (areRomsLoaded.compareAndSet(false, true)) {
-            coroutineScope.launch {
+            coroutineScope.launch(fileAccessDispatcher) {
                 loadCachedRoms()
             }
         }
@@ -250,7 +254,7 @@ class FileSystemRomsRepository(
     }
 
     override fun rescanRoms() {
-        coroutineScope.launch {
+        coroutineScope.launch(fileAccessDispatcher) {
             scanningStatusSubject.emit(RomScanningStatus.SCANNING)
 
             scanForNewRoms().collect {

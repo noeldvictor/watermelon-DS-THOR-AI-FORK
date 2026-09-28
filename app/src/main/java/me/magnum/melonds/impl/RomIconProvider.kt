@@ -31,8 +31,10 @@ class RomIconProvider(private val context: Context, private val romFileProcessor
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount.coerceAtLeast(1)
     }
     private val romIconLocks = Collections.synchronizedMap(mutableMapOf<String, ReentrantLock>())
+    // a missing icon is read from the ROM (unpacking a 7z): one at a time, not one per visible row
+    private val iconDispatcher = Dispatchers.IO.limitedParallelism(1)
 
-    suspend fun getRomIcon(rom: Rom): Bitmap? = withContext(Dispatchers.IO) {
+    suspend fun getRomIcon(rom: Rom): Bitmap? = withContext(iconDispatcher) {
         val romHash = rom.uri.hashCode().toString()
         getRomIconLock(romHash).withLock {
             loadIconFromMemory(romHash, rom)
