@@ -32,7 +32,7 @@ external display support, RetroAchievements, RetroArch shader presets. On top of
 | Input | Single-button hotkeys | Adds modifier combos, so a hotkey can sit behind a chord; an unassigned stick click no longer washes out the top screen |
 | Cheats | Starts with an empty database | Ships a cheat database, imported on first launch |
 | Default renderer | Software | Vulkan on devices that support it (software otherwise), so packs and filters work out of the box |
-| Dual-screen rendering | Dual-screen presets and layouts | Adds fixes for flicker, stale lines and wrong-screen content on alternating dual-3D scenes, in both the Compatibility and FastPath profiles; videos shown in VRAM display mode play (Castlevania: Dawn of Sorrow's intro was black), and 2D drawn over captured 3D no longer blinks (Hotel Dusk) |
+| Dual-screen rendering | Dual-screen presets and layouts | Adds fixes for flicker, stale lines and wrong-screen content on alternating dual-3D scenes, in both the Compatibility and FastPath profiles; videos shown in VRAM display mode play (Castlevania: Dawn of Sorrow's intro was black), 2D drawn over captured 3D no longer blinks (Hotel Dusk), and white boot screens no longer flash black for a frame (Star Fox Command, Solatorobo) |
 | ROM list | Homebrew without a banner is missing (#200); overlapping scans | Homebrew is listed; scans and icon loading read one ROM at a time |
 | CPU / JIT | melonDS core as of Nov 2025 | ARM64 JIT fixes and speedups (see below) |
 | Saves and audio | — | Crash-safe save writes; changing the volume in-game (including from 0) keeps the sound playing |
