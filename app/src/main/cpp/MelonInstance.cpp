@@ -7476,12 +7476,24 @@ bool MelonInstance::latchSoftPackedFrameSnapshotCompatibility(
                             const int cb = static_cast<int>((b >> shift) & 0x3Fu);
                             return std::abs(ca - cb) <= 2;
                         };
-                        if ((previousAlpha & 0xC0u) == 0xC0u
+                        const bool previousAboveMatches =
+                            (previousAlpha & 0xC0u) == 0xC0u
                             && previousAbove != 0u
                             && previousAbove != kPacked3dPlaceholder
                             && channelClose(previousAbove, replayed, 0u)
                             && channelClose(previousAbove, replayed, 8u)
-                            && channelClose(previousAbove, replayed, 16u))
+                            && channelClose(previousAbove, replayed, 16u);
+                        // The same for a colour effect on the 3D (an alpha blend with a 2D layer,
+                        // a brightness step): the capture holds the effect's result, the 3D history
+                        // doesn't. Star Fox Command's title faded in from white on every other frame.
+                        const u32 previousCompMode = previousAlpha & 0x0Fu;
+                        const u32 previousEvb = ((*previousControl)[index] >> 16u) & 0xFFu;
+                        const bool previousSlotEffect =
+                            (previousAlpha & 0x40u) != 0u
+                            && ((previousCompMode == 1u && previousEvb != 0u)
+                                || previousCompMode == 2u
+                                || previousCompMode == 3u);
+                        if (previousAboveMatches || previousSlotEffect)
                         {
                             plane0[index] = (*previousPlane0)[index];
                             plane1[index] = previousAbove;
