@@ -22,8 +22,12 @@ object RomProcessor {
 	@Suppress("NAME_SHADOWING")
 	fun getRomMetadata(inputStream: InputStream): RomMetadata? {
 		val sectionReader = ForwardRomSectionReader(inputStream)
-		val header = sectionReader.readSection(0, 0x160) ?: return null
+		// the whole 0x200-byte header gives the cheat databases' checksum; the RetroAchievements
+		// hash below covers its first 0x160 bytes, as before
+		val fullHeader = sectionReader.readSection(0, 0x200) ?: return null
+		val header = fullHeader.copyOf(0x160)
 		val gameCode = String(header, 0x0C, 4)
+		val headerChecksum = Crc32.compute(fullHeader).toString(16).padStart(8, '0').uppercase()
 
 		val arm9Offset = byteArrayToInt(header, 0x20)
 		val arm9Size = byteArrayToInt(header, 0x2C)
@@ -90,6 +94,8 @@ object RomProcessor {
 			developerName,
 			isDsiWareTitle,
 			retroAchievementsHash,
+			gameCode = gameCode,
+			headerChecksum = headerChecksum,
 		)
 	}
 

@@ -472,6 +472,7 @@ private fun GridContent(
                     boxArtUrl = boxArtByUri[entry.rom.uri.toString()]?.takeIf { it.isNotEmpty() },
                     boxArtLoading = boxArtByUri[entry.rom.uri.toString()] == null,
                     showAchievementBadge = entry.rom.retroAchievementsHash in confirmedAchievementHashes,
+                    features = state.romFeatures[entry.rom.uri.toString()],
                     onClick = { onRomClick(entry.rom) },
                     onLongPress = {
                         if (!entry.rom.isInstalledDsiWareShortcut) {
@@ -597,6 +598,7 @@ private fun ListContent(
                             boxArtLoading = boxArtByUri[entry.rom.uri.toString()] == null,
                             allowConfiguration = allowConfiguration && !entry.rom.isInstalledDsiWareShortcut,
                             showAchievementBadge = entry.rom.retroAchievementsHash in confirmedAchievementHashes,
+                            features = state.romFeatures[entry.rom.uri.toString()],
                             onClick = { onRomClick(entry.rom) },
                             onLongPress = {
                                 if (!entry.rom.isInstalledDsiWareShortcut) {

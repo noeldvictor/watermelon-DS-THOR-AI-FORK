@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,6 +16,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.launch
@@ -25,17 +27,21 @@ import me.magnum.melonds.common.DirectoryAccessValidator
 import me.magnum.melonds.common.Permission
 import me.magnum.melonds.common.UriPermissionManager
 import me.magnum.melonds.domain.model.DSiWareTitle
+import me.magnum.melonds.common.romprocessors.RomFileProcessorFactory
+import me.magnum.melonds.domain.model.RomFeatures
 import me.magnum.melonds.domain.model.RomFilter
 import me.magnum.melonds.domain.model.RomViewMode
 import me.magnum.melonds.domain.model.SortingMode
 import me.magnum.melonds.domain.model.SortingOrder
 import me.magnum.melonds.domain.model.rom.Rom
 import me.magnum.melonds.domain.model.rom.RomDirectoryScanStatus
+import me.magnum.melonds.domain.model.rom.RomHeaderId
 import me.magnum.melonds.domain.model.rom.config.RomConfig
 import me.magnum.melonds.domain.repositories.RetroAchievementsRepository
 import me.magnum.melonds.domain.repositories.RomsRepository
 import me.magnum.melonds.domain.repositories.SettingsRepository
 import me.magnum.melonds.domain.services.DSiNandManager
+import me.magnum.melonds.impl.RomFeaturesProvider
 import me.magnum.melonds.impl.RomIconProvider
 import me.magnum.melonds.utils.EventSharedFlow
 import me.magnum.melonds.utils.SubjectSharedFlow
@@ -43,6 +49,7 @@ import me.magnum.melonds.ui.romlist.RomBrowserEntry
 import me.magnum.melonds.ui.romlist.RomBrowserUiState
 import java.text.Normalizer
 import java.util.Calendar
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 
 @HiltViewModel
@@ -55,6 +62,8 @@ class RomListViewModel @Inject constructor(
     private val dsiNandManager: DSiNandManager,
     retroAchievementsRepository: RetroAchievementsRepository,
     private val boxArtRepository: me.magnum.melonds.ui.romlist.boxart.BoxArtRepository,
+    private val romFeaturesProvider: RomFeaturesProvider,
+    private val romFileProcessorFactory: RomFileProcessorFactory,
 ) : ViewModel() {
 
     private val _searchQuery = MutableStateFlow("")
@@ -117,6 +126,15 @@ class RomListViewModel @Inject constructor(
     val romScanningStatus = romsRepository.getRomScanningStatus()
 
     private val romsWithParents = MutableStateFlow<List<RomWithParent>>(emptyList())
+    private val romFeaturesRefresh = MutableStateFlow(0)
+    private val headerIdBackfillStarted = AtomicBoolean(false)
+
+    // HD / ENH / CHT badges by ROM URI, recomputed when the ROMs change or the library comes back
+    // into view (a pack installed or cheats imported meanwhile)
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val romFeatures: StateFlow<Map<String, RomFeatures>> = combine(romsWithParents, romFeaturesRefresh) { roms, _ -> roms }
+        .mapLatest { roms -> runCatching { romFeaturesProvider.getFeatures(roms.map { it.rom }) }.getOrDefault(emptyMap()) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
     private val installedDsiWareShortcuts = MutableStateFlow<List<RomWithParent>>(emptyList())
     private val rootDirectories = MutableStateFlow<List<RootDirectory>>(emptyList())
     private val navigationStack = MutableStateFlow<List<BrowserLocation>>(listOf(BrowserLocation.VirtualRoot))
@@ -162,6 +180,7 @@ class RomListViewModel @Inject constructor(
 
         viewModelScope.launch {
             romsRepository.getRoms().collect { romList ->
+                backfillRomHeaderIds(romList)
                 val romsWithDocIds = withContext(Dispatchers.Default) {
                     romList.map { rom ->
                         val parentDocId = rom.parentTreeUri?.let { runCatching { DocumentsContract.getDocumentId(it) }.getOrNull() }
@@ -196,6 +215,7 @@ class RomListViewModel @Inject constructor(
                 rootDirectories,
                 _filter,
                 viewMode,
+                romFeatures,
             ) { values: Array<Any?> ->
                 @Suppress("UNCHECKED_CAST")
                 val sortedPair = values[0] as Pair<List<RomWithParent>, SortingMode>
@@ -208,6 +228,7 @@ class RomListViewModel @Inject constructor(
                     _sortingOrder.value,
                     values[4] as RomFilter,
                     values[5] as RomViewMode,
+                    values[6] as Map<String, RomFeatures>,
                 )
             }.collect { state ->
                 _browserState.value = state
@@ -229,6 +250,36 @@ class RomListViewModel @Inject constructor(
             }.collect { statusUi ->
                 _directoryStatusUi.value = statusUi
             }
+        }
+    }
+
+    fun refreshRomFeatures() {
+        romFeaturesRefresh.update { it + 1 }
+    }
+
+    /**
+     * ROMs scanned before game codes were kept have none, and their badges need one: read their
+     * headers once in the background (for a 7z that means unpacking its first bytes, as the scan does).
+     */
+    private fun backfillRomHeaderIds(roms: List<Rom>) {
+        val missing = roms.filter { it.gameCode == null && !it.isInstalledDsiWareShortcut }
+        if (missing.isEmpty() || !headerIdBackfillStarted.compareAndSet(false, true)) {
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val headerIds = HashMap<Uri, RomHeaderId>()
+            for (rom in missing) {
+                val romInfo = runCatching { romFileProcessorFactory.getFileRomProcessorForDocument(rom.uri)?.getRomInfo(rom) }.getOrNull()
+                    ?: continue
+                headerIds[rom.uri] = RomHeaderId(romInfo.gameCode, romInfo.headerChecksumString())
+                // in batches, so badges appear as the backfill goes without a save per ROM
+                if (headerIds.size >= 25) {
+                    romsRepository.setRomHeaderIds(headerIds.toMap())
+                    headerIds.clear()
+                }
+            }
+            romsRepository.setRomHeaderIds(headerIds)
         }
     }
 
@@ -330,6 +381,7 @@ class RomListViewModel @Inject constructor(
         sortingOrder: SortingOrder,
         filter: RomFilter,
         viewMode: RomViewMode,
+        features: Map<String, RomFeatures>,
     ): RomBrowserUiState = withContext(Dispatchers.Default) {
         val continuePlaying = sortedRoms
             .mapNotNull { it.rom.takeIf { rom -> rom.lastPlayed != null } }
@@ -349,11 +401,12 @@ class RomListViewModel @Inject constructor(
                 sortingOrder = sortingOrder,
                 continuePlaying = continuePlaying,
                 alphabetIndex = emptyMap(),
+                romFeatures = features,
             )
         }
 
         if (query.isNotEmpty()) {
-            val filtered = filterRoms(sortedRoms, query).filter { matchesFilter(it.rom, filter) }
+            val filtered = filterRoms(sortedRoms, query).filter { matchesFilter(it.rom, filter, features) }
             val romEntries = filtered.map { RomBrowserEntry.RomItem(it.rom) }
             return@withContext RomBrowserUiState(
                 entries = romEntries,
@@ -367,6 +420,7 @@ class RomListViewModel @Inject constructor(
                 sortingOrder = sortingOrder,
                 continuePlaying = continuePlaying,
                 alphabetIndex = computeAlphabetIndex(romEntries, sortingMode),
+                romFeatures = features,
             )
         }
 
@@ -394,7 +448,7 @@ class RomListViewModel @Inject constructor(
             }
             // When filtering, show ALL ROMs (flat) at virtual root so favorites/RA chips work across folders
             if (filter != RomFilter.ALL) {
-                sortedRoms.filter { matchesFilter(it.rom, filter) }
+                sortedRoms.filter { matchesFilter(it.rom, filter, features) }
                     .map { RomBrowserEntry.RomItem(it.rom) }
             } else {
                 folders
@@ -418,7 +472,7 @@ class RomListViewModel @Inject constructor(
                 emptyList()
             }
             val romEntries = sortedRoms
-                .filter { matchesFilter(it.rom, filter) }
+                .filter { matchesFilter(it.rom, filter, features) }
                 .filter {
                     if (filter == RomFilter.ALL) {
                         it.parentDocId == docId
@@ -450,16 +504,20 @@ class RomListViewModel @Inject constructor(
             sortingOrder = sortingOrder,
             continuePlaying = continuePlaying,
             alphabetIndex = computeAlphabetIndex(entries, sortingMode),
+            romFeatures = features,
         )
     }
 
-    private fun matchesFilter(rom: Rom, filter: RomFilter): Boolean {
+    private fun matchesFilter(rom: Rom, filter: RomFilter, features: Map<String, RomFeatures>): Boolean {
         return when (filter) {
             RomFilter.ALL -> true
             RomFilter.FAVORITES -> rom.isFavorite
             RomFilter.DS_ONLY -> !rom.isDsiWareTitle
             RomFilter.DSIWARE_ONLY -> rom.isDsiWareTitle
             RomFilter.WITH_RETRO_ACHIEVEMENTS -> rom.retroAchievementsHash.isNotEmpty()
+            RomFilter.HD_TEXTURES -> features[rom.uri.toString()]?.hdTextures == true
+            RomFilter.ENHANCED -> features[rom.uri.toString()]?.enhanced == true
+            RomFilter.CHEATS -> features[rom.uri.toString()]?.cheats == true
         }
     }
 

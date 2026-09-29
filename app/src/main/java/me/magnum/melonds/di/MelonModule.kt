@@ -206,6 +206,12 @@ object MelonModule {
 
     @Provides
     @Singleton
+    fun provideRomFeaturesProvider(@ApplicationContext context: Context, database: MelonDatabase): RomFeaturesProvider {
+        return RomFeaturesProvider(context, database)
+    }
+
+    @Provides
+    @Singleton
     fun provideRomIconProvider(@ApplicationContext context: Context, romFileProcessorFactory: RomFileProcessorFactory): RomIconProvider {
         return RomIconProvider(context, romFileProcessorFactory)
     }

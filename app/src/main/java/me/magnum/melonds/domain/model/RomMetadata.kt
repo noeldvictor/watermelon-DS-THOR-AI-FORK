@@ -5,4 +5,6 @@ data class RomMetadata(
     val developerName: String,
     val isDSiWareTitle: Boolean,
     val retroAchievementsHash: String,
+    val gameCode: String? = null,
+    val headerChecksum: String? = null,
 )

@@ -6,4 +6,7 @@ enum class RomFilter {
     DS_ONLY,
     DSIWARE_ONLY,
     WITH_RETRO_ACHIEVEMENTS,
+    HD_TEXTURES,
+    ENHANCED,
+    CHEATS,
 }

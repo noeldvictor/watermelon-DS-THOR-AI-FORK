@@ -1,6 +1,6 @@
 """Build the bundled cheat database asset from an R4CCE/DeSmuME cheats.xml.
 
-    python tools/cheats/build_bundled_cheats.py [cheats.xml[.gz]] [out.zip]
+    python tools/cheats/build_bundled_cheats.py [--index-only] [cheats.xml[.gz]] [out.zip]
 
 The source defaults to tools/cheats/source/cheats.xml.gz, the database the app ships.
 
@@ -10,8 +10,15 @@ app/src/main/assets/cheats/bundled_cheats.zip). Each entry is a complete
 starts with that code (revisions and hacks share a code; the app picks the
 one whose header checksum matches). The app opens a ROM's entry the first
 time its cheats are shown, so nothing is imported up front.
+
+Also writes bundled_cheats_index.txt next to the zip: one line per game,
+"<CODE> <CHECKSUM> <cheats> <E|->", E when the game has an enhancement code
+(widescreen, anti-aliasing, draw distance). The ROM list reads it for its
+CHT / ENH badges without opening the zip. --index-only rewrites just the index.
+The name rule must match EnhancementCheats.kt (BundledCheatAssetTest checks).
 """
 import gzip
+import re
 import sys
 import zipfile
 import xml.etree.ElementTree as ET
@@ -22,11 +29,28 @@ REPO = Path(__file__).resolve().parents[2]
 DEFAULT_SOURCE = REPO / "tools" / "cheats" / "source" / "cheats.xml.gz"
 DEFAULT_OUT = REPO / "app" / "src" / "main" / "assets" / "cheats" / "bundled_cheats.zip"
 FIXED_TIME = (2021, 12, 25, 0, 0, 0)  # deterministic zip entries
+# EnhancementCheats.kt: widescreen (not Animal Crossing's "Widescreen TV" item), anti-aliasing, draw distance
+ENHANCEMENT = re.compile(r"wide\s*screen(?!\s*tv)|\b16\s*:\s*(9|10)\b|anti.?alias|draw\s*distance", re.IGNORECASE)
+
+
+def write_index(games, path):
+    entries = {}
+    for game in games:
+        code, _, checksum = (game.findtext("gameid") or "").strip().partition(" ")
+        key = (code.upper(), checksum.strip().upper())
+        names = [cheat.findtext("name") or "" for cheat in game.iter("cheat")]
+        count, enhanced = entries.get(key, (0, False))
+        entries[key] = (count + len(names), enhanced or any(ENHANCEMENT.search(name) for name in names))
+    lines = [f"{code} {checksum} {count} {'E' if enhanced else '-'}" for (code, checksum), (count, enhanced) in sorted(entries.items())]
+    path.write_text("\n".join(lines) + "\n", encoding="ascii", newline="\n")
+    print(f"index: {len(lines)} games, {sum(1 for line in lines if line.endswith('E'))} with enhancement codes -> {path}")
 
 
 def main():
-    source = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_SOURCE
-    out = Path(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_OUT
+    args = [arg for arg in sys.argv[1:] if arg != "--index-only"]
+    index_only = len(args) != len(sys.argv) - 1
+    source = Path(args[0]) if len(args) > 0 else DEFAULT_SOURCE
+    out = Path(args[1]) if len(args) > 1 else DEFAULT_OUT
 
     opener = gzip.open if source.suffix == ".gz" else open
     with opener(source, "rb") as stream:
@@ -45,6 +69,10 @@ def main():
         by_code[code].append(game)
 
     out.parent.mkdir(parents=True, exist_ok=True)
+    write_index([game for code in sorted(by_code) for game in by_code[code]], out.with_name("bundled_cheats_index.txt"))
+    if index_only:
+        return
+
     name_xml = ET.Element("name")
     name_xml.text = database_name
     games = cheats = 0

@@ -36,6 +36,7 @@ import me.magnum.melonds.impl.dtos.rom.RomDto
 import me.magnum.melonds.impl.dtos.rom.RomDirectoryFileDto
 import me.magnum.melonds.impl.dtos.rom.RomDirectoryStateDto
 import me.magnum.melonds.domain.model.rom.RomDirectoryScanStatus
+import me.magnum.melonds.domain.model.rom.RomHeaderId
 import me.magnum.melonds.utils.FileUtils
 import me.magnum.melonds.utils.SubjectSharedFlow
 import java.io.File
@@ -225,7 +226,12 @@ class FileSystemRomsRepository(
             return
 
         rom.lastPlayed = lastPlayed
-        roms[romIndex] = rom
+        // the caller's copy can predate the header ID the ROM list filled in
+        val storedRom = roms[romIndex]
+        roms[romIndex] = rom.copy(
+            gameCode = rom.gameCode ?: storedRom.gameCode,
+            headerChecksum = rom.headerChecksum ?: storedRom.headerChecksum,
+        )
         onRomsChanged()
     }
 
@@ -251,6 +257,24 @@ class FileSystemRomsRepository(
 
         roms[romIndex] = romInList.copy(isFavorite = favorite)
         onRomsChanged()
+    }
+
+    override fun setRomHeaderIds(headerIds: Map<Uri, RomHeaderId>) {
+        if (headerIds.isEmpty())
+            return
+
+        // on the scan's dispatcher, so a running scan and this don't edit the list at once
+        coroutineScope.launch(fileAccessDispatcher) {
+            var changed = false
+            for (index in roms.indices) {
+                val headerId = headerIds[roms[index].uri] ?: continue
+                roms[index] = roms[index].copy(gameCode = headerId.gameCode, headerChecksum = headerId.headerChecksum)
+                changed = true
+            }
+            if (changed) {
+                onRomsChanged()
+            }
+        }
     }
 
     override fun rescanRoms() {
@@ -303,6 +327,8 @@ class FileSystemRomsRepository(
                 isDsiWareTitle = incomingRom.isDsiWareTitle,
                 retroAchievementsHash = incomingRom.retroAchievementsHash,
                 config = optionsConfig ?: existingRom.config,
+                gameCode = incomingRom.gameCode ?: existingRom.gameCode,
+                headerChecksum = incomingRom.headerChecksum ?: existingRom.headerChecksum,
             )
             roms.remove(existingRom)
             roms.add(updatedRom)

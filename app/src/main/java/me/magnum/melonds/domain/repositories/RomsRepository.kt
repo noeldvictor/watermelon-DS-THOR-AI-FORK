@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.StateFlow
 import me.magnum.melonds.domain.model.rom.Rom
 import me.magnum.melonds.domain.model.rom.config.RomConfig
 import me.magnum.melonds.domain.model.rom.RomDirectoryScanStatus
+import me.magnum.melonds.domain.model.rom.RomHeaderId
 import me.magnum.melonds.domain.model.RomScanningStatus
 import java.util.*
 import kotlin.time.Duration
@@ -21,6 +22,7 @@ interface RomsRepository {
     fun setRomLastPlayed(rom: Rom, lastPlayed: Date)
     fun addRomPlayTime(rom: Rom, playTime: Duration)
     fun setRomFavorite(rom: Rom, favorite: Boolean)
+    fun setRomHeaderIds(headerIds: Map<Uri, RomHeaderId>)
     fun rescanRoms()
     fun invalidateRoms()
 }

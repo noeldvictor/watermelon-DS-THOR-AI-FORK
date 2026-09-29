@@ -14,7 +14,9 @@ object WidescreenCheats {
 
     const val DEFAULT_ASPECT_RATIO = 16f / 9f
 
-    fun isWidescreen(cheat: Cheat): Boolean = NAME.containsMatchIn(cheat.name)
+    fun isWidescreen(cheat: Cheat): Boolean = isWidescreenName(cheat.name)
+
+    fun isWidescreenName(cheatName: String): Boolean = NAME.containsMatchIn(cheatName)
 
     /** The shape (width / height) [cheat] expects the top screen to have, or null if it isn't a widescreen code. */
     fun aspectRatio(cheat: Cheat): Float? = when {

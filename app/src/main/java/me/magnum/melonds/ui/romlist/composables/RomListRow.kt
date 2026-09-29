@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import me.magnum.melonds.R
+import me.magnum.melonds.domain.model.RomFeatures
 import me.magnum.melonds.domain.model.rom.Rom
 import me.magnum.melonds.ui.theme.WatermelonColors
 import me.magnum.melonds.ui.theme.WatermelonMono
@@ -66,6 +67,7 @@ fun RomListRow(
     onLongPress: () -> Unit,
     onConfigClick: () -> Unit,
     modifier: Modifier = Modifier,
+    features: RomFeatures? = null,
 ) {
     val colors = watermelon
     val context = LocalContext.current
@@ -157,21 +159,24 @@ fun RomListRow(
         }
         Spacer(Modifier.width(8.dp))
         Column(horizontalAlignment = Alignment.End) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(colors.surface2)
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-            ) {
-                Text(
-                    text = if (rom.isDsiWareTitle) "DSiWARE" else "DS",
-                    color = colors.text2,
-                    fontFamily = WatermelonMono,
-                    fontSize = 8.sp,
-                    lineHeight = 9.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 0.5.sp,
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(colors.surface2)
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        text = if (rom.isDsiWareTitle) "DSiWARE" else "DS",
+                        color = colors.text2,
+                        fontFamily = WatermelonMono,
+                        fontSize = 8.sp,
+                        lineHeight = 9.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 0.5.sp,
+                    )
+                }
+                RomFeatureBadges(features = features, overArt = false, modifier = Modifier.padding(start = 4.dp))
             }
             val hours = formatHoursLabel(rom.totalPlayTime)
             if (hours.isNotEmpty()) {

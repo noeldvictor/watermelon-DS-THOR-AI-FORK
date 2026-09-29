@@ -44,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import me.magnum.melonds.domain.model.RomFeatures
 import me.magnum.melonds.domain.model.rom.Rom
 import me.magnum.melonds.ui.theme.WatermelonColors
 import me.magnum.melonds.ui.theme.WatermelonMono
@@ -71,6 +72,7 @@ fun RomGridCard(
     onClick: () -> Unit,
     onLongPress: () -> Unit,
     modifier: Modifier = Modifier,
+    features: RomFeatures? = null,
 ) {
     val colors = watermelon
     val shape = RoundedCornerShape(7.dp)
@@ -131,6 +133,7 @@ fun RomGridCard(
                     )
                 }
             }
+            RomFeatureBadges(features = features, overArt = true, modifier = Modifier.padding(start = 4.dp))
         }
 
         if (rom.isFavorite) {

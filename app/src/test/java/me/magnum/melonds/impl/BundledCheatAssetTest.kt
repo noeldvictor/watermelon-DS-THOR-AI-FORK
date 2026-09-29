@@ -4,8 +4,10 @@ import me.magnum.melonds.common.cheats.CheatDatabaseParserListener
 import me.magnum.melonds.common.cheats.ProgressTrackerInputStream
 import me.magnum.melonds.common.cheats.XmlCheatDatabaseParser
 import me.magnum.melonds.domain.model.CheatDatabase
+import me.magnum.melonds.domain.model.EnhancementCheats
 import me.magnum.melonds.domain.model.Game
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -134,5 +136,47 @@ class BundledCheatAssetTest {
         assertEquals("All party members", game.cheats[1].cheats[0].description)
         assertEquals("02000004 000003E7", game.cheats[1].cheats[0].code)
         assertTrue(game.cheats.flatMap { it.cheats }.all { it.cheatDatabaseId == -1L })
+    }
+
+    // build_bundled_cheats.py writes the index with its own copy of the enhancement rule; it must
+    // agree with EnhancementCheats for every game, or the ENH badge and the pause-menu switch differ
+    @Test
+    fun bundledIndexMatchesTheDatabase() {
+        val indexFile = listOf(File("src/main/assets/cheats/bundled_cheats_index.txt"), File("app/src/main/assets/cheats/bundled_cheats_index.txt"))
+            .first { it.isFile }
+        val index = indexFile.useLines { parseBundledCheatIndex(it) }
+
+        val expected = HashMap<String, BundledCheatDatabase.IndexEntry>()
+        bundledZip().use { zip ->
+            for (entry in zip.entries()) {
+                for (game in zip.getInputStream(entry).use { parse(it) }.games) {
+                    val key = BundledCheatDatabase.indexKey(game.gameCode, game.gameChecksum.orEmpty())
+                    val names = game.cheats.flatMap { folder -> folder.cheats.map { it.name } }
+                    val previous = expected[key]
+                    expected[key] = BundledCheatDatabase.IndexEntry(
+                        cheatCount = (previous?.cheatCount ?: 0) + names.size,
+                        enhanced = previous?.enhanced == true || names.any { EnhancementCheats.isEnhancement(it) },
+                    )
+                }
+            }
+        }
+
+        assertEquals(expected, index)
+        assertEquals(309, index.values.count { it.enhanced })
+        // Diddy Kong Racing DS (USA): widescreen; Lufia (USA): cheats, no enhancement code
+        assertEquals(BundledCheatDatabase.IndexEntry(cheatCount = index.getValue("AWDE 21C9768B").cheatCount, enhanced = true), index["AWDE 21C9768B"])
+        assertEquals(BundledCheatDatabase.IndexEntry(cheatCount = 37, enhanced = false), index["BSDE D2D1805E"])
+    }
+
+    @Test
+    fun enhancementNames() {
+        listOf(
+            "Widescreen",
+            "Widescreen (16:10)",
+            "Disable 3D Edge Marking + Enable 3D Anti-Aliasing",
+            "Disable 3D Edge Marking/Enable 3D Anti-Aliasing",
+            "Max/Infinite Draw Distance",
+        ).forEach { assertTrue(it, EnhancementCheats.isEnhancement(it)) }
+        listOf("Widescreen TV", "Max HP", "Infinite Health FPS Mode").forEach { assertFalse(it, EnhancementCheats.isEnhancement(it)) }
     }
 }

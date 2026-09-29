@@ -1,5 +1,6 @@
 package me.magnum.melonds.ui.romlist
 
+import me.magnum.melonds.domain.model.RomFeatures
 import me.magnum.melonds.domain.model.RomFilter
 import me.magnum.melonds.domain.model.RomViewMode
 import me.magnum.melonds.domain.model.SortingMode
@@ -31,4 +32,6 @@ data class RomBrowserUiState(
     val sortingOrder: SortingOrder = SortingOrder.ASCENDING,
     val continuePlaying: List<Rom> = emptyList(),
     val alphabetIndex: Map<Char, Int> = emptyMap(),
+    // HD / ENH / CHT badges by ROM URI
+    val romFeatures: Map<String, RomFeatures> = emptyMap(),
 )

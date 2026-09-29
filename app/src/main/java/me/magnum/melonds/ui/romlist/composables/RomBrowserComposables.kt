@@ -259,6 +259,9 @@ fun FilterChipsRow(
         RomFilter.DS_ONLY to R.string.rom_filter_ds,
         RomFilter.DSIWARE_ONLY to R.string.rom_filter_dsiware,
         RomFilter.WITH_RETRO_ACHIEVEMENTS to R.string.rom_filter_retro_achievements,
+        RomFilter.HD_TEXTURES to R.string.rom_filter_hd_textures,
+        RomFilter.ENHANCED to R.string.rom_filter_enhanced,
+        RomFilter.CHEATS to R.string.rom_filter_cheats,
     )
     LazyRow(
         modifier = modifier.fillMaxWidth(),

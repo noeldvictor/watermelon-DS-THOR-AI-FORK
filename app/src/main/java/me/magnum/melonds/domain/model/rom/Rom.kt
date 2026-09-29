@@ -19,6 +19,10 @@ data class Rom(
     val isFavorite: Boolean = false,
     val installedDsiWareTitleId: Long? = null,
     val installedDsiWareIcon: ByteArray? = null,
+    // Read from the header at scan time; null for ROMs scanned before they were kept (the ROM list
+    // fills them in) and for installed DSiWare shortcuts
+    val gameCode: String? = null,
+    val headerChecksum: String? = null,
 ) {
     val isInstalledDsiWareShortcut: Boolean
         get() = installedDsiWareTitleId != null

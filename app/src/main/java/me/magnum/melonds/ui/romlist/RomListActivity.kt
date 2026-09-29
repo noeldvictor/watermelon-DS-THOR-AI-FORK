@@ -186,6 +186,8 @@ class RomListActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        // a pack installed or cheats imported meanwhile
+        viewModel.refreshRomFeatures()
         externalInfoController.attach()
         externalInfoController.setContent {
             val rom = highlightedRom.collectAsState().value

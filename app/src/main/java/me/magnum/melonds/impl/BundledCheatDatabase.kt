@@ -23,12 +23,32 @@ class BundledCheatDatabase(private val context: Context) {
 
     data class BundledGame(val databaseName: String, val game: Game)
 
+    /** A line of bundled_cheats_index.txt. */
+    data class IndexEntry(val cheatCount: Int, val enhanced: Boolean)
+
     companion object {
         private const val ASSET_PATH = "cheats/bundled_cheats.zip"
+        private const val INDEX_ASSET_PATH = "cheats/bundled_cheats_index.txt"
         const val PENDING_DATABASE_ID = -1L
+
+        fun indexKey(gameCode: String, gameChecksum: String): String {
+            return "${gameCode.uppercase()} ${gameChecksum.uppercase()}"
+        }
     }
 
     private var archive: ZipFile? = null
+    private var index: Map<String, IndexEntry>? = null
+
+    /**
+     * Every game in the database by [indexKey], with its cheat count and whether it has an
+     * enhancement code, read from the index next to the zip without opening it.
+     */
+    @Synchronized
+    fun index(): Map<String, IndexEntry> {
+        index?.let { return it }
+        return context.assets.open(INDEX_ASSET_PATH).bufferedReader().useLines { parseBundledCheatIndex(it) }
+            .also { index = it }
+    }
 
     @Synchronized
     fun findGame(gameCode: String, gameChecksum: String): BundledGame? {
@@ -90,4 +110,17 @@ internal fun findGameInCodelist(stream: InputStream, gameCode: String, gameCheck
 
     val game = match ?: return null
     return BundledCheatDatabase.BundledGame(parsedDatabaseName ?: "Bundled cheats", game)
+}
+
+/** Parses bundled_cheats_index.txt: "<CODE> <CHECKSUM> <cheats> <E|->" per line. */
+internal fun parseBundledCheatIndex(lines: Sequence<String>): Map<String, BundledCheatDatabase.IndexEntry> {
+    val entries = HashMap<String, BundledCheatDatabase.IndexEntry>()
+    for (line in lines) {
+        val parts = line.trim().split(' ')
+        if (parts.size != 4)
+            continue
+        val cheatCount = parts[2].toIntOrNull() ?: continue
+        entries[BundledCheatDatabase.indexKey(parts[0], parts[1])] = BundledCheatDatabase.IndexEntry(cheatCount, parts[3] == "E")
+    }
+    return entries
 }
