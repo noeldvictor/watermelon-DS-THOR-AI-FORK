@@ -1,0 +1,16 @@
+# Save states on the AYN Thor used as regression cases (private states in the app's files,
+# slots through LOAD_STATE). ROM file names are the Thor's SD card ones.
+# rom | state | frames
+The Legend of Zelda Phantom Hourglass.zip | slot:8 | 120
+The Legend of Zelda Phantom Hourglass.zip | ph_link.ml | 120
+Diddy Kong Racing DS (U)(EvlChiken).7z | ws_dkr_intro.ml | 120
+Star Fox Command.7z | sfc_title.ml | 120
+Star Fox Command.7z | ws_sfc_map.ml | 120
+Lufia.7z | glitch_boss.ml | 120
+Lufia.7z | gades_fadein.ml | 240
+Castlevania - Dawn of Sorrow.7z | cv_anime.ml | 120
+Hotel Dusk - Room 215.7z | hd_hand.ml | 120
+Nostalgia (USA).zip | nost_title.ml | 120
+The Legend of Zelda Spirit Tracks [dpad].zip | shot_bkie.ml | 120
+Chrono Trigger (U)(XenoPhobia).7z | shot_yque.ml | 120
+Super Princess Peach.7z | spp_level.ml | 120

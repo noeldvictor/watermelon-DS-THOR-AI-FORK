@@ -77,6 +77,7 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
             context.debugCommandAction(ACTION_LIST_ROMS_SUFFIX) -> handleListRoms(entryPoint, intent)
             context.debugCommandAction(ACTION_GET_FPS_SUFFIX) -> handleGetFps()
             context.debugCommandAction(ACTION_EXPORT_SETTINGS_BACKUP_SUFFIX) -> handleSettingsBackup(context, entryPoint, intent, export = true)
+            context.debugCommandAction(ACTION_DUMP_FRAME_SEQUENCE_SUFFIX) -> handleDumpFrameSequence(context, entryPoint, intent)
             context.debugCommandAction(ACTION_IMPORT_SETTINGS_BACKUP_SUFFIX) -> handleSettingsBackup(context, entryPoint, intent, export = false)
             context.debugCommandAction(ACTION_START_DEV_SERVER_SUFFIX) -> handleDevServer(context, intent, start = true)
             context.debugCommandAction(ACTION_STOP_DEV_SERVER_SUFFIX) -> handleDevServer(context, intent, start = false)
@@ -406,6 +407,88 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
             "action=step_frame renderer=${renderer.name.lowercase(Locale.US)} frames=$frames startFrame=$startFrame endFrame=$endFrame ready=${if (ready) 1 else 0}",
         )
         return ready
+    }
+
+    /**
+     * tools/frame_compare: from the paused emulator (a state loaded with pause_after), saves the
+     * final screens of [count] consecutive frames as frame_NNNN.png (256x384, top over bottom) in
+     * cache/frame-sequences/<name>, stepping exactly one emulated frame between them
+     * (MelonEmulator.debugStepFrame). Vulkan frames are the composed picture scaled to native size,
+     * the software renderer's its framebuffer. Returns at once and runs in the background (a few
+     * hundred frames outlast a broadcast); done.txt appears when the sequence is complete.
+     */
+    private suspend fun handleDumpFrameSequence(context: Context, entryPoint: DebugCommandEntryPoint, intent: Intent): Boolean {
+        val count = (intent.firstNullableIntExtra(EXTRA_FRAMES, EXTRA_BURST_COUNT) ?: 60).coerceIn(1, 3600)
+        val name = intent.firstStringExtra(EXTRA_PATH)?.let { File(it).name }?.takeIf { it.isNotBlank() } ?: "sequence"
+        val outputDir = File(context.cacheDir, "frame-sequences/$name")
+        outputDir.deleteRecursively()
+        outputDir.mkdirs()
+
+        entryPoint.sharedPreferences().edit(commit = true) {
+            putBoolean(KEY_RENDERER_DEBUG_TOOLS_ENABLED, true)
+        }
+        if (DebugCommandStateStore.requestSettingsRefresh()) {
+            delay(350L)
+        }
+        val renderer = entryPoint.settingsRepository().getCurrentVideoRenderer()
+
+        receiverScope.launch {
+            DebugCommandExecutionLock.withLock {
+                dumpFrameSequence(renderer, count, outputDir)
+            }
+        }
+        resultData = "started=1 frames=$count dir=${outputDir.absolutePath}"
+        return true
+    }
+
+    private suspend fun dumpFrameSequence(renderer: VideoRenderer, count: Int, outputDir: File) {
+        val manifest = StringBuilder()
+        manifest.appendLine("renderer=${renderer.name.lowercase(Locale.US)}")
+        MelonEmulator.pauseEmulation()
+        DebugCommandStateStore.setDebugPauseHeld(true)
+        waitForRendererReadyOrTimeout(renderer, RendererDebugBridge.getCurrentFrameIndexForDebug(), 2_000L)
+
+        var saved = 0
+        for (index in 0 until count) {
+            RendererDebugBridge.clearPreparedRendererSnapshot()
+            val frameId = RendererDebugBridge.getCurrentFrameIndexForDebug()
+            val pixels = RendererDebugBridge.captureCurrentFrame()
+            val ok = pixels != null && pixels.size == RendererDebugBridge.CAPTURE_WIDTH * RendererDebugBridge.CAPTURE_HEIGHT
+            if (ok) {
+                // the software framebuffer carries no alpha; a transparent pixel would lose its colour in the PNG
+                for (i in pixels!!.indices) {
+                    pixels[i] = pixels[i] or 0xFF000000.toInt()
+                }
+                val bitmap = android.graphics.Bitmap.createBitmap(
+                    RendererDebugBridge.CAPTURE_WIDTH,
+                    RendererDebugBridge.CAPTURE_HEIGHT,
+                    android.graphics.Bitmap.Config.ARGB_8888,
+                )
+                bitmap.setPixels(pixels, 0, RendererDebugBridge.CAPTURE_WIDTH, 0, 0, RendererDebugBridge.CAPTURE_WIDTH, RendererDebugBridge.CAPTURE_HEIGHT)
+                File(outputDir, "frame_%04d.png".format(Locale.US, index)).outputStream().use {
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+                }
+                bitmap.recycle()
+                saved++
+            }
+            manifest.appendLine("frame[$index]=$frameId ok=${if (ok) 1 else 0}")
+
+            if (index + 1 < count) {
+                MelonEmulator.debugStepFrame()
+                val deadline = System.nanoTime() + 5_000_000_000L
+                while (RendererDebugBridge.getCurrentFrameIndexForDebug() <= frameId && System.nanoTime() < deadline) {
+                    delay(4L)
+                }
+                // the emulation thread pauses again after the frame; let it get there
+                delay(15L)
+                waitForRendererReadyOrTimeout(renderer, RendererDebugBridge.getCurrentFrameIndexForDebug(), 2_000L)
+            }
+        }
+
+        manifest.appendLine("saved=$saved")
+        File(outputDir, "manifest.txt").writeText(manifest.toString())
+        File(outputDir, "done.txt").writeText("frames=$count saved=$saved\n")
+        Log.w(TAG, "action=dump_frame_sequence renderer=${renderer.name.lowercase(Locale.US)} frames=$count saved=$saved dir=${outputDir.absolutePath}")
     }
 
     private suspend fun handleDumpRendererCapture(
@@ -1071,6 +1154,7 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         private const val ACTION_LIST_ROMS_SUFFIX = "LIST_ROMS"
         private const val ACTION_GET_FPS_SUFFIX = "GET_FPS"
         private const val ACTION_EXPORT_SETTINGS_BACKUP_SUFFIX = "EXPORT_SETTINGS_BACKUP"
+        private const val ACTION_DUMP_FRAME_SEQUENCE_SUFFIX = "DUMP_FRAME_SEQUENCE"
         private const val ACTION_IMPORT_SETTINGS_BACKUP_SUFFIX = "IMPORT_SETTINGS_BACKUP"
         private const val ACTION_START_DEV_SERVER_SUFFIX = "START_DEV_SERVER"
         private const val ACTION_STOP_DEV_SERVER_SUFFIX = "STOP_DEV_SERVER"

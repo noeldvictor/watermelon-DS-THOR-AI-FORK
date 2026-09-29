@@ -32,6 +32,7 @@
                 <action android:name="${applicationId}.LIST_ROMS" />
                 <action android:name="${applicationId}.GET_FPS" />
                 <action android:name="${applicationId}.EXPORT_SETTINGS_BACKUP" />
+                <action android:name="${applicationId}.DUMP_FRAME_SEQUENCE" />
                 <action android:name="${applicationId}.IMPORT_SETTINGS_BACKUP" />
                 <action android:name="${applicationId}.START_DEV_SERVER" />
                 <action android:name="${applicationId}.STOP_DEV_SERVER" />
