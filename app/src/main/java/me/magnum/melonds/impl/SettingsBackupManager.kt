@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import me.magnum.melonds.database.MelonDatabase
+import me.magnum.melonds.database.entities.CheatDatabaseEntity
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -58,6 +59,8 @@ class SettingsBackupManager @Inject constructor(
             "cheat" to listOf("id", "cheat_folder_id", "cheat_database_id", "name", "description", "code", "enabled"),
         )
         private val CHEAT_RESTORE_DELETE_ORDER = listOf("cheat", "cheat_folder", "game", "cheat_database")
+        // 2: only games with enabled or custom cheats, grouped by game
+        private const val CHEATS_BACKUP_FORMAT = 2
         private val LONG_PREF_KEYS = setOf(
             "ra_hash_library_last_updated",
             "last_version",
@@ -129,6 +132,16 @@ class SettingsBackupManager @Inject constructor(
         }.onFailure {
             Log.w(TAG, "Failed to restore settings mirror from $treeUri", it)
         }
+    }
+
+    /** The backup [backup] writes, to an app-private file (developer commands). */
+    fun writeBackupTo(file: File) {
+        writeTextAtomically(file, createBackupJson().toString())
+    }
+
+    /** Restores a file written by [writeBackupTo] or [backup] (developer commands). */
+    fun restoreBackupFrom(file: File) {
+        restoreBackupJson(JSONObject(file.readText()))
     }
 
     fun overwriteMirrorAt(treeUri: Uri) {
@@ -397,34 +410,79 @@ class SettingsBackupManager @Inject constructor(
         writeTextAtomically(File(context.filesDir, ROM_DATA_FILE), roms.toString())
     }
 
+    /**
+     * The cheats only this install has: every game where the user enabled a cheat or wrote one,
+     * whole (all folders and cheats, from every database), so restoring it brings the state back.
+     *
+     * Imported databases are left out; they can be imported again, and the bundled one comes back
+     * by itself. Copying them made every settings change serialise the whole cheat database into
+     * one JSON string - a full DeadSkullzJr import is ~600k cheats, enough to run out of memory.
+     */
     private fun createCheatsJson(): JSONObject {
-        val readableDb = database.openHelper.readableDatabase
-        return JSONObject().apply {
-            for ((tableName, columns) in CHEAT_TABLES) {
-                val rows = JSONArray()
-                val cursor = readableDb.query("SELECT ${columns.joinToString(", ")} FROM $tableName ORDER BY id")
-                cursor.use {
-                    while (it.moveToNext()) {
-                        val row = JSONObject()
-                        for (column in columns) {
-                            val columnIndex = it.getColumnIndexOrThrow(column)
-                            when (it.getType(columnIndex)) {
-                                android.database.Cursor.FIELD_TYPE_NULL -> row.put(column, JSONObject.NULL)
-                                android.database.Cursor.FIELD_TYPE_INTEGER -> row.put(column, it.getLong(columnIndex))
-                                android.database.Cursor.FIELD_TYPE_FLOAT -> row.put(column, it.getDouble(columnIndex))
-                                android.database.Cursor.FIELD_TYPE_STRING -> row.put(column, it.getString(columnIndex))
-                                android.database.Cursor.FIELD_TYPE_BLOB -> row.put(column, JSONObject.NULL)
-                            }
-                        }
-                        rows.put(row)
-                    }
-                }
-                put(tableName, rows)
-            }
+        val db = database.openHelper.readableDatabase
+
+        val databaseNames = mutableMapOf<Long, String>()
+        db.query("SELECT id, name FROM cheat_database").use {
+            while (it.moveToNext())
+                databaseNames[it.getLong(0)] = it.getString(1)
         }
+
+        val gameIds = mutableListOf<Long>()
+        db.query(
+            "SELECT DISTINCT cheat_folder.game_id FROM cheat JOIN cheat_folder ON cheat.cheat_folder_id = cheat_folder.id " +
+                "WHERE cheat.enabled = 1 OR cheat.cheat_database_id = ? ORDER BY cheat_folder.game_id",
+            arrayOf<Any?>(CheatDatabaseEntity.CUSTOM_CHEATS_DATABASE_ID),
+        ).use {
+            while (it.moveToNext())
+                gameIds.add(it.getLong(0))
+        }
+
+        val games = JSONArray()
+        for (gameId in gameIds) {
+            val game = db.query("SELECT name, game_code, game_checksum FROM game WHERE id = ?", arrayOf<Any?>(gameId)).use {
+                if (!it.moveToFirst()) return@use null
+                JSONObject()
+                    .put("name", it.getString(0))
+                    .put("gameCode", it.getString(1))
+                    .put("gameChecksum", it.getString(2))
+            } ?: continue
+
+            val folders = JSONArray()
+            db.query("SELECT id, name FROM cheat_folder WHERE game_id = ? ORDER BY id", arrayOf<Any?>(gameId)).use { folderCursor ->
+                while (folderCursor.moveToNext()) {
+                    val cheats = JSONArray()
+                    db.query(
+                        "SELECT cheat_database_id, name, description, code, enabled FROM cheat WHERE cheat_folder_id = ? ORDER BY id",
+                        arrayOf<Any?>(folderCursor.getLong(0)),
+                    ).use { cheatCursor ->
+                        while (cheatCursor.moveToNext()) {
+                            cheats.put(JSONObject()
+                                .put("database", databaseNames[cheatCursor.getLong(0)] ?: CheatDatabaseEntity.CUSTOM_CHEATS_DATABASE_NAME)
+                                .put("name", cheatCursor.getString(1))
+                                .put("description", if (cheatCursor.isNull(2)) JSONObject.NULL else cheatCursor.getString(2))
+                                .put("code", cheatCursor.getString(3))
+                                .put("enabled", cheatCursor.getInt(4) != 0))
+                        }
+                    }
+                    folders.put(JSONObject().put("name", folderCursor.getString(1)).put("cheats", cheats))
+                }
+            }
+            games.put(game.put("folders", folders))
+        }
+
+        return JSONObject()
+            .put("format", CHEATS_BACKUP_FORMAT)
+            .put("games", games)
     }
 
     private fun restoreCheatsJson(json: JSONObject) {
+        if (json.optInt("format", 1) >= CHEATS_BACKUP_FORMAT) {
+            restoreCheatGames(json.optJSONArray("games") ?: JSONArray())
+            requestMirrorWrite()
+            return
+        }
+
+        // Format 1 (before 2026-09-29): every cheat table, restored over the current database
         val writableDb = database.openHelper.writableDatabase
         writableDb.beginTransaction()
         try {
@@ -461,6 +519,70 @@ class SettingsBackupManager @Inject constructor(
             writableDb.endTransaction()
         }
         requestMirrorWrite()
+    }
+
+    /**
+     * Puts each backed-up game back as it was: its current cheats are replaced, other games and
+     * databases are left alone.
+     */
+    private fun restoreCheatGames(games: JSONArray) {
+        val db = database.openHelper.writableDatabase
+        db.beginTransaction()
+        try {
+            val databaseIds = mutableMapOf<String, Long>()
+            fun databaseId(name: String): Long = databaseIds.getOrPut(name) {
+                db.query("SELECT id FROM cheat_database WHERE name = ?", arrayOf<Any?>(name)).use {
+                    if (it.moveToFirst()) return@getOrPut it.getLong(0)
+                }
+                db.insert("cheat_database", SQLiteDatabase.CONFLICT_ABORT, ContentValues().apply { put("name", name) })
+            }
+
+            for (i in 0 until games.length()) {
+                val game = games.optJSONObject(i) ?: continue
+                val gameCode = game.optString("gameCode").takeIf { it.isNotEmpty() } ?: continue
+                val gameChecksum = game.optString("gameChecksum").takeIf { it.isNotEmpty() } ?: continue
+
+                val existingId = db.query(
+                    "SELECT id FROM game WHERE game_code = ? AND game_checksum = ?",
+                    arrayOf<Any?>(gameCode, gameChecksum),
+                ).use { if (it.moveToFirst()) it.getLong(0) else null }
+                val gameId = if (existingId != null) {
+                    db.execSQL("DELETE FROM cheat WHERE cheat_folder_id IN (SELECT id FROM cheat_folder WHERE game_id = ?)", arrayOf<Any?>(existingId))
+                    db.execSQL("DELETE FROM cheat_folder WHERE game_id = ?", arrayOf<Any?>(existingId))
+                    existingId
+                } else {
+                    db.insert("game", SQLiteDatabase.CONFLICT_ABORT, ContentValues().apply {
+                        put("name", game.optString("name", gameCode))
+                        put("game_code", gameCode)
+                        put("game_checksum", gameChecksum)
+                    })
+                }
+
+                val folders = game.optJSONArray("folders") ?: continue
+                for (f in 0 until folders.length()) {
+                    val folder = folders.optJSONObject(f) ?: continue
+                    val folderId = db.insert("cheat_folder", SQLiteDatabase.CONFLICT_ABORT, ContentValues().apply {
+                        put("game_id", gameId)
+                        put("name", folder.optString("name"))
+                    })
+                    val cheats = folder.optJSONArray("cheats") ?: continue
+                    for (c in 0 until cheats.length()) {
+                        val cheat = cheats.optJSONObject(c) ?: continue
+                        db.insert("cheat", SQLiteDatabase.CONFLICT_ABORT, ContentValues().apply {
+                            put("cheat_folder_id", folderId)
+                            put("cheat_database_id", databaseId(cheat.optString("database", CheatDatabaseEntity.CUSTOM_CHEATS_DATABASE_NAME)))
+                            put("name", cheat.optString("name"))
+                            if (cheat.isNull("description")) putNull("description") else put("description", cheat.optString("description"))
+                            put("code", cheat.optString("code"))
+                            put("enabled", if (cheat.optBoolean("enabled")) 1 else 0)
+                        })
+                    }
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences, key: String?) {

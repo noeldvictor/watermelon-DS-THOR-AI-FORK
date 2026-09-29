@@ -76,6 +76,8 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
             context.debugCommandAction(ACTION_SET_PREFERENCE_SUFFIX) -> handleSetPreference(entryPoint, intent)
             context.debugCommandAction(ACTION_LIST_ROMS_SUFFIX) -> handleListRoms(entryPoint, intent)
             context.debugCommandAction(ACTION_GET_FPS_SUFFIX) -> handleGetFps()
+            context.debugCommandAction(ACTION_EXPORT_SETTINGS_BACKUP_SUFFIX) -> handleSettingsBackup(context, entryPoint, intent, export = true)
+            context.debugCommandAction(ACTION_IMPORT_SETTINGS_BACKUP_SUFFIX) -> handleSettingsBackup(context, entryPoint, intent, export = false)
             context.debugCommandAction(ACTION_START_DEV_SERVER_SUFFIX) -> handleDevServer(context, intent, start = true)
             context.debugCommandAction(ACTION_STOP_DEV_SERVER_SUFFIX) -> handleDevServer(context, intent, start = false)
             else -> {
@@ -261,6 +263,18 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         val key = intent.getStringExtra(EXTRA_KEY) ?: throw IllegalArgumentException("Missing key")
         val raw = intent.getStringExtra(EXTRA_VALUE) ?: throw IllegalArgumentException("Missing value")
         resultData = DebugCommands.setPreference(entryPoint, key, raw, intent.getStringExtra(EXTRA_TYPE)).toString()
+        return true
+    }
+
+    // The backup JSON that Settings -> Backup writes, as an app-private file (default
+    // files/debug_settings_backup.json), so backup and restore can be checked without the picker
+    private fun handleSettingsBackup(context: Context, entryPoint: DebugCommandEntryPoint, intent: Intent, export: Boolean): Boolean {
+        val name = intent.firstStringExtra(EXTRA_PATH)?.takeIf { it.isNotBlank() } ?: "debug_settings_backup.json"
+        val file = java.io.File(context.filesDir, java.io.File(name).name)
+        val manager = entryPoint.settingsBackupManager()
+        if (export) manager.writeBackupTo(file) else manager.restoreBackupFrom(file)
+        Log.w(TAG, "action=${if (export) "export" else "import"}_settings_backup file=${file.absolutePath} bytes=${file.length()}")
+        resultData = "file=${file.absolutePath} bytes=${file.length()}"
         return true
     }
 
@@ -1056,6 +1070,8 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         private const val ACTION_SET_PREFERENCE_SUFFIX = "SET_PREFERENCE"
         private const val ACTION_LIST_ROMS_SUFFIX = "LIST_ROMS"
         private const val ACTION_GET_FPS_SUFFIX = "GET_FPS"
+        private const val ACTION_EXPORT_SETTINGS_BACKUP_SUFFIX = "EXPORT_SETTINGS_BACKUP"
+        private const val ACTION_IMPORT_SETTINGS_BACKUP_SUFFIX = "IMPORT_SETTINGS_BACKUP"
         private const val ACTION_START_DEV_SERVER_SUFFIX = "START_DEV_SERVER"
         private const val ACTION_STOP_DEV_SERVER_SUFFIX = "STOP_DEV_SERVER"
         private const val EXTRA_KEY = "key"
