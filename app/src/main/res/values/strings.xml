@@ -488,6 +488,11 @@ Location: %1$s (currently %2$d MB, capped at 256 MB)</string>
     <string name="show_leaderboard_indicators_summary">Shows on-screen indicators when a leaderboard attempt is in progress</string>
 
     <string name="cheats">Cheats</string>
+    <string name="widescreen">Widescreen</string>
+    <string name="widescreen_on">Widescreen: on</string>
+    <string name="widescreen_off">Widescreen: off</string>
+    <string name="widescreen_enabled">Widescreen on. Some games switch at the next scene or area.</string>
+    <string name="widescreen_disabled">Widescreen off</string>
     <string name="cheats_summary">Enable &amp; import cheat codes</string>
     <string name="enable_cheats">Enable cheats</string>
     <string name="cheats_database">Cheats database (XML format)</string>

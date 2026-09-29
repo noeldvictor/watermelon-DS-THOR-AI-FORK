@@ -27,6 +27,10 @@ interface CheatDao {
     @Query("SELECT cheat.* FROM game LEFT JOIN cheat_folder ON game.id = cheat_folder.game_id LEFT JOIN cheat ON cheat_folder.id = cheat.cheat_folder_id WHERE game.game_code = :gameCode AND (game.game_checksum IS NULL OR game.game_checksum = :gameChecksum) AND cheat.enabled = 1")
     suspend fun getEnabledRomCheats(gameCode: String, gameChecksum: String): List<CheatEntity>
 
+    // Candidates only (LIKE is case-insensitive for ASCII); WidescreenCheats decides
+    @Query("SELECT cheat.* FROM cheat_folder JOIN cheat ON cheat_folder.id = cheat.cheat_folder_id WHERE cheat_folder.game_id = :gameId AND (cheat.name LIKE '%wide%' OR cheat.name LIKE '%16:%') ORDER BY cheat.id")
+    suspend fun getGameWidescreenCheatCandidates(gameId: Long): List<CheatEntity>
+
     @Query("SELECT * FROM cheat WHERE cheat_folder_id = :folderId")
     fun getFolderCheats(folderId: Long): Flow<List<CheatEntity>>
 

@@ -29,6 +29,7 @@ import me.magnum.melonds.domain.model.CheatFolder
 import me.magnum.melonds.domain.model.CheatImportProgress
 import me.magnum.melonds.domain.model.Game
 import me.magnum.melonds.domain.model.RomInfo
+import me.magnum.melonds.domain.model.WidescreenCheats
 import me.magnum.melonds.domain.repositories.CheatsRepository
 import me.magnum.melonds.ui.cheats.model.CheatSubmissionForm
 
@@ -147,6 +148,21 @@ class RoomCheatsRepository(
                 cheat.enabled
             )
         }
+    }
+
+    /** The game's widescreen codes, from any database (the bundled one is read in on first use). */
+    override suspend fun getRomWidescreenCheats(romInfo: RomInfo): List<Cheat> {
+        val gameId = findGameForRom(romInfo)?.id ?: return emptyList()
+        return database.cheatDao().getGameWidescreenCheatCandidates(gameId).map { cheat ->
+            Cheat(
+                cheat.id,
+                cheat.cheatDatabaseId,
+                cheat.name,
+                cheat.description,
+                cheat.code,
+                cheat.enabled
+            )
+        }.filter { WidescreenCheats.isWidescreen(it) }
     }
 
     override suspend fun updateCheatsStatus(cheats: List<Cheat>) {

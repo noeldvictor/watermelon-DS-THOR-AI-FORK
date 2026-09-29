@@ -10,6 +10,7 @@ enum class RomPauseMenuOption(override val textResource: Int) : PauseMenuOption 
     LOAD_STATE(R.string.load_state),
     REWIND(R.string.rewind),
     CHEATS(R.string.cheats),
+    WIDESCREEN(R.string.widescreen),
     VIEW_ACHIEVEMENTS(R.string.achievements),
     SYNC_RETRO_ACHIEVEMENTS(R.string.ra_pending_sync_menu),
     PRESETS(R.string.presets),

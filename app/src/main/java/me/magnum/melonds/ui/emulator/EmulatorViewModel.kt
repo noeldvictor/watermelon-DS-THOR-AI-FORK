@@ -73,6 +73,7 @@ import me.magnum.melonds.domain.model.ConsoleType
 import me.magnum.melonds.domain.model.DualScreenPreset
 import me.magnum.melonds.domain.model.FpsCounterPosition
 import me.magnum.melonds.domain.model.RomInfo
+import me.magnum.melonds.domain.model.WidescreenCheats
 import me.magnum.melonds.domain.model.RuntimeBackground
 import me.magnum.melonds.domain.model.Rect
 import me.magnum.melonds.domain.model.SaveStateSlot
@@ -90,6 +91,7 @@ import me.magnum.melonds.domain.model.emulator.FirmwareLaunchResult
 import me.magnum.melonds.domain.model.emulator.RomLaunchResult
 import me.magnum.melonds.domain.model.layout.BackgroundMode
 import me.magnum.melonds.domain.model.layout.Insets
+import me.magnum.melonds.domain.model.layout.LayoutComponent
 import me.magnum.melonds.domain.model.layout.LayoutConfiguration
 import me.magnum.melonds.domain.model.layout.LayoutDisplayPair
 import me.magnum.melonds.domain.model.layout.PositionedLayoutComponent
@@ -437,6 +439,12 @@ class EmulatorViewModel @Inject constructor(
 
     private val _runtimeLayout = MutableStateFlow<RuntimeInputLayoutConfiguration?>(null)
     val runtimeLayout = _runtimeLayout.asStateFlow()
+
+    // Shape of the top screen while a widescreen code is on; null = the DS's own 4:3
+    private val _widescreenAspectRatio = MutableStateFlow<Float?>(null)
+    // Shape of the display that shows the top screen, to pick between 16:9 and 16:10 codes
+    @Volatile
+    private var topScreenDisplayAspectRatio = WidescreenCheats.DEFAULT_ASPECT_RATIO
 
     private val activeRomConfig = MutableStateFlow<Rom?>(null)
 
@@ -803,6 +811,7 @@ class EmulatorViewModel @Inject constructor(
             }
 
             val cheats = getRomInfo(rom)?.let { getRomEnabledCheats(it) } ?: emptyList()
+            _widescreenAspectRatio.value = WidescreenCheats.activeAspectRatio(cheats)
             confirmRetroArchShaderCompile(rom.config)
             val result = emulatorManager.loadRom(rom, cheats)
             when (result) {
@@ -1152,6 +1161,7 @@ class EmulatorViewModel @Inject constructor(
                 startObservingEmulatorEvents()
 
                 confirmRetroArchShaderCompile(romConfig = null)
+                _widescreenAspectRatio.value = null
                 val result = emulatorManager.loadFirmware(consoleType)
                 when (result) {
                     is FirmwareLaunchResult.LaunchFailed -> {
@@ -1577,7 +1587,45 @@ class EmulatorViewModel @Inject constructor(
             sessionCoroutineScope.launch {
                 val cheats = getRomEnabledCheats(it)
                 emulatorManager.updateCheats(cheats)
+                _widescreenAspectRatio.value = WidescreenCheats.activeAspectRatio(cheats)
             }
+        }
+    }
+
+    /** The running game's widescreen codes, when cheats may run in this session. */
+    private suspend fun getRunningRomWidescreenCheats(): List<Cheat> {
+        val rom = (_emulatorState.value as? EmulatorState.RunningRom)?.rom ?: return emptyList()
+        if (!settingsRepository.areCheatsEnabled() || !emulatorSession.areCheatsEnabled()) {
+            return emptyList()
+        }
+        val romInfo = getRomInfo(rom) ?: return emptyList()
+        return runCatching { cheatsRepository.getRomWidescreenCheats(romInfo) }.getOrDefault(emptyList())
+    }
+
+    /**
+     * The pause menu's Widescreen item: turns the game's widescreen code off, or on (the one that
+     * suits the top screen's display best), and resumes. The code is an ordinary cheat, so the
+     * choice shows in the cheats screen and survives restarts and backups.
+     */
+    private fun toggleWidescreen() {
+        val rom = (_emulatorState.value as? EmulatorState.RunningRom)?.rom ?: return
+        val romInfo = getRomInfo(rom) ?: return
+        sessionCoroutineScope.launch {
+            val widescreenCheats = getRunningRomWidescreenCheats()
+            val enabledCheats = widescreenCheats.filter { it.enabled }
+            val updates = if (enabledCheats.isNotEmpty()) {
+                enabledCheats.map { it.copy(enabled = false) }
+            } else {
+                listOfNotNull(WidescreenCheats.pickFor(widescreenCheats, topScreenDisplayAspectRatio)?.copy(enabled = true))
+            }
+            if (updates.isNotEmpty()) {
+                cheatsRepository.updateCheatsStatus(updates)
+                val cheats = getRomEnabledCheats(romInfo)
+                emulatorManager.updateCheats(cheats)
+                _widescreenAspectRatio.value = WidescreenCheats.activeAspectRatio(cheats)
+                _toastEvent.emit(if (enabledCheats.isEmpty()) ToastEvent.WidescreenEnabled else ToastEvent.WidescreenDisabled)
+            }
+            resumeEmulatorIfSessionCanRun()
         }
     }
 
@@ -1636,10 +1684,12 @@ class EmulatorViewModel @Inject constructor(
             emulatorManager.pauseEmulator()
             if (showPauseMenu) {
                 val rendererDebugToolsEnabled = settingsRepository.isRendererDebugToolsEnabled().firstOrNull() == true
+                val widescreenCheats = getRunningRomWidescreenCheats()
                 val pauseOptions = when (_emulatorState.value) {
                     is EmulatorState.RunningRom -> {
                         RomPauseMenuOption.entries.filter {
-                            filterRomPauseMenuOption(it, rendererDebugToolsEnabled)
+                            filterRomPauseMenuOption(it, rendererDebugToolsEnabled) &&
+                                (it != RomPauseMenuOption.WIDESCREEN || widescreenCheats.isNotEmpty())
                         }
                     }
                     is EmulatorState.RunningFirmware -> {
@@ -1650,16 +1700,17 @@ class EmulatorViewModel @Inject constructor(
 
                 if (pauseOptions != null) {
                     val syncMenuState = buildRaPendingSyncMenuState()
-                    val labelOverrides: Map<PauseMenuOption, String> = if (
+                    val labelOverrides = mutableMapOf<PauseMenuOption, String>()
+                    if (
                         syncMenuState.isVisible &&
                         syncMenuState.label != null &&
                         RomPauseMenuOption.SYNC_RETRO_ACHIEVEMENTS in pauseOptions
                     ) {
-                        mapOf<PauseMenuOption, String>(
-                            RomPauseMenuOption.SYNC_RETRO_ACHIEVEMENTS to syncMenuState.label,
-                        )
-                    } else {
-                        emptyMap()
+                        labelOverrides[RomPauseMenuOption.SYNC_RETRO_ACHIEVEMENTS] = syncMenuState.label
+                    }
+                    if (RomPauseMenuOption.WIDESCREEN in pauseOptions) {
+                        val widescreenOn = widescreenCheats.any { it.enabled }
+                        labelOverrides[RomPauseMenuOption.WIDESCREEN] = context.getString(if (widescreenOn) R.string.widescreen_on else R.string.widescreen_off)
                     }
                     _uiEvent.emit(
                         EmulatorUiEvent.ShowPauseMenu(
@@ -2105,6 +2156,7 @@ class EmulatorViewModel @Inject constructor(
                             _toastEvent.tryEmit(ToastEvent.CannotUseCheatsWhenRAHardcoreIsEnabled)
                         }
                     }
+                    RomPauseMenuOption.WIDESCREEN -> toggleWidescreen()
                     RomPauseMenuOption.VIEW_ACHIEVEMENTS -> _uiEvent.tryEmit(EmulatorUiEvent.ShowAchievementList)
                     RomPauseMenuOption.SYNC_RETRO_ACHIEVEMENTS -> syncPendingRaSubmissionsFromPauseMenu()
                     RomPauseMenuOption.PRESETS -> _uiEvent.tryEmit(EmulatorUiEvent.ShowDualScreenPresets)
@@ -2460,7 +2512,7 @@ class EmulatorViewModel @Inject constructor(
                 )
             }
 
-            combine(layoutConfiguration, dualScreenPresetConfiguration) { config, dualScreenConfig ->
+            combine(layoutConfiguration, dualScreenPresetConfiguration, _widescreenAspectRatio) { config, dualScreenConfig, widescreenAspectRatio ->
                 val currentLayoutConfiguration = config.layoutConfiguration
                 val currentLayoutVariant = config.layoutVariant
                 val currentVariant = currentLayoutVariant?.first
@@ -2474,7 +2526,13 @@ class EmulatorViewModel @Inject constructor(
                         config.inputOpacity
                     }
 
-                    val adjustedLayout = applyDualScreenPresetLayoutOverrides(currentLayout, currentVariant, dualScreenConfig)
+                    topScreenDisplayAspectRatio = topScreenDisplayAspectRatio(currentLayout, currentVariant)
+                    val presetLayout = applyDualScreenPresetLayoutOverrides(currentLayout, currentVariant, dualScreenConfig)
+                    val adjustedLayout = if (widescreenAspectRatio != null) {
+                        applyWidescreenLayoutOverride(presetLayout, currentVariant, widescreenAspectRatio)
+                    } else {
+                        presetLayout
+                    }
                     RuntimeInputLayoutConfiguration(
                         softInputBehaviour = config.softInputBehaviour,
                         softInputOpacity = opacity,
@@ -2543,6 +2601,68 @@ class EmulatorViewModel @Inject constructor(
             mainScreenLayout = adjustedInternalLayout,
             secondaryScreenLayout = adjustedSecondaryLayout,
         )
+    }
+
+    private fun topScreenDisplayAspectRatio(layout: UILayout, variant: UILayoutVariant): Float {
+        val secondaryDisplay = variant.displays.secondaryScreenDisplay
+        val topOnSecondary = layout.secondaryScreenLayout.components.orEmpty().any { it.component == LayoutComponent.TOP_SCREEN }
+        val (width, height) = if (topOnSecondary && secondaryDisplay != null) {
+            secondaryDisplay.width to secondaryDisplay.height
+        } else {
+            variant.uiSize.x to variant.uiSize.y
+        }
+        if (width <= 0 || height <= 0) {
+            return WidescreenCheats.DEFAULT_ASPECT_RATIO
+        }
+        return maxOf(width, height).toFloat() / minOf(width, height)
+    }
+
+    /**
+     * Stretches the top screen to [aspectRatio] while the game runs a widescreen code (the code
+     * widens the 3D view; the DS still outputs 256x192, so the picture needs the wider frame).
+     */
+    private fun applyWidescreenLayoutOverride(layout: UILayout, variant: UILayoutVariant, aspectRatio: Float): UILayout {
+        val secondaryDisplay = variant.displays.secondaryScreenDisplay
+        return layout.copy(
+            mainScreenLayout = widenTopScreen(layout.mainScreenLayout, variant.uiSize.x, aspectRatio),
+            secondaryScreenLayout = if (secondaryDisplay != null) {
+                widenTopScreen(layout.secondaryScreenLayout, secondaryDisplay.width, aspectRatio)
+            } else {
+                layout.secondaryScreenLayout
+            },
+        )
+    }
+
+    /**
+     * Keeps the top screen's height and centre when the wider screen fits on its display without
+     * covering another screen (AYN Thor: 1440x1080 -> the whole 1920x1080 panel); otherwise keeps
+     * its width and gives up height.
+     */
+    private fun widenTopScreen(screenLayout: ScreenLayout, displayWidth: Int, aspectRatio: Float): ScreenLayout {
+        val components = screenLayout.components ?: return screenLayout
+        val topScreen = components.firstOrNull { it.component == LayoutComponent.TOP_SCREEN } ?: return screenLayout
+        val rect = topScreen.rect
+        if (rect.width <= 0 || rect.height <= 0 || displayWidth <= 0) {
+            return screenLayout
+        }
+
+        val otherScreens = components.filter { it !== topScreen && it.isScreen() }.map { it.rect }
+        val wideWidth = (rect.height * aspectRatio).roundToInt()
+        val wideX = (rect.x + rect.width / 2f - wideWidth / 2f).roundToInt().coerceIn(0, (displayWidth - wideWidth).coerceAtLeast(0))
+        val widened = Rect(wideX, rect.y, wideWidth, rect.height)
+        val coversOtherScreen = otherScreens.any {
+            widened.x < it.right && it.x < widened.right && widened.y < it.bottom && it.y < widened.bottom
+        }
+        val newRect = if (wideWidth <= displayWidth && !coversOtherScreen) {
+            widened
+        } else {
+            val shortHeight = (rect.width / aspectRatio).roundToInt().coerceIn(1, rect.height)
+            Rect(rect.x, rect.y + (rect.height - shortHeight) / 2, rect.width, shortHeight)
+        }
+        if (newRect == rect) {
+            return screenLayout
+        }
+        return screenLayout.copy(components = components.map { if (it === topScreen) it.copy(rect = newRect) else it })
     }
 
     private fun applyScreenScaleToLayout(

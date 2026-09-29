@@ -755,7 +755,9 @@ class EmulatorActivity : AppCompatActivity() {
                                     option == me.magnum.melonds.ui.emulator.firmware.FirmwarePauseMenuOption.RESET ||
                                     option == me.magnum.melonds.ui.emulator.firmware.FirmwarePauseMenuOption.EXIT
                                 val isViewOverlay = option == me.magnum.melonds.ui.emulator.rom.RomPauseMenuOption.REWIND
-                                if (isTerminal) {
+                                // Widescreen switches and resumes right away, so the change shows
+                                val isQuickToggle = option == me.magnum.melonds.ui.emulator.rom.RomPauseMenuOption.WIDESCREEN
+                                if (isTerminal || isQuickToggle) {
                                     dismissPauseMenu()
                                 } else if (isViewOverlay) {
                                     pauseMenuState.value = null
@@ -901,6 +903,8 @@ class EmulatorActivity : AppCompatActivity() {
                         ToastEvent.StateStateDoesNotExist -> getString(R.string.cant_load_empty_slot) to Toast.LENGTH_SHORT
                         ToastEvent.CannotLoadSaveStatesWhenRAHardcoreIsEnabled -> getString(R.string.load_states_unavailable_ra_hardcore_enabled) to Toast.LENGTH_LONG
                         ToastEvent.CannotUseCheatsWhenRAHardcoreIsEnabled -> getString(R.string.cheats_unavailable_ra_hardcore_enabled) to Toast.LENGTH_LONG
+                        ToastEvent.WidescreenEnabled -> getString(R.string.widescreen_enabled) to Toast.LENGTH_LONG
+                        ToastEvent.WidescreenDisabled -> getString(R.string.widescreen_disabled) to Toast.LENGTH_SHORT
                         ToastEvent.CannotLoadStateWhenRunningFirmware,
                         ToastEvent.CannotSaveStateWhenRunningFirmware -> getString(R.string.save_states_not_supported) to Toast.LENGTH_LONG
                         ToastEvent.CannotSwitchRetroAchievementsMode -> getString(R.string.retro_achievements_relaunch_to_apply_settings) to Toast.LENGTH_LONG
