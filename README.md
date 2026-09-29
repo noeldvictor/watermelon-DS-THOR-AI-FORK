@@ -37,6 +37,7 @@ external display support, RetroAchievements, RetroArch shader presets. On top of
 | Dual-screen rendering | Dual-screen presets and layouts | Adds fixes for flicker, stale lines and wrong-screen content on alternating dual-3D scenes, in both the Compatibility and FastPath profiles; videos shown in VRAM display mode play (Castlevania: Dawn of Sorrow's intro was black), 2D drawn over captured 3D no longer blinks (Hotel Dusk), white boot screens no longer flash black for a frame (Star Fox Command, Solatorobo), and "depth equal" decals such as Phantom Hourglass' character shadows draw fully |
 | ROM list | Homebrew without a banner is missing (#200); overlapping scans | Homebrew is listed; scans and icon loading read one ROM at a time |
 | CPU / JIT | melonDS core as of Nov 2025 | ARM64 JIT fixes and speedups (see below) |
+| 3D draw calls | The default (Compatibility) Vulkan profile sends every opaque polygon as its own draw | Consecutive polygons with the same state go out as one draw: 15-29% less 3D GPU time (Phantom Hourglass storybook 7.3 -> 5.4 ms, Diddy Kong Racing's intro 1.8 -> 1.3 ms), same pixels |
 | Saves and audio | — | Crash-safe save writes; importing the save that already sits next to the ROM no longer empties it; changing the volume in-game (including from 0) keeps the sound playing; fast-forward audio is time-stretched: everything plays, faster, at the original pitch instead of choppy |
 | RetroAchievements | Keep-alive ping blocks the emulator for the network round trip every two minutes | Ping is sent off the emulator thread, so it no longer causes periodic hitches |
 | Install | Application ID `me.magnum.melondualds` | Own application ID `app.watermelonthor`, so it installs alongside WatermelonDS and melonDS; its settings files in shared folders have their own names (`WatermelonThor.opts`, `<game>.thor.opts`) |
@@ -150,6 +151,10 @@ core itself:
   sound only came back after a second change.
 * **Dual-screen presentation** on the Thor's two panels: screen-swap alternation, capture-backed
   scenes, and frame pacing under load, verified with per-display captures.
+* **3D draw batching**: the Compatibility profile drew each opaque polygon with its own
+  `vkCmdDraw`. Consecutive polygons that share every piece of per-draw state (polygon attributes,
+  texture, pipeline) now go out as one draw; Vulkan keeps primitive order inside a draw, so the
+  picture is identical (checked pixel for pixel on save states), with 15-29% less GPU time.
 * **Core performance**: JIT and fastmem fixes (coprocessor register access, DTCM host mapping)
   that recovered a large chunk of CPU time on heavy scenes, plus renderer thread-safety and
   Vulkan lifecycle fixes throughout the compositor and presenter.
