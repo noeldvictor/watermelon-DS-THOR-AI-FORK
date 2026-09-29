@@ -40,7 +40,18 @@ void main()
     float y = vPosition.y;
     float z = vPosition.z;
     float reciprocalW = vPosition.w;
-    float depth = clamp(z * (1.0 / 16777216.0), 0.0, 1.0);
+
+    // The DS "depth equal" test passes within a window (W-buffer +-0xFF, Z-buffer +-0x200 of
+    // FinalZ). The pipeline compares LESS_OR_EQUAL, so pull these polygons toward the camera by
+    // twice the window to cover GPU interpolation at high resolution (WatermelonDS 0.8.0's value).
+    // Without it, Phantom Hourglass' blob shadows under Link and Ciela only showed where the
+    // flat blob happened to sit above the ground mesh.
+    uint polyAttrV = vTriInfo1In.z;
+    uint flagsV = vTriInfo0In.x;
+    float depthEqualWindow = (polyAttrV & (1u << 14u)) != 0u
+        ? ((flagsV & (1u << 4u)) != 0u ? 512.0 : 1024.0)
+        : 0.0;
+    float depth = clamp((z - depthEqualWindow) * (1.0 / 16777216.0), 0.0, 1.0);
 
     float rawW = reciprocalW > 0.000001 ? (1.0 / reciprocalW) : 1.0;
     float clipW = rawW * (1.0 / 65536.0);
