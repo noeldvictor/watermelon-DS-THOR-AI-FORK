@@ -491,11 +491,13 @@ Location: %1$s (currently %2$d MB, capped at 256 MB)</string>
     <string name="show_leaderboard_indicators_summary">Shows on-screen indicators when a leaderboard attempt is in progress</string>
 
     <string name="cheats">Cheats</string>
-    <string name="widescreen">Widescreen</string>
-    <string name="widescreen_on">Widescreen: on</string>
-    <string name="widescreen_off">Widescreen: off</string>
-    <string name="widescreen_enabled">Widescreen on. Some games switch at the next scene or area.</string>
-    <string name="widescreen_disabled">Widescreen off</string>
+    <string name="enhancements">Enhancements</string>
+    <string name="enhancements_hint">Changes apply when you resume. Some games switch at the next scene or area, a few only after a restart.</string>
+    <string name="enhancement_widescreen_16_9">Widescreen 16:9</string>
+    <string name="enhancement_widescreen_16_10">Widescreen 16:10</string>
+    <string name="enhancement_anti_aliasing">Smooth 3D edges (no outlines)</string>
+    <string name="enhancement_draw_distance">Draw distance</string>
+    <string name="enhancement_best_fit">fits this screen</string>
     <string name="cheats_summary">Enable &amp; import cheat codes</string>
     <string name="enable_cheats">Enable cheats</string>
     <string name="cheats_database">Cheats database (XML format)</string>

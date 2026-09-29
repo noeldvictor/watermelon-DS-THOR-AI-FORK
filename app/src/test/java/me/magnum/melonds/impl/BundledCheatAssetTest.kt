@@ -178,5 +178,8 @@ class BundledCheatAssetTest {
             "Max/Infinite Draw Distance",
         ).forEach { assertTrue(it, EnhancementCheats.isEnhancement(it)) }
         listOf("Widescreen TV", "Max HP", "Infinite Health FPS Mode").forEach { assertFalse(it, EnhancementCheats.isEnhancement(it)) }
+        assertEquals(EnhancementCheats.Kind.WIDESCREEN, EnhancementCheats.kind("Widescreen v2.0"))
+        assertEquals(EnhancementCheats.Kind.ANTI_ALIASING, EnhancementCheats.kind("Disable 3D Edge Marking + Enable 3D Anti-Aliasing"))
+        assertEquals(EnhancementCheats.Kind.DRAW_DISTANCE, EnhancementCheats.kind("Max/Infinite Draw Distance"))
     }
 }

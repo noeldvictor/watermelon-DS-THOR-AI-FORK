@@ -442,6 +442,10 @@ class EmulatorViewModel @Inject constructor(
 
     // Shape of the top screen while a widescreen code is on; null = the DS's own 4:3
     private val _widescreenAspectRatio = MutableStateFlow<Float?>(null)
+    // The Enhancements panel's switches
+    data class EnhancementsState(val cheats: List<Cheat> = emptyList(), val recommendedWidescreenCheatId: Long? = null)
+    private val _enhancements = MutableStateFlow(EnhancementsState())
+    val enhancements = _enhancements.asStateFlow()
     // Shape of the display that shows the top screen, to pick between 16:9 and 16:10 codes
     @Volatile
     private var topScreenDisplayAspectRatio = WidescreenCheats.DEFAULT_ASPECT_RATIO
@@ -1592,40 +1596,51 @@ class EmulatorViewModel @Inject constructor(
         }
     }
 
-    /** The running game's widescreen codes, when cheats may run in this session. */
-    private suspend fun getRunningRomWidescreenCheats(): List<Cheat> {
+    /** The running game's enhancement codes, when cheats may run in this session. */
+    private suspend fun getRunningRomEnhancementCheats(): List<Cheat> {
         val rom = (_emulatorState.value as? EmulatorState.RunningRom)?.rom ?: return emptyList()
         if (!settingsRepository.areCheatsEnabled() || !emulatorSession.areCheatsEnabled()) {
             return emptyList()
         }
         val romInfo = getRomInfo(rom) ?: return emptyList()
-        return runCatching { cheatsRepository.getRomWidescreenCheats(romInfo) }.getOrDefault(emptyList())
+        return runCatching { cheatsRepository.getRomEnhancementCheats(romInfo) }.getOrDefault(emptyList())
+    }
+
+    /** The pause menu's Enhancements item: the panel of the game's enhancement codes. */
+    private fun openEnhancements() {
+        sessionCoroutineScope.launch {
+            val cheats = getRunningRomEnhancementCheats()
+            _enhancements.value = EnhancementsState(
+                cheats = cheats,
+                recommendedWidescreenCheatId = WidescreenCheats.pickFor(cheats, topScreenDisplayAspectRatio)?.id,
+            )
+            _uiEvent.emit(EmulatorUiEvent.ShowEnhancements)
+        }
     }
 
     /**
-     * The pause menu's Widescreen item: turns the game's widescreen code off, or on (the one that
-     * suits the top screen's display best), and resumes. The code is an ordinary cheat, so the
-     * choice shows in the cheats screen and survives restarts and backups.
+     * A switch in the Enhancements panel. The codes are ordinary cheats, so a choice shows in the
+     * cheats screen and survives restarts and backups. Widescreen codes exclude each other (16:9 or
+     * 16:10); the top screen follows the one that is on.
      */
-    private fun toggleWidescreen() {
+    fun setEnhancementEnabled(cheat: Cheat, enabled: Boolean) {
         val rom = (_emulatorState.value as? EmulatorState.RunningRom)?.rom ?: return
         val romInfo = getRomInfo(rom) ?: return
+        val state = _enhancements.value
+        val updates = mutableListOf(cheat.copy(enabled = enabled))
+        if (enabled && WidescreenCheats.isWidescreen(cheat)) {
+            state.cheats
+                .filter { it.id != cheat.id && it.enabled && WidescreenCheats.isWidescreen(it) }
+                .mapTo(updates) { it.copy(enabled = false) }
+        }
+        val updatesById = updates.associateBy { it.id }
+        _enhancements.value = state.copy(cheats = state.cheats.map { updatesById[it.id] ?: it })
+
         sessionCoroutineScope.launch {
-            val widescreenCheats = getRunningRomWidescreenCheats()
-            val enabledCheats = widescreenCheats.filter { it.enabled }
-            val updates = if (enabledCheats.isNotEmpty()) {
-                enabledCheats.map { it.copy(enabled = false) }
-            } else {
-                listOfNotNull(WidescreenCheats.pickFor(widescreenCheats, topScreenDisplayAspectRatio)?.copy(enabled = true))
-            }
-            if (updates.isNotEmpty()) {
-                cheatsRepository.updateCheatsStatus(updates)
-                val cheats = getRomEnabledCheats(romInfo)
-                emulatorManager.updateCheats(cheats)
-                _widescreenAspectRatio.value = WidescreenCheats.activeAspectRatio(cheats)
-                _toastEvent.emit(if (enabledCheats.isEmpty()) ToastEvent.WidescreenEnabled else ToastEvent.WidescreenDisabled)
-            }
-            resumeEmulatorIfSessionCanRun()
+            cheatsRepository.updateCheatsStatus(updates)
+            val cheats = getRomEnabledCheats(romInfo)
+            emulatorManager.updateCheats(cheats)
+            _widescreenAspectRatio.value = WidescreenCheats.activeAspectRatio(cheats)
         }
     }
 
@@ -1684,12 +1699,12 @@ class EmulatorViewModel @Inject constructor(
             emulatorManager.pauseEmulator()
             if (showPauseMenu) {
                 val rendererDebugToolsEnabled = settingsRepository.isRendererDebugToolsEnabled().firstOrNull() == true
-                val widescreenCheats = getRunningRomWidescreenCheats()
+                val hasEnhancements = getRunningRomEnhancementCheats().isNotEmpty()
                 val pauseOptions = when (_emulatorState.value) {
                     is EmulatorState.RunningRom -> {
                         RomPauseMenuOption.entries.filter {
                             filterRomPauseMenuOption(it, rendererDebugToolsEnabled) &&
-                                (it != RomPauseMenuOption.WIDESCREEN || widescreenCheats.isNotEmpty())
+                                (it != RomPauseMenuOption.ENHANCEMENTS || hasEnhancements)
                         }
                     }
                     is EmulatorState.RunningFirmware -> {
@@ -1707,10 +1722,6 @@ class EmulatorViewModel @Inject constructor(
                         RomPauseMenuOption.SYNC_RETRO_ACHIEVEMENTS in pauseOptions
                     ) {
                         labelOverrides[RomPauseMenuOption.SYNC_RETRO_ACHIEVEMENTS] = syncMenuState.label
-                    }
-                    if (RomPauseMenuOption.WIDESCREEN in pauseOptions) {
-                        val widescreenOn = widescreenCheats.any { it.enabled }
-                        labelOverrides[RomPauseMenuOption.WIDESCREEN] = context.getString(if (widescreenOn) R.string.widescreen_on else R.string.widescreen_off)
                     }
                     _uiEvent.emit(
                         EmulatorUiEvent.ShowPauseMenu(
@@ -2156,7 +2167,7 @@ class EmulatorViewModel @Inject constructor(
                             _toastEvent.tryEmit(ToastEvent.CannotUseCheatsWhenRAHardcoreIsEnabled)
                         }
                     }
-                    RomPauseMenuOption.WIDESCREEN -> toggleWidescreen()
+                    RomPauseMenuOption.ENHANCEMENTS -> openEnhancements()
                     RomPauseMenuOption.VIEW_ACHIEVEMENTS -> _uiEvent.tryEmit(EmulatorUiEvent.ShowAchievementList)
                     RomPauseMenuOption.SYNC_RETRO_ACHIEVEMENTS -> syncPendingRaSubmissionsFromPauseMenu()
                     RomPauseMenuOption.PRESETS -> _uiEvent.tryEmit(EmulatorUiEvent.ShowDualScreenPresets)

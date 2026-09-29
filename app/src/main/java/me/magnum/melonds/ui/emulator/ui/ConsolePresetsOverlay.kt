@@ -220,14 +220,14 @@ fun ConsolePresetsOverlay(
 }
 
 @Composable
-private fun rememberFirstFocus(): FocusRequester {
+internal fun rememberFirstFocus(): FocusRequester {
     val fr = remember { FocusRequester() }
     me.magnum.melonds.ui.common.RequestInitialFocus(fr)
     return fr
 }
 
 @Composable
-private fun ConsoleScaffold(
+internal fun ConsoleScaffold(
     title: String,
     onBack: () -> Unit,
     content: @Composable () -> Unit,
@@ -297,7 +297,7 @@ private fun ConsoleScaffold(
 }
 
 @Composable
-private fun ConsoleSectionLabel(text: String) {
+internal fun ConsoleSectionLabel(text: String) {
     Text(
         text = text.uppercase(),
         color = Color.White.copy(alpha = 0.45f),
@@ -310,12 +310,13 @@ private fun ConsoleSectionLabel(text: String) {
 }
 
 @Composable
-private fun ConsoleRow(
+internal fun ConsoleRow(
     label: String,
     selected: Boolean = false,
     focusRequester: FocusRequester? = null,
     enabled: Boolean = true,
     onClick: () -> Unit,
+    description: String? = null,
     trailing: @Composable () -> Unit = {},
 ) {
     val colors = watermelon
@@ -335,31 +336,44 @@ private fun ConsoleRow(
             .clickable(interactionSource = interactionSource, indication = null, enabled = enabled, onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 10.dp),
     ) {
-        Text(
-            text = label,
-            color = Color.White,
-            fontSize = 13.5.sp,
-            lineHeight = 17.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                color = Color.White,
+                fontSize = 13.5.sp,
+                lineHeight = 17.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (description != null) {
+                Text(
+                    text = description,
+                    color = Color.White.copy(alpha = 0.55f),
+                    fontSize = 11.5.sp,
+                    lineHeight = 15.sp,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        }
         Spacer(Modifier.width(10.dp))
         trailing()
     }
 }
 
 @Composable
-private fun ConsoleToggleRow(
+internal fun ConsoleToggleRow(
     label: String,
     checked: Boolean,
     onToggle: (Boolean) -> Unit,
     firstFocus: Boolean = false,
     enabled: Boolean = true,
+    description: String? = null,
 ) {
     val fr = if (firstFocus) rememberFirstFocus() else null
-    ConsoleRow(label = label, focusRequester = fr, enabled = enabled, onClick = { onToggle(!checked) }) {
+    ConsoleRow(label = label, focusRequester = fr, enabled = enabled, onClick = { onToggle(!checked) }, description = description) {
         WatermelonSwitch(checked = checked, onCheckedChange = onToggle, enabled = enabled)
     }
 }

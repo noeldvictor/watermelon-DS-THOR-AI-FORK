@@ -27,7 +27,7 @@ import androidx.compose.material.Icon
 import androidx.compose.material.Text
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
-import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Code
@@ -97,7 +97,7 @@ private fun optionIcon(option: PauseMenuOption): ImageVector {
             RomPauseMenuOption.LOAD_STATE -> Icons.Filled.FileDownload
             RomPauseMenuOption.REWIND -> Icons.Filled.FastRewind
             RomPauseMenuOption.CHEATS -> Icons.Filled.Code
-            RomPauseMenuOption.WIDESCREEN -> Icons.Filled.AspectRatio
+            RomPauseMenuOption.ENHANCEMENTS -> Icons.Filled.AutoAwesome
             RomPauseMenuOption.VIEW_ACHIEVEMENTS -> Icons.Filled.EmojiEvents
             RomPauseMenuOption.SYNC_RETRO_ACHIEVEMENTS -> Icons.Filled.CloudSync
             RomPauseMenuOption.PRESETS -> Icons.Filled.Monitor
