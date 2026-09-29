@@ -52,7 +52,9 @@ public:
     bool precompileVulkanPipelines(const VulkanSurfaceConfig& retroArchConfig);
     void start();
     void reset();
-    melonDS::u32 runFrame();
+    melonDS::u32 runFrame(bool frameskipRequested = false);
+    // whether the last runFrame skipped composing and presenting its frame
+    bool lastFrameSkipped() const { return frameskipGranted; }
     void stop();
 
     void touchScreen(u16 x, u16 y);
@@ -418,6 +420,8 @@ private:
     std::array<u8, SoftPackedFrameSnapshot::kLineCount> cachedAtypicalDisplayTopPrimaryLines{};
     std::array<u8, SoftPackedFrameSnapshot::kLineCount> cachedAtypicalDisplayBottomPrimaryLines{};
     int framesSinceLastScreenSwapToggle = 1024;
+    bool frameskipGranted = false;
+    int frameskipConsecutive = 0;
     bool wasInAlternatingMode = false;
     PreparedVulkanDebugSnapshot preparedVulkanDebugSnapshot;
     PreparedOpenGlDebugSnapshot preparedOpenGlDebugSnapshot;

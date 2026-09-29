@@ -31,6 +31,7 @@ import me.magnum.melonds.MelonDSAndroidInterface
 import me.magnum.melonds.NativeCoreLoader
 import me.magnum.melonds.common.retroarch.RetroArchShaderPreset
 import me.magnum.melonds.common.retroarch.RetroArchShaderRootResolver
+import me.magnum.melonds.domain.model.FrameskipMode
 import me.magnum.melonds.domain.model.HdFilterTarget
 import me.magnum.melonds.domain.model.RetroArchShaderSource
 import me.magnum.melonds.common.uridelegates.UriHandler
@@ -434,7 +435,18 @@ class SharedPreferencesSettingsRepository(
                 folderSync = isDldiSdCardEnabled() && getDldiSdCardDirectory() != null,
                 folderPath = File(context.filesDir, "dldi/sync").absolutePath,
             ),
+            frameskipMode = getFrameskipMode().nativeValue,
+            frameskipManualValue = getFrameskipManualValue(),
         )
+    }
+
+    private fun getFrameskipMode(): FrameskipMode {
+        return FrameskipMode.fromPreferenceValue(preferences.getString("frameskip_mode", FrameskipMode.OFF.preferenceValue))
+    }
+
+    private fun getFrameskipManualValue(): Int {
+        val value = preferences.getString("frameskip_manual_value", "1")?.toIntOrNull() ?: 1
+        return value.coerceIn(FrameskipMode.MANUAL_VALUE_MIN, FrameskipMode.MANUAL_VALUE_MAX)
     }
 
     override suspend fun getEmulatorConfiguration(romConfig: RomConfig): EmulatorConfiguration {

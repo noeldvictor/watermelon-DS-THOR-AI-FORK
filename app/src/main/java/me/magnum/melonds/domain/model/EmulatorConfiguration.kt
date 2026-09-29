@@ -32,5 +32,8 @@ data class EmulatorConfiguration(
         val firmwareConfiguration: FirmwareConfiguration,
         val rendererConfiguration: RendererConfiguration,
         val dldiSdCardConfiguration: DldiSdCardConfiguration,
-        val dsiWareAutoloadTitleId: Long = 0L
+        val dsiWareAutoloadTitleId: Long = 0L,
+        // FrameskipMode.nativeValue, and frames skipped per shown frame in manual mode
+        val frameskipMode: Int = FrameskipMode.OFF.nativeValue,
+        val frameskipManualValue: Int = 1,
 )

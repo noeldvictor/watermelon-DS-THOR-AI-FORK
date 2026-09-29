@@ -71,6 +71,9 @@ public:
     void SetTexPack(HDTexPack* pack);
     void SetFilterCache(HDTexPack* cache);
     void SetHDTextureFilter(int scale, int mode);
+    // Frameskip: the frontend will not compose this frame, so the render made at its line 215 is
+    // never shown. Skipped like a hidden render unless a display capture needs it.
+    void SetFrameskipRender(bool skip) noexcept { FrameskipRender = skip; }
     void SetCaptureScreenSwapHint(bool screenSwap, u32 captureCnt, u32 displayCnt) override;
     [[nodiscard]] bool GetLastServedCaptureSourceIdentity(
         CaptureSourceIdentity& outIdentity) const noexcept override;
@@ -1138,6 +1141,7 @@ private:
     bool SkipRenderAtVCount215 = false;
     // the last compatibility render was skipped as never shown; the target holds an older scene
     bool HiddenRenderSkipped = false;
+    bool FrameskipRender = false;
     bool InEarlySubmitAttempt = false;
     u64 CurrentEarlySubmitContextWaitNs = 0;
     bool CaptureReadbackPending = false;

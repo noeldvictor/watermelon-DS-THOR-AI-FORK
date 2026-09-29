@@ -68,6 +68,9 @@ float fastForwardSpeedMultiplier;
 float frameLimitSpeedMultiplier = 1.0f;
 bool limitFps = true;
 bool isFastForwardEnabled = false;
+// frameskip: 0 off, 1 manual (show one frame in frameskipManualValue + 1), 2 auto (when behind)
+std::atomic<int> frameskipMode{0};
+std::atomic<int> frameskipManualValue{1};
 
 jobject globalCameraManager;
 MelonDSAndroidCameraHandler* androidCameraHandler;
@@ -835,6 +838,8 @@ Java_me_magnum_melonds_MelonEmulator_setupEmulator(JNIEnv* env, jobject thiz, jo
     MelonDSAndroid::EmulatorConfiguration finalEmulatorConfiguration = MelonDSAndroidConfiguration::buildEmulatorConfiguration(env, emulatorConfiguration);
     fastForwardSpeedMultiplier = finalEmulatorConfiguration.fastForwardSpeedMultiplier;
     frameLimitSpeedMultiplier = sanitizeFrameLimitSpeedMultiplier(finalEmulatorConfiguration.frameLimitSpeedMultiplier);
+    frameskipMode.store(std::clamp(finalEmulatorConfiguration.frameskipMode, 0, 2));
+    frameskipManualValue.store(std::clamp(finalEmulatorConfiguration.frameskipManualValue, 1, 4));
 
     globalCameraManager = env->NewGlobalRef(cameraManager);
 
@@ -2478,6 +2483,8 @@ Java_me_magnum_melonds_MelonEmulator_updateEmulatorConfiguration(JNIEnv* env, jo
 
     fastForwardSpeedMultiplier = newConfiguration.fastForwardSpeedMultiplier;
     frameLimitSpeedMultiplier = sanitizeFrameLimitSpeedMultiplier(newConfiguration.frameLimitSpeedMultiplier);
+    frameskipMode.store(std::clamp(newConfiguration.frameskipMode, 0, 2));
+    frameskipManualValue.store(std::clamp(newConfiguration.frameskipManualValue, 1, 4));
 
     MelonDSAndroid::updateEmulatorConfiguration(std::make_unique<MelonDSAndroid::EmulatorConfiguration>(std::move(newConfiguration)));
 
@@ -2532,6 +2539,10 @@ void* emulate(void*)
     double lastTick = startTick;
     double lastMeasureFpsTick = startTick;
     double frameLimitError = 0.0;
+    bool frameskipRequested = false;
+    int frameskipManualCycle = 0;
+    // no skipping right after a start or resume: the frame limiter is still settling
+    int frameskipHoldoffFrames = 2;
 
     MelonDSAndroid::start();
 
@@ -2554,6 +2565,9 @@ void* emulate(void*)
             frameLimitError = 0;
             lastTick = getCurrentMillis();
             isThreadReallyPaused = false;
+            frameskipRequested = false;
+            frameskipManualCycle = 0;
+            frameskipHoldoffFrames = 2;
         }
 
         if (stop) {
@@ -2567,7 +2581,8 @@ void* emulate(void*)
 
         auto frameStart = std::chrono::steady_clock::now();
 
-        u32 nLines = MelonDSAndroid::loop();
+        u32 nLines = MelonDSAndroid::loop(frameskipRequested && !pauseAfterCurrentFrame);
+        const bool frameSkipped = MelonDSAndroid::lastFrameSkipped();
 
         auto frameDuration = std::chrono::steady_clock::now() - frameStart;
         if (performanceHintSession != nullptr)
@@ -2589,6 +2604,31 @@ void* emulate(void*)
             if (frameLimitError > frameTimeStep)
                 frameLimitError = frameTimeStep;
 
+            // Decide whether the NEXT frame may skip composing and presenting (the core refuses
+            // where it isn't safe). Manual shows one frame in N + 1; auto skips while emulation
+            // is at least half a frame behind the frame limiter.
+            const int mode = frameskipMode.load(std::memory_order_relaxed);
+            if (frameskipHoldoffFrames > 0 && nLines > 0)
+                frameskipHoldoffFrames--;
+            if (mode == 1 && !isFastForwardEnabled && frameskipHoldoffFrames == 0 && nLines > 0)
+            {
+                // a refused skip doesn't advance the cycle, so the cadence holds where skipping works
+                if (!(frameskipRequested && !frameSkipped))
+                    frameskipManualCycle = (frameskipManualCycle + 1) % (frameskipManualValue.load(std::memory_order_relaxed) + 1);
+                frameskipRequested = frameskipManualCycle != 0;
+            }
+            else if (mode == 2)
+            {
+                frameskipManualCycle = 0;
+                frameskipRequested = nLines > 0 && !isFastForwardEnabled && frameskipHoldoffFrames == 0
+                    && frameLimitError <= -(frameTimeStep * 0.5);
+            }
+            else
+            {
+                frameskipManualCycle = 0;
+                frameskipRequested = false;
+            }
+
             if (round(frameLimitError) > 0.0)
             {
                 timespec sleepTime = {
@@ -2605,6 +2645,8 @@ void* emulate(void*)
         } else {
             frameLimitError = 0;
             lastTick = getCurrentMillis();
+            frameskipRequested = false;
+            frameskipManualCycle = 0;
         }
 
         observedFrames++;

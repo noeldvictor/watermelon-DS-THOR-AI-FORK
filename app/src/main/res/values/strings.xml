@@ -207,6 +207,9 @@
     <string name="category_system_summary">Firmware settings, custom BIOS, JIT</string>
     <string name="theme">Theme</string>
     <string name="fast_forward_max_speed">Fast-forward max speed</string>
+    <string name="frameskip_mode">Frameskip</string>
+    <string name="frameskip_mode_summary">%s. Vulkan only: a skipped frame still runs, it just isn\'t drawn to the screen, so the game keeps full speed. Auto skips only when running behind. Never used while fast-forwarding or in scenes that alternate 3D between the screens.</string>
+    <string name="frameskip_manual_value">Frames to skip (manual)</string>
     <string name="frame_limit_speed">Emulation speed</string>
     <string name="frame_limit_speed_disabled_hardcore">Disabled while RetroAchievements Hardcore mode is enabled</string>
     <string name="rewind_description">When enabled, a save-state is periodically saved automatically. Whenever you want to go back on your progress by a short amount of time, just open the rewind screen and select the state that you want to resume from.\n\nBe aware that by enabling this feature, you may experience occasional stutters if your device is not powerful enough. A considerable amount of memory is also used depending on how often you want the state to be captured and for how long it should be kept.</string>
@@ -859,6 +862,19 @@ Location: %1$s (currently %2$d MB, capped at 256 MB)</string>
         <item>3x</item>
         <item>4x</item>
         <item>8x</item>
+    </string-array>
+
+    <string-array name="frameskip_mode_options">
+        <item>Off</item>
+        <item>Manual</item>
+        <item>Auto</item>
+    </string-array>
+
+    <string-array name="frameskip_manual_value_options">
+        <item>1 (draw every 2nd frame)</item>
+        <item>2 (draw every 3rd frame)</item>
+        <item>3 (draw every 4th frame)</item>
+        <item>4 (draw every 5th frame)</item>
     </string-array>
 
     <string-array name="frame_limit_speed_multiplier_options">

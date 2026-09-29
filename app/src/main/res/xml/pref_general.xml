@@ -22,6 +22,24 @@
             android:defaultValue="-1" />
 
     <ListPreference
+            android:key="frameskip_mode"
+            android:title="@string/frameskip_mode"
+            android:summary="@string/frameskip_mode_summary"
+            app:iconSpaceReserved="false"
+            android:entries="@array/frameskip_mode_options"
+            android:entryValues="@array/frameskip_mode_values"
+            android:defaultValue="off" />
+
+    <ListPreference
+            android:key="frameskip_manual_value"
+            android:title="@string/frameskip_manual_value"
+            android:summary="%s"
+            app:iconSpaceReserved="false"
+            android:entries="@array/frameskip_manual_value_options"
+            android:entryValues="@array/frameskip_manual_value_values"
+            android:defaultValue="1" />
+
+    <ListPreference
             android:key="frame_limit_speed_multiplier"
             android:title="@string/frame_limit_speed"
             android:summary="%s"

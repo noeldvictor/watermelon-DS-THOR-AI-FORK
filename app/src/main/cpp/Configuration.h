@@ -115,6 +115,8 @@ typedef struct
     char* internalFilesDir;
     float fastForwardSpeedMultiplier;
     float frameLimitSpeedMultiplier;
+    int frameskipMode;
+    int frameskipManualValue;
     bool showBootScreen;
     bool useJit;
     bool hgEngineFixEnabled;

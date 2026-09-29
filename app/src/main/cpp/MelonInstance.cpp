@@ -2471,7 +2471,7 @@ MelonInstance::VulkanFrameTailResult MelonInstance::processFrameTail(
     return VulkanFrameTailResult { hasValidFrame, shouldCaptureRewindState };
 }
 
-u32 MelonInstance::runFrame()
+u32 MelonInstance::runFrame(bool frameskipRequested)
 {
     if (currentRenderer == Renderer::Vulkan)
         joinPendingFrameTail();
@@ -2733,6 +2733,24 @@ u32 MelonInstance::runFrame()
         if (auto* renderer2D = dynamic_cast<GPU2D::SoftRenderer*>(&nds->GPU.GetRenderer2D()))
             renderer2D->BeginStructuredVulkan2DFrame();
     }
+    // Frameskip: the frame still runs (CPUs, 2D lines, any 3D a display capture needs), but it is
+    // not composed or presented and the screen keeps the last one. Only on the synchronous
+    // compatibility tail, and never where the latch's temporal heuristics need every frame
+    // (alternating dual-screen 3D, display capture) or while fast-forwarding.
+    constexpr int kMaxConsecutiveFrameskips = 4;
+    frameskipGranted = frameskipRequested
+        && currentRenderer == Renderer::Vulkan
+        && !UsesVulkanFastPath(vulkanSessionProfile.get())
+        && !isFastForwardActive()
+        && framesSinceLastScreenSwapToggle > 1
+        && (nds->GPU.GPU2D_A.CaptureCnt & (1u << 31u)) == 0u
+        && !rewindManager.ShouldCaptureState(frame + 1)
+        && !screenshotRenderer->isScreenshotPending()
+        && frameskipConsecutive < kMaxConsecutiveFrameskips;
+    frameskipConsecutive = frameskipGranted ? frameskipConsecutive + 1 : 0;
+    if (currentRenderer == Renderer::Vulkan)
+        static_cast<VulkanRenderer3D&>(nds->GPU.GetRenderer3D()).SetFrameskipRender(frameskipGranted);
+
     hdPack2DWalkedThisFrame = false;
     nds->GPU.VBlankStartHook = &MelonInstance::onVBlankStart;
     nds->GPU.VBlankStartHookUser = this;
@@ -2835,6 +2853,19 @@ u32 MelonInstance::runFrame()
         job.measuringVulkan = measuringVulkan;
         job.inputs = tailInputs;
         kickFrameTail(job);
+    }
+    else if (frameskipGranted)
+    {
+        packedRawStaging.valid = false;
+        if (renderFrame != nullptr)
+            frameQueue.discardRenderedFrame(renderFrame);
+        tailFrame = nullptr;
+        if (ndsSave)
+            ndsSave->CheckFlush();
+        if (gbaSave)
+            gbaSave->CheckFlush();
+        if (firmwareSave)
+            firmwareSave->CheckFlush();
     }
     else
     {

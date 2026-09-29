@@ -1042,12 +1042,17 @@ void VulkanRenderer3D::RenderFrameCompatibilityBackend(GPU& gpu)
     const bool renderDisplayedNextFrame =
         ((gpu.GPU2D_A.DispCnt >> 16u) & 0x3u) == 1u && bg0Uses3d;
     if (ActiveBackendMode == BackendMode::GraphicsHardware
-        && !renderDisplayedNextFrame
+        && (!renderDisplayedNextFrame || FrameskipRender)
         && !captureNeedsGpuCaptureLineBase
         && hasReusableColorTarget)
     {
         CurrentRenderScreenSwap = previousRenderScreenSwap;
-        HiddenRenderSkipped = true;
+        // A frameskip over an unchanged scene leaves the target current; only a skipped change
+        // forces the next frame to render (it would otherwise reuse the identical-frame path).
+        const bool skippedUnchangedScene = FrameskipRender && renderDisplayedNextFrame
+            && !textureCacheChanged && gpu.GPU3D.RenderFrameIdentical;
+        if (!skippedUnchangedScene)
+            HiddenRenderSkipped = true;
         return;
     }
 

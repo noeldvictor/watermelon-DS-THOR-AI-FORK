@@ -29,6 +29,7 @@ external display support, RetroAchievements, RetroArch shader presets. On top of
 | AI redraws | — | Character portraits redrawn by an image model from the official art, checked against the game's faces ([guide](tools/hd_remaster/REDRAW.md)) |
 | Upscaling | Full-screen RetroArch shaders | Also per-layer filters for 3D, sprites and BG separately (ScaleFX, Anime4K, HQ2x, ...) with a disk cache |
 | In-game overlay | Pause menu | Adds a turbo speed picker, live texture-filter switching, and "stretch to fit both screens" |
+| Frameskip | — | Off / Manual (draw 1 frame in 2-5) / Auto (only when running behind) for the Vulkan renderer; a skipped frame still runs, and scenes that alternate 3D between screens are never skipped |
 | Input | Single-button hotkeys | Adds modifier combos, so a hotkey can sit behind a chord; an unassigned stick click no longer washes out the top screen |
 | Cheats | Starts with an empty database; XML imports drop every cheat that is not inside a folder | Ships DeadSkullzJr's NDS(i) cheat database (4079 games), loaded per game when its cheats are opened; XML imports keep cheats listed directly under a game (often the master code) |
 | Default renderer | Software | Vulkan on devices that support it (software otherwise), so packs and filters work out of the box |

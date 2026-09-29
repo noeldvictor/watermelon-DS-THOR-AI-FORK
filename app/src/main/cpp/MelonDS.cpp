@@ -758,12 +758,17 @@ namespace MelonDSAndroid
         instance->start();
     }
 
-    u32 loop()
+    u32 loop(bool frameskipRequested)
     {
         MPInterface::Get().Process();
         if (currentConfiguration != nullptr && currentConfiguration->renderer != Renderer::Vulkan)
             setupOpenGlContext();
-        return instance->runFrame();
+        return instance->runFrame(frameskipRequested);
+    }
+
+    bool lastFrameSkipped()
+    {
+        return instance != nullptr && instance->lastFrameSkipped();
     }
 
     Frame* getPresentationFrame(std::optional<std::chrono::time_point<std::chrono::steady_clock>> deadline)
