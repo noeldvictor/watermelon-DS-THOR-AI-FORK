@@ -2371,6 +2371,15 @@ MelonInstance::VulkanFrameTailResult MelonInstance::processFrameTail(
                 vulkanPrepareFailureCount = 0;
             }
             hasValidFrame = isFrameUploaded;
+            // The first frame after a state load (rewind too) is prepared, since the latch and the 3D
+            // history need it, but not shown. A load clears the latch's history, and without it a
+            // scene that alternates 3D between the screens reads as 2D for that one frame: Hotel
+            // Dusk's top and Star Fox's bottom flashed white, Spirit Tracks' bottom lost its 2D.
+            if (hasValidFrame && vulkanPostLoadHiddenFrames.load(std::memory_order_acquire) > 0)
+            {
+                vulkanPostLoadHiddenFrames.fetch_sub(1, std::memory_order_acq_rel);
+                hasValidFrame = false;
+            }
         }
         else
         {
@@ -5295,6 +5304,7 @@ bool MelonInstance::loadState(Savestate* state)
         {
             requestVulkanPresentationResync();
             vulkanCaptureVramSeedPending = true;
+            vulkanPostLoadHiddenFrames.store(1, std::memory_order_release);
             const auto pipelineProfile = static_cast<const VulkanRenderSettings&>(
                 *currentConfiguration->renderSettings).pipelineProfile;
             vulkanRestored3dPrimePending.store(

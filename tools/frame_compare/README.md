@@ -68,3 +68,8 @@ intended rendering change.
   screen recordings still cover those.
 - Games that read the real-time clock can differ between runs (Lufia's title screen): check a
   new state with `--renderers vulkan,vulkan` first.
+- The first two dumped frames are left out: the picture from before the state loaded, and the
+  first frame after it, which Vulkan prepares but does not show (a load clears the latch's
+  history; see `vulkanPostLoadHiddenFrames`). Frame 0 in a report is the second frame after the
+  load. The software renderer isn't a ground truth right after a load either: its 3D for that
+  frame was due during the frame before the load, so it shows no 3D there.

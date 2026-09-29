@@ -45,6 +45,9 @@ FLAG_MIN_SHARE = 0.02
 # a pixel counts as changed against a baseline run when a channel moves more than this (runs are
 # bit-exact, so anything above 0 is the build's doing)
 BASELINE_THRESHOLD = 8
+# dumped frames left out at the start: the picture from before the load, and the first frame after
+# it, which Vulkan doesn't show
+SKIPPED_FRAMES = 2
 
 
 class Device:
@@ -282,15 +285,16 @@ def run_case(device, rom, state, frames, args, out_root):
         launch(device, rom, args.settle)
         load_state(device, state)
         started = time.time()
-        # frame 0 can still be the picture from before the state loaded, and the last one has no
-        # successor for the lag rule: two extra frames keep all N requested ones comparable
-        sequences[renderer] = dump_sequence(device, f"{case_name}_{renderer}", frames + 2, out_dir)
+        # frame 0 is the picture from before the state loaded and frame 1 the first after it, which
+        # Vulkan prepares but doesn't show (MelonInstance::processFrameTail); the last frame has no
+        # successor for the lag rule. Three extra frames keep all N requested ones comparable
+        sequences[renderer] = dump_sequence(device, f"{case_name}_{renderer}", frames + SKIPPED_FRAMES + 1, out_dir)
         print(f"  {renderer}: {frames} frames in {time.time() - started:.0f} s", flush=True)
         device.force_stop()
 
     reference, tested = args.renderers[1], args.renderers[0]
-    software = load_frames(sequences[reference])[1:]
-    vulkan = load_frames(sequences[tested])[1:]
+    software = load_frames(sequences[reference])[SKIPPED_FRAMES:]
+    vulkan = load_frames(sequences[tested])[SKIPPED_FRAMES:]
     rows, flagged = compare(vulkan, software, out_dir, case_name)
     baseline_changes = None
     if args.baseline:
@@ -298,7 +302,7 @@ def run_case(device, rom, state, frames, args, out_root):
         if baseline_dir is None:
             print(f"  no baseline for {case_name} in {args.baseline}")
         else:
-            baseline_changes = compare_baseline(vulkan, load_frames(baseline_dir)[1:], software, out_dir, case_name)
+            baseline_changes = compare_baseline(vulkan, load_frames(baseline_dir)[SKIPPED_FRAMES:], software, out_dir, case_name)
     (out_dir / "report.json").write_text(json.dumps(
         {"rom": rom, "state": state, "frames": frames, "rows": rows, "baselineChanges": baseline_changes}, indent=1))
     usual = {s: float(np.median([r["share"] for r in rows if r["screen"] == s])) for s in ("top", "bottom")}
@@ -336,14 +340,14 @@ def main():
         case_dir = Path(args.reanalyze)
         tested = next(case_dir.glob(f"*_{args.renderers[0]}"))
         reference = next(d for d in case_dir.glob(f"*_{args.renderers[1]}") if d != tested)
-        vulkan, software = load_frames(tested)[1:], load_frames(reference)[1:]
+        vulkan, software = load_frames(tested)[SKIPPED_FRAMES:], load_frames(reference)[SKIPPED_FRAMES:]
         rows, flagged = compare(vulkan, software, case_dir, case_dir.name)
         for r in flagged:
             print(f"frame {r['frame']:4d} {r['screen']:6s} {r['share']:.1%} differ, {r['flicker']} px flicker")
         print(f"{len(flagged)} flagged screens")
         if args.baseline:
             baseline_dir = next(Path(args.baseline).glob(f"*_{args.renderers[0]}"))
-            report_baseline(compare_baseline(vulkan, load_frames(baseline_dir)[1:], software, case_dir, case_dir.name))
+            report_baseline(compare_baseline(vulkan, load_frames(baseline_dir)[SKIPPED_FRAMES:], software, case_dir, case_dir.name))
         return
 
     cases = []

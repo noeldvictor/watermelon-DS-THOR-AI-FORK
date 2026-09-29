@@ -376,6 +376,8 @@ private:
     u32 fastPathSchemeHistoryPos = 0;
     bool vulkanCaptureVramSeedPending = false;
     std::atomic_bool vulkanRestored3dPrimePending = false;
+    // frames still to prepare without showing after a state load (see processFrameTail)
+    std::atomic_int vulkanPostLoadHiddenFrames = 0;
     int vulkanStructuredCaptureGateFrames = 0;
     int vulkanTemporal3dHistoryGateFrames = 0;
     int vulkanTemporal3dNotReadyFrames = 0;
