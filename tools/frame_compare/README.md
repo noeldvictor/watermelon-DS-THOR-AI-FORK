@@ -27,6 +27,34 @@ python tools/frame_compare/frame_compare.py ... --renderers vulkan,vulkan   # de
 - States are slots (`slot:N`) or files in the app's files dir; save one without touching a slot
   with `SAVE_STATE --es path /data/user/0/app.watermelonthor.dev/files/<name>.ml`.
 
+## Two checks: against software, and against a baseline
+
+- **Against the software renderer** (always): catches large errors - a black, white or stale
+  screen, a missing layer (more than 2% of a screen, well above the run's usual level).
+- **Against a baseline** (`--baseline <earlier run folder>`): runs are bit-exact (a Vulkan vs
+  Vulkan run gives 0.00%), so every pixel a new build draws differently from a known-good build's
+  run is the new build's doing. Each changed frame gets a verdict from the software renderer:
+  WORSE (pixels that matched it no longer do), better, or changed. This is the check that catches
+  small regressions. Strips: new | baseline | software | yellow = changed, magenta = newly wrong,
+  green = newly right.
+
+Why both: small glitches in 3D scenes can't be told apart from Vulkan's normal edge shimmer by
+comparing with software alone. At native resolution polygon edges flicker by a pixel as 3D moves on
+Vulkan and stay put on the software renderer, exactly like a small real glitch; `flicker` in
+report.json counts those pixels but doesn't flag them. Proven with a control (2026-09-29):
+with the Hotel Dusk fix (`88818973`) switched off, the software check flagged nothing (the 237
+blinking text pixels are 0.5% of the screen), the baseline check flagged every other frame as
+"237 px newly wrong -> WORSE", and with the fix back it reported "same as the baseline on every
+frame".
+
+```
+python tools/frame_compare/frame_compare.py --cases tools/frame_compare/cases_thor.txt --baseline ../frame_compare_baselines/<run>
+python tools/frame_compare/frame_compare.py --reanalyze <run>/<case> --baseline <baseline run>/<case>   # offline
+```
+
+Keep baselines outside the repo (a 13-case run is ~200 MB of PNGs); make a new one after an
+intended rendering change.
+
 ## Reading the results
 
 - Vulkan never matches the software renderer exactly: polygon edges and blending differ by a few

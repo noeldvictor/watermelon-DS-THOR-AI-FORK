@@ -42,6 +42,9 @@ SCREEN_W, SCREEN_H = 256, 192
 PIXEL_THRESHOLD = 40
 # a screen is flagged when more than this share of its pixels differ, and well above the run's usual level
 FLAG_MIN_SHARE = 0.02
+# a pixel counts as changed against a baseline run when a channel moves more than this (runs are
+# bit-exact, so anything above 0 is the build's doing)
+BASELINE_THRESHOLD = 8
 
 
 class Device:
@@ -152,8 +155,31 @@ def load_frames(directory):
     return frames
 
 
+def changed(a, b):
+    return np.abs(a - b).max(axis=2) > PIXEL_THRESHOLD
+
+
+def flicker_pixels(vulkan, software, index):
+    """Pixels where Vulkan's picture leaves and comes back (A-B-A, or A-B-B-A) while the software
+    renderer's stays put over the same frames, one more for Vulkan's 3D lead. Reported, not flagged:
+    at native resolution Vulkan's polygon edges shimmer by a pixel as 3D moves and look exactly like
+    this, so a small glitch in a 3D scene only stands out against a baseline run (--baseline)."""
+    result = np.zeros((2 * SCREEN_H, SCREEN_W), bool)
+    for length in (1, 2):
+        before, after = index - 1, index + length
+        if before < 0 or after >= len(vulkan) or after + 1 >= len(software):
+            continue
+        away = changed(vulkan[index], vulkan[before]) & changed(vulkan[index], vulkan[after])
+        back = ~changed(vulkan[before], vulkan[after])
+        steady = np.ones_like(away)
+        for frame in range(before, after + 1):
+            steady &= ~changed(software[frame], software[frame + 1])
+        result |= away & back & steady
+    return result
+
+
 def compare(vulkan, software, out_dir, case_name):
-    """Per-frame, per-screen share of differing pixels, and the flagged frames."""
+    """Per-frame, per-screen share of differing pixels, flickering pixels, and the flagged frames."""
     rows = []
     count = min(len(vulkan), len(software) - 1)
     for index in range(count):
@@ -161,10 +187,12 @@ def compare(vulkan, software, out_dir, case_name):
         candidates = [software[index]] + ([software[index + 1]] if index + 1 < len(software) else [])
         diff = np.min([np.abs(v - s).max(axis=2) for s in candidates], axis=0)
         bad = diff > PIXEL_THRESHOLD
+        flicker = flicker_pixels(vulkan, software, index)
         for screen, (y0, y1) in (("top", (0, SCREEN_H)), ("bottom", (SCREEN_H, 2 * SCREEN_H))):
             share = float(bad[y0:y1].mean())
             rows.append({
                 "frame": index, "screen": screen, "share": share,
+                "flicker": int(flicker[y0:y1].sum()),
                 "vulkanLuma": float(v[y0:y1].mean()), "softwareLuma": float(software[index][y0:y1].mean()),
             })
 
@@ -192,10 +220,56 @@ def compare(vulkan, software, out_dir, case_name):
         heat = np.zeros((SCREEN_H, SCREEN_W, 3), np.uint8)
         heat[..., 0] = np.clip(diff * 2, 0, 255)
         heat[diff > PIXEL_THRESHOLD] = (255, 0, 255)
+        heat[flicker_pixels(vulkan, software, index)[y0:y0 + SCREEN_H]] = (0, 255, 255)
         strip = np.concatenate(crops + [heat], axis=1)
         Image.fromarray(strip).resize((strip.shape[1] * 2, SCREEN_H * 2), Image.NEAREST).save(
             out_dir / f"{case_name}_frame{index:04d}_{r['screen']}.png")
     return rows, flagged
+
+
+def compare_baseline(vulkan, baseline, software, out_dir, case_name):
+    """Frames where this build's Vulkan picture differs from a known-good run's. Runs are bit-exact,
+    so every change is the build's; the software renderer says whether it moved closer or further."""
+    changes = []
+    count = min(len(vulkan), len(baseline), len(software) - 1)
+    for index in range(count):
+        new, old = vulkan[index], baseline[index]
+        moved = np.abs(new - old).max(axis=2) > BASELINE_THRESHOLD
+        reference = [software[index], software[index + 1]]
+        new_bad = np.min([np.abs(new - r).max(axis=2) for r in reference], axis=0) > PIXEL_THRESHOLD
+        old_bad = np.min([np.abs(old - r).max(axis=2) for r in reference], axis=0) > PIXEL_THRESHOLD
+        for screen, (y0, y1) in (("top", (0, SCREEN_H)), ("bottom", (SCREEN_H, 2 * SCREEN_H))):
+            changed_px = int(moved[y0:y1].sum())
+            if changed_px == 0:
+                continue
+            gained = int((new_bad[y0:y1] & ~old_bad[y0:y1] & moved[y0:y1]).sum())
+            fixed = int((old_bad[y0:y1] & ~new_bad[y0:y1] & moved[y0:y1]).sum())
+            verdict = "WORSE" if gained > fixed else ("better" if fixed > gained else "changed")
+            changes.append({"frame": index, "screen": screen, "changed": changed_px,
+                            "newlyWrong": gained, "newlyRight": fixed, "verdict": verdict})
+            strip = np.concatenate([new[y0:y1], old[y0:y1], software[index][y0:y1]], axis=1).astype(np.uint8)
+            heat = np.zeros((SCREEN_H, SCREEN_W, 3), np.uint8)
+            heat[moved[y0:y1]] = (255, 255, 0)
+            heat[(new_bad & ~old_bad & moved)[y0:y1]] = (255, 0, 255)
+            heat[(old_bad & ~new_bad & moved)[y0:y1]] = (0, 255, 0)
+            strip = np.concatenate([strip, heat], axis=1)
+            Image.fromarray(strip).resize((strip.shape[1] * 2, SCREEN_H * 2), Image.NEAREST).save(
+                out_dir / f"{case_name}_baseline_frame{index:04d}_{screen}.png")
+    return changes
+
+
+def report_baseline(changes):
+    if not changes:
+        print("  same as the baseline on every frame")
+        return 0
+    worse = [c for c in changes if c["verdict"] == "WORSE"]
+    print(f"  CHANGED from the baseline on {len(changes)} screens ({len(worse)} further from software):")
+    for c in changes[:40]:
+        print(f"    frame {c['frame']:4d} {c['screen']:6s} {c['changed']:5d} px changed, "
+              f"{c['newlyWrong']} newly wrong, {c['newlyRight']} newly right -> {c['verdict']}")
+    if len(changes) > 40:
+        print(f"    ... {len(changes) - 40} more in report.json")
+    return len(worse)
 
 
 def run_case(device, rom, state, frames, args, out_root):
@@ -218,16 +292,26 @@ def run_case(device, rom, state, frames, args, out_root):
     software = load_frames(sequences[reference])[1:]
     vulkan = load_frames(sequences[tested])[1:]
     rows, flagged = compare(vulkan, software, out_dir, case_name)
-    (out_dir / "report.json").write_text(json.dumps({"rom": rom, "state": state, "frames": frames, "rows": rows}, indent=1))
+    baseline_changes = None
+    if args.baseline:
+        baseline_dir = next(Path(args.baseline).glob(f"{case_name}/{case_name}_{tested}"), None)
+        if baseline_dir is None:
+            print(f"  no baseline for {case_name} in {args.baseline}")
+        else:
+            baseline_changes = compare_baseline(vulkan, load_frames(baseline_dir)[1:], software, out_dir, case_name)
+    (out_dir / "report.json").write_text(json.dumps(
+        {"rom": rom, "state": state, "frames": frames, "rows": rows, "baselineChanges": baseline_changes}, indent=1))
     usual = {s: float(np.median([r["share"] for r in rows if r["screen"] == s])) for s in ("top", "bottom")}
     print(f"  usual differing share: top {usual['top']:.2%}, bottom {usual['bottom']:.2%}")
     if flagged:
         print(f"  FLAGGED {len(flagged)}:")
         for r in flagged:
-            print(f"    frame {r['frame']:4d} {r['screen']:6s} {r['share']:.1%} differ "
+            print(f"    frame {r['frame']:4d} {r['screen']:6s} {r['share']:.1%} differ, {r['flicker']} px flicker "
                   f"(luma vulkan {r['vulkanLuma']:.0f} / software {r['softwareLuma']:.0f})")
     else:
         print("  no flagged frames")
+    if baseline_changes is not None:
+        report_baseline(baseline_changes)
     return flagged
 
 
@@ -243,8 +327,24 @@ def main():
     parser.add_argument("--settle", type=float, default=3.0, help="seconds to let the game run before loading the state")
     parser.add_argument("--renderers", default="vulkan,software", help="tested,reference (vulkan,vulkan = determinism check)")
     parser.add_argument("--out", default="work/frame_compare")
+    parser.add_argument("--reanalyze", help="a case folder from an earlier run: compare its pulled frames again, no device")
+    parser.add_argument("--baseline", help="an earlier run's folder (a known-good build): also report every frame this build draws differently")
     args = parser.parse_args()
     args.renderers = args.renderers.split(",")
+
+    if args.reanalyze:
+        case_dir = Path(args.reanalyze)
+        tested = next(case_dir.glob(f"*_{args.renderers[0]}"))
+        reference = next(d for d in case_dir.glob(f"*_{args.renderers[1]}") if d != tested)
+        vulkan, software = load_frames(tested)[1:], load_frames(reference)[1:]
+        rows, flagged = compare(vulkan, software, case_dir, case_dir.name)
+        for r in flagged:
+            print(f"frame {r['frame']:4d} {r['screen']:6s} {r['share']:.1%} differ, {r['flicker']} px flicker")
+        print(f"{len(flagged)} flagged screens")
+        if args.baseline:
+            baseline_dir = next(Path(args.baseline).glob(f"*_{args.renderers[0]}"))
+            report_baseline(compare_baseline(vulkan, load_frames(baseline_dir)[1:], software, case_dir, case_dir.name))
+        return
 
     cases = []
     if args.cases:
