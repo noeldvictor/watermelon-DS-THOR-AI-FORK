@@ -3,7 +3,9 @@
 
 #include <oboe/Oboe.h>
 #include <fstream>
+#include <vector>
 #include "MelonInstance.h"
+#include "TimeStretcher.h"
 
 class OboeCallback : public oboe::AudioStreamCallback {
 private:
@@ -11,6 +13,12 @@ private:
     void (*onErrorCallback)(void);
     std::ostream* _recordingStream;
     float audioSampleFrac;
+
+    // fast-forward: everything the core produced, played faster at the original pitch
+    TimeStretcher fastForwardStretcher;
+    std::vector<int16_t> fastForwardInput;
+    bool fastForwardAudioActive = false;
+    double fastForwardArrivalRate = 1.0;
 
 public:
     std::weak_ptr<MelonDSAndroid::MelonInstance> activeInstance;
@@ -22,6 +30,7 @@ public:
     
 private:
     int getNumSamplesOut(int len);
+    void renderFastForward(MelonDSAndroid::MelonInstance& instance, int16_t* audioData, int32_t numFrames);
 };
 
 

@@ -61,6 +61,8 @@ public:
     void releaseKey(u32 key);
     void setSlot2AnalogInput(float x, float y);
     int readAudioOutput(s16* buffer, int length);
+    int getAudioOutputAvailable() const;
+    void setLargeAudioOutputBuffer(bool large);
     void setAudioOutputSkew(double skew);
     bool takeScreenshot();
     void loadCheats(std::list<Cheat> cheats);

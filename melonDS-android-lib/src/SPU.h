@@ -250,6 +250,10 @@ public:
     void TrimOutput();
     void DrainOutput();
     void InitOutput();
+    // Fast-forward produces several times the audio the output plays between two reads; a larger
+    // buffer holds it for the frontend's time-stretcher. Normal speed keeps the small one, which
+    // also caps how much latency can build up.
+    void SetLargeOutputBuffer(bool large);
     int GetOutputSize() const;
     void Sync(bool wait);
     int ReadOutput(s16* data, int samples);
@@ -264,7 +268,10 @@ public:
     void Write32(u32 addr, u32 val);
 
 private:
+    void AllocateOutputBufferLocked();
+
     u32 OutputBufferSize = 0;
+    bool LargeOutputBuffer = false;
     double OutputSampleRate;
     double OutputSkew = 1.0;
     melonDS::NDS& NDS;

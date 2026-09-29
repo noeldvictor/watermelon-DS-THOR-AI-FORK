@@ -240,6 +240,7 @@ add_library(
         "${ANDROID_CPP_DIR}/OpenGLContext.cpp"
         "${ANDROID_CPP_DIR}/PlatformAndroid.cpp"
         "${ANDROID_CPP_DIR}/PlatformAndroid_AAC.cpp"
+        "${ANDROID_CPP_DIR}/TimeStretcher.cpp"
         "${ANDROID_CPP_DIR}/RetroAchievementsMapper.cpp"
         "${ANDROID_CPP_DIR}/RewindManager.cpp"
         "${ANDROID_CPP_DIR}/RomIconBuilder.cpp"

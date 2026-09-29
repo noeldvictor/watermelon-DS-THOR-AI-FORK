@@ -42,7 +42,8 @@ namespace MelonDSAndroid
 {
     namespace
     {
-        bool fastForwardActive = false;
+        // read by the audio callback thread too
+        std::atomic_bool fastForwardActive = false;
         std::atomic_bool rendererDebugToolsEnabled = false;
         std::atomic_bool rendererDebugBgObjEnabled = false;
         std::atomic_bool rendererDebugFilterTintEnabled = false;

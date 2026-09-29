@@ -1078,11 +1078,20 @@ void SPU::InitOutput()
     blip_set_rates(BlipLeft, INTERNAL_SAMPLE_RATE * OutputSkew, OutputSampleRate);
     blip_set_rates(BlipRight, INTERNAL_SAMPLE_RATE * OutputSkew, OutputSampleRate);
 
+    AllocateOutputBufferLocked();
+    Platform::Mutex_Unlock(AudioLock);
+}
+
+void SPU::AllocateOutputBufferLocked()
+{
     u32 needSamples = (u32) ceil(INTERNAL_SAMPLE_RATE / 60 / INTERNAL_SAMPLE_RATE * OutputSampleRate);
     u32 newBufferSize = 512;
     while (newBufferSize < needSamples)
         newBufferSize <<= 1;
     newBufferSize <<= 1;
+    // ~340 ms at 48 kHz: 8x fast-forward between two 20 ms output callbacks
+    if (LargeOutputBuffer && newBufferSize < 16384)
+        newBufferSize = 16384;
 
     if (newBufferSize != OutputBufferSize)
     {
@@ -1095,6 +1104,17 @@ void SPU::InitOutput()
     memset(OutputBuffer, 0, 2*OutputBufferSize*2);
     OutputBufferReadPos = 0;
     OutputBufferWritePos = 0;
+}
+
+void SPU::SetLargeOutputBuffer(bool large)
+{
+    // only the buffer changes; the blip resamplers belong to the emulator thread
+    Platform::Mutex_Lock(AudioLock);
+    if (large != LargeOutputBuffer)
+    {
+        LargeOutputBuffer = large;
+        AllocateOutputBufferLocked();
+    }
     Platform::Mutex_Unlock(AudioLock);
 }
 
