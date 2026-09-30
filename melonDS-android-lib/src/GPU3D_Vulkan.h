@@ -1089,6 +1089,8 @@ private:
     u32 LastGraphicsOpaqueHighresRepeatModelDrawCount = 0;
     u32 LastGraphicsOpaqueNoAttrPassCount = 0;
     u32 LastGraphicsOpaqueBatchSavedDraws = 0;
+    u32 LastGraphicsTranslucentBatchSavedDraws = 0;
+    u32 LastGraphicsEdgeBatchSavedDraws = 0;
     u32 LastGraphicsOpaqueReverseOcclusionPassCount = 0;
     u32 LastGraphicsOpaqueNoDepthNoAttrPassCount = 0;
     u32 LastGraphicsOpaqueNoAttrPolyIdMissCount = 0;

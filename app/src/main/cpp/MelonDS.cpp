@@ -216,6 +216,8 @@ namespace MelonDSAndroid
                 flags |= VulkanDiagnosticLegacyFinalAaMask;
             if (ReadBooleanSystemProperty("debug.melonds.vulkan.no_opaque_batch"))
                 flags |= VulkanDiagnosticDisableOpaqueBatching;
+            if (ReadBooleanSystemProperty("debug.melonds.vulkan.no_translucent_edge_batch"))
+                flags |= VulkanDiagnosticDisableTranslucentEdgeBatching;
 
             return flags;
         }

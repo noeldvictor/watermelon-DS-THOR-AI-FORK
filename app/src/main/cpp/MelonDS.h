@@ -34,6 +34,7 @@ namespace MelonDSAndroid {
         VulkanDiagnosticLegacyFinalAaMask = 1u << 2u,
         // CPU side only (the flags also reach shaders as passIndex; bits 0-2 and 31 are theirs)
         VulkanDiagnosticDisableOpaqueBatching = 1u << 8u,
+        VulkanDiagnosticDisableTranslucentEdgeBatching = 1u << 9u,
     };
 
     enum Renderer2DDebugFeatureFlag : u32 {

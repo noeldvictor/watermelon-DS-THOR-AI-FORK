@@ -225,12 +225,20 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
             ?: DEFAULT_TOUCH_Y
         val durationMs = (intent.firstNullableIntExtra(EXTRA_DURATION_MS) ?: DEFAULT_TOUCH_DURATION_MS)
             .coerceIn(1, 2_000)
-        MelonEmulator.onInputDown(Input.TOUCHSCREEN)
-        MelonEmulator.onScreenTouch(x, y)
-        delay(durationMs.toLong())
-        MelonEmulator.onInputUp(Input.TOUCHSCREEN)
-        MelonEmulator.onScreenRelease()
-        Log.w(TAG, "action=touch_screen x=$x y=$y durationMs=$durationMs")
+        // taps > 1: a quick double (or more) tap, which separate broadcasts are too slow for
+        val taps = (intent.firstNullableIntExtra(EXTRA_TAPS) ?: 1).coerceIn(1, 5)
+        val gapMs = (intent.firstNullableIntExtra(EXTRA_GAP_MS) ?: 80).coerceIn(1, 2_000)
+        repeat(taps) { tap ->
+            if (tap > 0) {
+                delay(gapMs.toLong())
+            }
+            MelonEmulator.onInputDown(Input.TOUCHSCREEN)
+            MelonEmulator.onScreenTouch(x, y)
+            delay(durationMs.toLong())
+            MelonEmulator.onInputUp(Input.TOUCHSCREEN)
+            MelonEmulator.onScreenRelease()
+        }
+        Log.w(TAG, "action=touch_screen x=$x y=$y durationMs=$durationMs taps=$taps gapMs=$gapMs")
     }
 
     // Presses DS buttons in order, each held long enough for the game to poll it: `--es input A`
@@ -1103,6 +1111,7 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         private const val EXTRA_DURATION_MS = "duration_ms"
         private const val EXTRA_INPUT = "input"
         private const val EXTRA_GAP_MS = "gap_ms"
+        private const val EXTRA_TAPS = "taps"
         private const val EXTRA_TIMEOUT_MS = "timeout_ms"
         private const val EXTRA_FRAMES = "frames"
         private const val EXTRA_BURST_COUNT = "burst_count"

@@ -100,6 +100,7 @@ namespace
 constexpr u32 kPipelineCacheFileVersion = 4;
 constexpr u32 kVulkanDiagnosticDisablePassiveRepeatCoverageExpand = 1u << 0u;
 constexpr u32 kVulkanDiagnosticDisableOpaqueBatching = 1u << 8u;
+constexpr u32 kVulkanDiagnosticDisableTranslucentEdgeBatching = 1u << 9u;
 constexpr float kTriangleAreaEpsilon = 0.000001f;
 constexpr float kTileOverlapEpsilon = 0.00001f;
 constexpr u32 kWorkSortDispatchX = 0u;
@@ -4521,7 +4522,7 @@ void VulkanRenderer3D::logPerformanceIfNeeded()
     {
         Log(
             LogLevel::Warn,
-            "VulkanPerf[GPU3D]: backendConfigured=%s backendActive=%s path=%s descriptorPath=%s captureSource=%s scale=%d render cpu avg=%.3fms p95=%.3fms max=%.3fms wait avg=%.3fms p95=%.3fms max=%.3fms gpu avg=%.3fms p95=%.3fms max=%.3fms triangles avg=%llu passes avg=%llu p95=%llu opaqueDraws=%u opaqueBatchSaved=%u needOpaqueDraws=%u alphaShadowDraws=%u contextMisses=%llu late=%llu dropped=%llu readbackColor=%llu readbackResult=%llu capturePrepare=%llu captureEnabled=%llu captureSrc3d=%llu capMode=%llu/%llu/%llu/%llu capSize=%llu/%llu/%llu/%llu capExport=%llu capExportCpu avg=%.3fms p95=%.3fms capExportGpu avg=%.3fms p95=%.3fms earlySubmit hit=%llu/%llu miss=%llu skip215=%llu cpu avg=%.3fms p95=%.3fms wait avg=%.3fms p95=%.3fms",
+            "VulkanPerf[GPU3D]: backendConfigured=%s backendActive=%s path=%s descriptorPath=%s captureSource=%s scale=%d render cpu avg=%.3fms p95=%.3fms max=%.3fms wait avg=%.3fms p95=%.3fms max=%.3fms gpu avg=%.3fms p95=%.3fms max=%.3fms triangles avg=%llu passes avg=%llu p95=%llu opaqueDraws=%u opaqueBatchSaved=%u translucentBatchSaved=%u edgeBatchSaved=%u needOpaqueDraws=%u alphaShadowDraws=%u contextMisses=%llu late=%llu dropped=%llu readbackColor=%llu readbackResult=%llu capturePrepare=%llu captureEnabled=%llu captureSrc3d=%llu capMode=%llu/%llu/%llu/%llu capSize=%llu/%llu/%llu/%llu capExport=%llu capExportCpu avg=%.3fms p95=%.3fms capExportGpu avg=%.3fms p95=%.3fms earlySubmit hit=%llu/%llu miss=%llu skip215=%llu cpu avg=%.3fms p95=%.3fms wait avg=%.3fms p95=%.3fms",
             backendModeName(RequestedBackendMode),
             backendModeName(ActiveBackendMode),
             activePathName,
@@ -4542,6 +4543,8 @@ void VulkanRenderer3D::logPerformanceIfNeeded()
             static_cast<unsigned long long>(passSummary.P95Ns),
             LastGraphicsOpaqueDrawCount,
             LastGraphicsOpaqueBatchSavedDraws,
+            LastGraphicsTranslucentBatchSavedDraws,
+            LastGraphicsEdgeBatchSavedDraws,
             LastGraphicsNeedOpaqueDrawCount,
             LastGraphicsAlphaDrawCount,
             static_cast<unsigned long long>(ContextMissCount),
@@ -13614,6 +13617,8 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
         u32 stencilBitClears = 0;
         u32 fastOpaqueBatchCommands = 0;
         u32 fastOpaqueBatchSavedDraws = 0;
+        u32 translucentBatchSavedDraws = 0;
+        u32 edgeBatchSavedDraws = 0;
         u32 denseOpaqueFastCandidates = 0;
         u32 denseOpaqueFastPipelineMisses = 0;
         u32 denseOpaqueNoAttrPolyIdMisses = 0;
@@ -14140,13 +14145,17 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
 
         return GraphicsOpaqueFastModulateOcclusionNoAttrPipelines[pipelineIndex];
     };
+    // mergedTriangleCount / mergedScissor: consecutive polygons with this one's state drawn with it
     const auto bindAndDrawGraphics = [&](const GraphicsPolygonDraw& draw,
                                          VkPipeline pipeline,
                                          u32 stencilCompareMask,
                                          u32 stencilWriteMask,
-                                         u32 stencilReference) -> bool {
+                                         u32 stencilReference,
+                                         u32 mergedTriangleCount = 0u,
+                                         const VkRect2D* mergedScissor = nullptr) -> bool {
         if (pipeline == VK_NULL_HANDLE || draw.triangleCount == 0u || draw.firstTriangle >= Triangles.size())
             return false;
+        const u32 triangleCount = mergedTriangleCount != 0u ? mergedTriangleCount : draw.triangleCount;
         if (vkCmdPushConstants == nullptr
             || vkCmdDraw == nullptr
             || vkCmdBindPipeline == nullptr
@@ -14186,12 +14195,12 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
         pushConstants.variantKey = ((firstTriangle.texLayer & 0xFFFFu) << 16u) | (firstTriangle.texArrayIndex & 0xFFFFu);
         pushConstants.passIndex = ((firstTriangle.texHeight & 0xFFFFu) << 16u) | (firstTriangle.texWidth & 0xFFFFu);
         pushConstants.triangleBase = firstTriangle.texParam;
-        pushConstants.triangleCount = draw.triangleCount;
+        pushConstants.triangleCount = triangleCount;
         vkCmdPushConstants(commandBuffer, GraphicsPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants);
         setStencilStateCached(stencilCompareMask, stencilWriteMask, stencilReference);
-        const VkRect2D drawScissor = drawGraphicsScissor(draw);
+        const VkRect2D drawScissor = mergedScissor != nullptr ? *mergedScissor : drawGraphicsScissor(draw);
         setGraphicsScissorCached(drawScissor);
-        vkCmdDraw(commandBuffer, draw.triangleCount * 3u, 1u, draw.firstTriangle * 3u, 0u);
+        vkCmdDraw(commandBuffer, triangleCount * 3u, 1u, draw.firstTriangle * 3u, 0u);
         includeFinalActiveScissor(drawScissor);
         if (fogFlagEnabledFor(draw))
         {
@@ -14405,6 +14414,21 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
     };
     const bool opaqueBatchingEnabled =
         (MelonDSAndroid::getVulkanDiagnosticFlags() & kVulkanDiagnosticDisableOpaqueBatching) == 0u;
+    // Translucent polygons and edge marks, the same way: consecutive ones with the same state go out
+    // as one draw. A translucent polygon still can't blend over its own polygon ID inside a merged
+    // draw (the stencil works per fragment, in primitive order). Only polygons drawn in one pass
+    // qualify: shadows and "need opaque" ones interleave two draws per polygon.
+    const bool translucentEdgeBatchingEnabled =
+        (MelonDSAndroid::getVulkanDiagnosticFlags() & kVulkanDiagnosticDisableTranslucentEdgeBatching) == 0u;
+    const auto sameTexture = [&](const GraphicsPolygonDraw& a, const GraphicsPolygonDraw& b) -> bool {
+        const TriangleGpu& ta = Triangles[a.firstTriangle];
+        const TriangleGpu& tb = Triangles[b.firstTriangle];
+        return ta.texLayer == tb.texLayer
+            && ta.texArrayIndex == tb.texArrayIndex
+            && ta.texWidth == tb.texWidth
+            && ta.texHeight == tb.texHeight
+            && ta.texParam == tb.texParam;
+    };
     const auto drawNeedOpaquePass = [&](const GraphicsPolygonDraw& draw) {
         const u32 pipelineIndex = opaquePipelineIndexFor(draw);
         VkPipeline pipeline = fastOpaqueModulatePipelineFor(draw, pipelineIndex, false);
@@ -14414,7 +14438,9 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
         }
         bindAndDrawGraphics(draw, pipeline, 0xFFu, 0xFFu, (draw.polyAttr >> 24u) & 0x3Fu);
     };
-    const auto bindAndDrawGraphicsEdges = [&](const GraphicsPolygonDraw& draw) -> bool {
+    const auto bindAndDrawGraphicsEdges = [&](const GraphicsPolygonDraw& draw,
+                                              u32 mergedEdgeIndexCount = 0u,
+                                              const VkRect2D* mergedScissor = nullptr) -> bool {
         if (draw.edgeIndexCount == 0u)
             return false;
 
@@ -14475,9 +14501,9 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
                     pushConstants.edgeColorPacked[i] = savedEdgeColorPacked[i];
             }
         }
-        const VkRect2D edgeScissor = drawGraphicsScissor(draw);
+        const VkRect2D edgeScissor = mergedScissor != nullptr ? *mergedScissor : drawGraphicsScissor(draw);
         setGraphicsScissorCached(edgeScissor);
-        vkCmdDrawIndexed(commandBuffer, draw.edgeIndexCount, 1u, draw.firstEdgeIndex, 0, 0u);
+        vkCmdDrawIndexed(commandBuffer, mergedEdgeIndexCount != 0u ? mergedEdgeIndexCount : draw.edgeIndexCount, 1u, draw.firstEdgeIndex, 0, 0u);
         includeFinalActiveScissor(edgeScissor);
         drawCount++;
         return true;
@@ -15237,13 +15263,42 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, &graphicsSceneVertexBuffer, &graphicsSceneVertexOffset);
         vkCmdBindIndexBuffer(commandBuffer, graphicsEdgeIndexBuffer, 0u, VK_INDEX_TYPE_UINT16);
 
-        for (const GraphicsPolygonDraw& draw : GraphicsPolygons)
+        for (size_t polygonIndex = 0; polygonIndex < GraphicsPolygons.size(); polygonIndex++)
         {
+            const GraphicsPolygonDraw& draw = GraphicsPolygons[polygonIndex];
             if ((draw.flags & AcceleratedPolygonFlagShadowMask) != 0u)
                 continue;
 
-            if (bindAndDrawGraphicsEdges(draw))
-                graphicsPassDebugStats.edge++;
+            // edge marks of consecutive polygons with the same depth mode and edge colour: one draw
+            u32 mergedEdgeIndexCount = draw.edgeIndexCount;
+            u32 mergedSourceDraws = 1u;
+            VkRect2D mergedScissor = drawGraphicsScissor(draw);
+            while (translucentEdgeBatchingEnabled
+                && draw.edgeIndexCount != 0u
+                && polygonIndex + 1u < GraphicsPolygons.size())
+            {
+                const GraphicsPolygonDraw& next = GraphicsPolygons[polygonIndex + 1u];
+                if (next.edgeIndexCount == 0u
+                    || (next.flags & AcceleratedPolygonFlagShadowMask) != 0u
+                    || draw.firstEdgeIndex + mergedEdgeIndexCount != next.firstEdgeIndex
+                    || (next.flags & AcceleratedPolygonFlagWBuffer) != (draw.flags & AcceleratedPolygonFlagWBuffer)
+                    || next.edgeColorOverrideMask != draw.edgeColorOverrideMask
+                    || (draw.edgeColorOverrideMask != 0u && next.edgeColorOverridePacked != draw.edgeColorOverridePacked))
+                {
+                    break;
+                }
+                mergedEdgeIndexCount += next.edgeIndexCount;
+                mergedSourceDraws++;
+                mergedScissor = unionGraphicsScissor(mergedScissor, drawGraphicsScissor(next));
+                polygonIndex++;
+            }
+
+            const bool merged = mergedSourceDraws > 1u;
+            if (bindAndDrawGraphicsEdges(draw, merged ? mergedEdgeIndexCount : 0u, merged ? &mergedScissor : nullptr))
+            {
+                graphicsPassDebugStats.edge += mergedSourceDraws;
+                graphicsPassDebugStats.edgeBatchSavedDraws += mergedSourceDraws - 1u;
+            }
         }
 
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, &graphicsVertexBuffer, &graphicsVertexOffset);
@@ -15335,8 +15390,9 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
             &GraphicsPolygons[GraphicsAlphaDrawIndices.front()];
     }
 
-    for (const GraphicsPolygonDraw& draw : GraphicsPolygons)
+    for (size_t polygonIndex = 0; polygonIndex < GraphicsPolygons.size(); polygonIndex++)
     {
+        const GraphicsPolygonDraw& draw = GraphicsPolygons[polygonIndex];
         if (draw.triangleCount == 0u)
             continue;
 
@@ -15413,8 +15469,44 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
             const VkPipeline pipeline = pipelineIndex < GraphicsTranslucentPipelines.size()
                 ? GraphicsTranslucentPipelines[pipelineIndex]
                 : VK_NULL_HANDLE;
-            if (bindAndDrawGraphics(draw, pipeline, 0x7Fu, 0x7Fu, 0x40u | polyId))
-                graphicsPassDebugStats.mainTranslucent++;
+            u32 mergedTriangleCount = draw.triangleCount;
+            u32 mergedSourceDraws = 1u;
+            VkRect2D mergedScissor = drawGraphicsScissor(draw);
+            while (translucentEdgeBatchingEnabled
+                && !needOpaque
+                && !replaceTransparentDestination
+                && draw.firstTriangle < Triangles.size()
+                && polygonIndex + 1u < GraphicsPolygons.size())
+            {
+                const GraphicsPolygonDraw& next = GraphicsPolygons[polygonIndex + 1u];
+                constexpr u32 kPassFlags = AcceleratedPolygonFlagTranslucent
+                    | AcceleratedPolygonFlagShadowMask
+                    | AcceleratedPolygonFlagShadow
+                    | AcceleratedPolygonFlagNeedOpaquePass;
+                if (next.triangleCount == 0u
+                    || next.firstTriangle >= Triangles.size()
+                    || (next.flags & kPassFlags) != AcceleratedPolygonFlagTranslucent
+                    || &next == soleTranslucentOverTransparentClear
+                    || next.flags != draw.flags
+                    || next.polyAttr != draw.polyAttr
+                    || draw.firstTriangle + mergedTriangleCount != next.firstTriangle
+                    || translucentPipelineIndexFor(next, fogWriteEnabledFor(next), alphaBlendEnabled) != pipelineIndex
+                    || !sameTexture(draw, next))
+                {
+                    break;
+                }
+                mergedTriangleCount += next.triangleCount;
+                mergedSourceDraws++;
+                mergedScissor = unionGraphicsScissor(mergedScissor, drawGraphicsScissor(next));
+                polygonIndex++;
+            }
+            const bool merged = mergedSourceDraws > 1u;
+            if (bindAndDrawGraphics(draw, pipeline, 0x7Fu, 0x7Fu, 0x40u | polyId,
+                    merged ? mergedTriangleCount : 0u, merged ? &mergedScissor : nullptr))
+            {
+                graphicsPassDebugStats.mainTranslucent += mergedSourceDraws;
+                graphicsPassDebugStats.translucentBatchSavedDraws += mergedSourceDraws - 1u;
+            }
         }
     }
     currentGraphicsDebugPassKind = GraphicsDebugPassKind::Other;
@@ -15598,6 +15690,8 @@ bool VulkanRenderer3D::dispatchGraphicsRasterAndReadback(
 
     LastGraphicsOpaqueNoAttrPassCount = graphicsPassDebugStats.opaqueNoAttr;
     LastGraphicsOpaqueBatchSavedDraws = graphicsPassDebugStats.fastOpaqueBatchSavedDraws;
+    LastGraphicsTranslucentBatchSavedDraws = graphicsPassDebugStats.translucentBatchSavedDraws;
+    LastGraphicsEdgeBatchSavedDraws = graphicsPassDebugStats.edgeBatchSavedDraws;
     LastGraphicsOpaqueReverseOcclusionPassCount = graphicsPassDebugStats.opaqueReverseOcclusion;
     LastGraphicsOpaqueNoDepthNoAttrPassCount = graphicsPassDebugStats.opaqueNoDepthNoAttr;
     LastGraphicsOpaqueNoAttrPolyIdMissCount = graphicsPassDebugStats.denseOpaqueNoAttrPolyIdMisses;
