@@ -500,14 +500,21 @@ def mesh_to_display_list(mesh: Mesh, draw: Draw, lit: bool) -> bytes:
     NORMAL (lit shapes; the engine lights it) or COLOR, and VTX_16, as a triangle list."""
     cmds: list[tuple[int, list[int]]] = []
     inverse = {}
-    current_slot = None
+    # slot -1 = the matrix the display list starts with; there is no command to get back to it
+    # once a slot was restored, so those triangles go first, and later ones use a stack slot
+    # holding the same matrix (or, failing that, the slot in use: same place in bind pose)
+    alias = next((k for k, m in enumerate(draw.stack) if np.allclose(m, draw.current, atol=1e-6)), None)
+    order = sorted(range(len(mesh.triangles)), key=lambda i: int((mesh.slots[mesh.triangles[i]] >= 0).any()))
+    current_slot = -1
     cmds.append((0x40, [0]))                                   # BEGIN_VTXS triangles
-    for tri in mesh.triangles:
+    for ti in order:
+        tri = mesh.triangles[ti]
         for vi in tri:
             slot = int(mesh.slots[vi])
+            if slot < 0 and current_slot >= 0:
+                slot = alias if alias is not None else current_slot
             if slot != current_slot:
-                if slot >= 0:
-                    cmds.append((0x14, [slot]))                # MTX_RESTORE
+                cmds.append((0x14, [slot]))                    # MTX_RESTORE
                 current_slot = slot
             m = _slot_matrix(draw, slot)
             if slot not in inverse:

@@ -27,6 +27,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import fonts  # noqa: E402
+import modelpack  # noqa: E402
 import nitro  # noqa: E402
 import recipes  # noqa: E402
 import tex3d  # noqa: E402
@@ -487,6 +488,7 @@ def cmd_build(args) -> Path:
     (out / "pack.json").write_text(json.dumps(info, indent=1))
     log(f"pack {out}: {copied} images at {info['scale']}x" + (f", {absent} not upscaled yet" if absent else "")
         + (f", {redrawn} sources redrawn" if redrawn else ""))
+    modelpack.install(work, Path(args.out or PACKS))   # replacements from models build
     return out
 
 
@@ -510,6 +512,13 @@ def find_device(serial: str | None) -> str:
     if len(lines) == 1:
         return lines[0].split()[0]
     raise SystemExit("more than one device attached and none is an AYN Thor; pass --serial")
+
+
+def cmd_models(args) -> None:
+    if args.action == "extract":
+        modelpack.extract(args.target, Path(args.out or WORK), args.trace, args.previews)
+    else:
+        modelpack.build(Path(args.target), Path(args.packs or PACKS), args.smooth, args.only, args.seen, args.rom)
 
 
 def cmd_push(args) -> None:
@@ -698,6 +707,19 @@ def main() -> None:
     p.add_argument("--native", action="store_true", help="build a 1x pack from the native images")
     p.add_argument("--out", help=f"packs root (default {PACKS})")
     p.set_defaults(fn=cmd_build)
+
+    p = sub.add_parser("models", help="3D models: export for editing, build replacements (see modelpack.py)")
+    p.add_argument("action", choices=("extract", "build"))
+    p.add_argument("target", help="extract: the ROM; build: work/<GAMECODE>")
+    p.add_argument("--out", help=f"extract: work root (default {WORK})")
+    p.add_argument("--trace", help="extract: a dl_trace json (tools/re) marking the shapes a scene uses")
+    p.add_argument("--previews", action="store_true", help="extract: a preview for every model, not only seen ones")
+    p.add_argument("--rom", help="build: the ROM (default: the one extract read)")
+    p.add_argument("--smooth", type=float, help="build: PN-smooth original shapes with this strength (0-1)")
+    p.add_argument("--only", help="build: only models whose source or name contains this text")
+    p.add_argument("--seen", action="store_true", help="build: only models the extract's trace saw")
+    p.add_argument("--packs", help=f"build: packs root (default {PACKS})")
+    p.set_defaults(fn=cmd_models)
 
     p = sub.add_parser("push", help="install a pack on the device (adb, debuggable build)")
     p.add_argument("pack", help="packs/<GAMECODE>")

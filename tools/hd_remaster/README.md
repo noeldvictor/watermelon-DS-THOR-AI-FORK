@@ -179,6 +179,24 @@ bit-identical to no replacement (frame_compare, 60 frames, both screens); Link's
 every vertex scaled 1.25 draw a puffier Link that still animates; save states made and loaded
 with models on work (a state keeps only the hardware's polygons).
 
+Commands (`modelpack.py`):
+
+```
+.venv\Scripts\python hd_remaster.py models extract ROM.nds [--trace dl.json] [--previews]
+.venv\Scripts\python hd_remaster.py models build work\<CODE> [--smooth 0.6 --only TEXT | --seen]
+```
+
+`extract` writes `work\<CODE>\models\<model>\`: `model.obj`/`.mtl` (bind pose, one group per
+shape), the decoded textures, `model.json` (shape keys, materials, texture sizes, lighting) and
+`preview.png` for the models a `dl_trace` json saw (all with `--previews`); `index.json` lists
+them, most used first (Phantom Hourglass: 1285 models in 86 s). Edit a model in any 3D tool
+keeping the group names and save it as `edited.obj` next to `model.obj`; `build` ties every new
+vertex to the bone of the nearest original vertex of its shape (texture coordinates from the
+OBJ, else from that vertex), writes `work\<CODE>\models_built\<key>.dl` and copies them into
+`packs\<CODE>\models\` (texture `build` does too, so a rebuild keeps them). `--smooth` makes
+PN-smoothed replacements instead, no new art. An edit round-trips exactly: Link widened 10% and
+built comes back from the display lists at s3.12 precision, skinned shapes included.
+
 Making replacements from meshes: `mesh_to_display_list` turns a bind-pose mesh back into a
 shape's display list (each vertex into its matrix-stack slot's space, TEXCOORD, NORMAL for lit
 shapes or COLOR, VTX_16). `pn_triangles` is an automatic remaster that needs no new art: curved
