@@ -65,9 +65,16 @@ def _key(name: str) -> str | None:
 
 # ---------------------------------------------------------------------------- reference pictures
 
-def reference_views(parts: list[dict], size: int = 768) -> list[np.ndarray]:
-    """Front, right, back, left on white, the order multi-image-to-3D expects (front first)."""
-    return [render3d.render(parts, size, yaw=y, pitch=0, background=(255, 255, 255)) for y in (0, 90, 180, 270)]
+def reference_views(parts: list[dict], size: int = 1024, supersample: int = 2) -> list[np.ndarray]:
+    """Front, right, back, left, the order multi-image-to-3D expects (front first), on a
+    transparent background (a white one swallowed Link's white trousers). Flat colour: the DS
+    lights the result itself, so light painted into these would end up in the generated texture
+    and be lit twice. Rendered larger and scaled down for clean edges."""
+    out = []
+    for y in (0, 90, 180, 270):
+        big = render3d.render(parts, size * supersample, yaw=y, pitch=0, background=None, shade=False)
+        out.append(np.array(Image.fromarray(big, "RGBA").resize((size, size), Image.LANCZOS)))
+    return out
 
 
 def _data_uri(img: np.ndarray) -> str:
@@ -116,15 +123,22 @@ def _tripo(method: str, path: str, key: str, body: dict | None = None, upload: b
     return reply["data"]
 
 
+# a textured multiview model: 30 credits with texture, +20 for detailed texture quality (Tripo
+# pricing, 2026-10); the ledger records what the task reports afterwards
+CREDITS_MULTI_IMAGE_TEXTURED = 50
+
+
 def tripo_multiview(images: list[np.ndarray], out_dir: Path, ledger: Path, budget: int, polycount: int,
-                    label: str) -> Path:
-    """images: front, right, back, left (reference_views order)."""
+                    label: str, textured: bool = False) -> Path:
+    """images: front, right, back, left (reference_views order). textured: also a base-colour
+    texture (detailed quality, newest texture model, no de-lighting: the views are already flat)."""
     key = _key("TRIPO_API_KEY")
     if not key:
         raise SystemExit("no TRIPO_API_KEY in tools/hd_remaster/.env")
+    estimate = CREDITS_MULTI_IMAGE_TEXTURED if textured else CREDITS_MULTI_IMAGE_MESH
     spent = _ledger_total(ledger)
-    if spent + CREDITS_MULTI_IMAGE_MESH > budget:
-        raise SystemExit(f"budget: {spent} credits used, a call costs {CREDITS_MULTI_IMAGE_MESH}, cap {budget}")
+    if spent + estimate > budget:
+        raise SystemExit(f"budget: {spent} credits used, a call costs about {estimate}, cap {budget}")
     tokens = {}
     for view, img in zip(("front", "right", "back", "left"), images):
         tokens[view] = _tripo("POST", "/files", key, upload=_png_bytes(img))["file_token"]
@@ -132,14 +146,17 @@ def tripo_multiview(images: list[np.ndarray], out_dir: Path, ledger: Path, budge
         "inputs": [{"front": tokens["front"]}, {"left": tokens["left"]},
                    {"back": tokens["back"]}, {"right": tokens["right"]}],
         "model": TRIPO_MODEL,
-        "texture": False,
+        "texture": textured,
         "pbr": False,
         "face_limit": int(polycount),
     }
+    if textured:
+        body.update({"texture_quality": "detailed", "texture_version": "v3.5-20260815", "delight": False,
+                     "orientation": "align_image"})
     task = _tripo("POST", "/generation/multiview-to-model", key, body)["task_id"]
     log(f"tripo task {task}")
     entry = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "provider": "tripo", "task": task, "model": label,
-             "credits": CREDITS_MULTI_IMAGE_MESH, "kind": "multiview-to-model geometry"}
+             "credits": estimate, "kind": "multiview-to-model " + ("textured" if textured else "geometry")}
     with ledger.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
     while True:
@@ -158,14 +175,22 @@ def tripo_multiview(images: list[np.ndarray], out_dir: Path, ledger: Path, budge
     path = out_dir / f"{task}.glb"
     with urllib.request.urlopen(url, timeout=300) as r:        # the URL expires after 5 minutes
         path.write_bytes(r.read())
-    log(f"saved {path} ({info.get('credits_consumed')} credits)")
+    actual = info.get("credits_consumed")
+    if actual is not None and float(actual) != estimate:
+        # the ledger keeps the estimate it was checked against; this line makes its total exact
+        with ledger.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "provider": "tripo", "task": task,
+                                "model": label, "credits": round(float(actual) - estimate, 2),
+                                "kind": "correction to the task's reported cost"}) + "\n")
+    log(f"saved {path} ({actual} credits)")
     return path
 
 
 def _ledger_total(ledger: Path) -> int:
     if not ledger.exists():
         return 0
-    return sum(int(json.loads(line).get("credits", 0)) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip())
+    return round(sum(float(json.loads(line).get("credits", 0))
+                     for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()), 2)
 
 
 def meshy_multi_image(images: list[np.ndarray], out_dir: Path, ledger: Path, budget: int, polycount: int,
@@ -344,8 +369,20 @@ def _closest_on_triangles(points: np.ndarray, tri_pts: np.ndarray):
     return best_tri, best_bary
 
 
-def _icp(src: np.ndarray, dst: np.ndarray, iterations: int = 20) -> np.ndarray:
-    """Similarity transform (4x4) moving src onto dst (nearest-point ICP, uniform scale)."""
+def _chamfer(a: np.ndarray, b: np.ndarray, samples: int = 600) -> float:
+    """Mean squared nearest distance both ways (a to b and b to a), on a sample of each: one way
+    alone rewards a mesh shrunk inside the other."""
+    sa = a[::max(1, len(a) // samples)]
+    sb = b[::max(1, len(b) // samples)]
+    ab = np.mean([((b - q) ** 2).sum(1).min() for q in sa])
+    ba = np.mean([((a - q) ** 2).sum(1).min() for q in sb])
+    return float(ab + ba)
+
+
+def _icp(src: np.ndarray, dst: np.ndarray, iterations: int = 20, max_scale: float = 1.15) -> np.ndarray:
+    """Similarity transform (4x4) moving src onto dst (nearest-point ICP). The scale may only move
+    within 1/max_scale..max_scale overall: the caller has already scaled by height, and a free
+    scale lets a wrongly turned mesh shrink into the original's core and look like a good fit."""
     m = np.eye(4)
     cur = src.copy()
     for _ in range(iterations):
@@ -361,6 +398,8 @@ def _icp(src: np.ndarray, dst: np.ndarray, iterations: int = 20) -> np.ndarray:
         D = np.diag([1, 1, d])
         R = Vt.T @ D @ U.T
         scale = (S * np.diag(D)).sum() / max((P ** 2).sum(), 1e-12)
+        total = np.cbrt(abs(np.linalg.det(m[:3, :3]))) if np.any(m[:3, :3]) else 1.0
+        scale = float(np.clip(scale * total, 1 / max_scale, max_scale)) / total
         t = mu_q - scale * R @ mu_p
         step = np.eye(4); step[:3, :3] = scale * R; step[:3, 3] = t
         cur = (step[:3, :3] @ cur.T).T + step[:3, 3]
@@ -368,9 +407,8 @@ def _icp(src: np.ndarray, dst: np.ndarray, iterations: int = 20) -> np.ndarray:
     return m
 
 
-def fit(new_pos: np.ndarray, new_tris: np.ndarray, model: models3d.Model, icp: bool = True):
-    """The new mesh placed on the original and split into its shapes: {shape index: Mesh}."""
-    meshes = models3d.model_meshes(model)
+def _place(new_pos: np.ndarray, meshes, icp: bool = True) -> np.ndarray:
+    """The new mesh's vertices placed on the original model (see fit)."""
     orig_pos = np.concatenate([m.positions for _, m in meshes])
     lo, hi = orig_pos.min(0), orig_pos.max(0)
     nlo, nhi = new_pos.min(0), new_pos.max(0)
@@ -388,12 +426,20 @@ def fit(new_pos: np.ndarray, new_tris: np.ndarray, model: models3d.Model, icp: b
             turned = (sample - centre) @ turn.T + centre
             m = _icp(turned, orig_pos)
             moved = (m[:3, :3] @ turned.T).T + m[:3, 3]
-            residual = float(np.mean([((orig_pos - q) ** 2).sum(1).min() for q in moved[::5]]))
+            residual = _chamfer(moved, orig_pos)
             if best is None or residual < best[0]:
                 best = (residual, turn, m)
         _, turn, m = best
         placed = (placed - centre) @ turn.T + centre
         placed = (m[:3, :3] @ placed.T).T + m[:3, 3]
+
+    return placed
+
+
+def fit(new_pos: np.ndarray, new_tris: np.ndarray, model: models3d.Model, icp: bool = True):
+    """The new mesh placed on the original and split into its shapes: {shape index: Mesh}."""
+    meshes = models3d.model_meshes(model)
+    placed = _place(new_pos, meshes, icp)
 
     # the original's triangles, with where each came from
     tri_pts, owner = [], []
@@ -472,3 +518,162 @@ def write_edited_obj(path: Path, model: models3d.Model, fitted: dict, meshes, te
             lines.append(f"f {a + base}/{a + base}/{a + base} {b + base}/{b + base}/{b + base} {c + base}/{c + base}/{c + base}")
         base += len(mesh.positions)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------- textured models
+
+def read_glb_textured(path: Path):
+    """positions (n,3), triangles (m,3), uvs (n,2, v down) and the base-colour texture (RGBA array)
+    of a GLB. Primitives with different textures are packed side by side into one atlas."""
+    data = path.read_bytes()
+    pos = 12
+    gltf, binary = None, b""
+    while pos < len(data):
+        length, kind = struct.unpack_from("<II", data, pos)
+        chunk = data[pos + 8:pos + 8 + length]
+        if kind == 0x4E4F534A:
+            gltf = json.loads(chunk.decode("utf-8"))
+        elif kind == 0x004E4942:
+            binary = chunk
+        pos += 8 + length
+    if gltf is None:
+        raise ValueError(f"{path} is not a GLB")
+    if "EXT_meshopt_compression" in gltf.get("extensionsUsed", []):
+        raise SystemExit(f"{path} uses meshopt compression; ask for the model without `compress`")
+    comp = {5120: "b", 5121: "B", 5122: "h", 5123: "H", 5125: "I", 5126: "f"}
+    size = {"b": 1, "B": 1, "h": 2, "H": 2, "I": 4, "f": 4}
+    ncomp = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}
+
+    def accessor(i: int) -> np.ndarray:
+        a = gltf["accessors"][i]
+        view = gltf["bufferViews"][a["bufferView"]]
+        fmt = comp[a["componentType"]]
+        n = ncomp[a["type"]]
+        start = view.get("byteOffset", 0) + a.get("byteOffset", 0)
+        stride = view.get("byteStride") or size[fmt] * n
+        rows = np.ndarray((a["count"], n), dtype=np.dtype("<" + fmt), buffer=binary, offset=start,
+                          strides=(stride, size[fmt]))
+        out = rows.astype(np.float64)
+        if a.get("normalized") and fmt in "BH":
+            out /= 255.0 if fmt == "B" else 65535.0
+        return out
+
+    def image(tex_index: int) -> Image.Image:
+        src = gltf["textures"][tex_index]["source"]
+        img = gltf["images"][src]
+        view = gltf["bufferViews"][img["bufferView"]]
+        raw = binary[view.get("byteOffset", 0):view.get("byteOffset", 0) + view["byteLength"]]
+        return Image.open(io.BytesIO(raw)).convert("RGBA")
+
+    def node_matrix(node: dict) -> np.ndarray:
+        if "matrix" in node:
+            return np.array(node["matrix"], np.float64).reshape(4, 4).T
+        m = np.eye(4)
+        if "scale" in node:
+            m = np.diag(list(node["scale"]) + [1.0]) @ m
+        if "rotation" in node:
+            x, y, z, w = node["rotation"]
+            r = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                          [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                          [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+            rm = np.eye(4); rm[:3, :3] = r
+            m = rm @ m
+        if "translation" in node:
+            tm = np.eye(4); tm[:3, 3] = node["translation"]
+            m = tm @ m
+        return m
+
+    prims = []          # (positions, triangles, uvs, texture index or None)
+
+    def walk(i: int, parent: np.ndarray) -> None:
+        node = gltf["nodes"][i]
+        m = parent @ node_matrix(node)
+        if "mesh" in node:
+            for prim in gltf["meshes"][node["mesh"]]["primitives"]:
+                if prim.get("mode", 4) != 4:
+                    continue
+                p = accessor(prim["attributes"]["POSITION"])
+                p = (m @ np.c_[p, np.ones(len(p))].T).T[:, :3]
+                idx = accessor(prim["indices"]).reshape(-1).astype(np.int64) if "indices" in prim else np.arange(len(p))
+                uv = accessor(prim["attributes"]["TEXCOORD_0"]) if "TEXCOORD_0" in prim["attributes"] else np.zeros((len(p), 2))
+                tex = None
+                if "material" in prim:
+                    pbr = gltf["materials"][prim["material"]].get("pbrMetallicRoughness", {})
+                    if "baseColorTexture" in pbr:
+                        tex = pbr["baseColorTexture"]["index"]
+                prims.append((p, idx.reshape(-1, 3), uv, tex))
+        for c in node.get("children", []):
+            walk(c, m)
+
+    scene = gltf.get("scenes", [{}])[gltf.get("scene", 0)]
+    for i in scene.get("nodes", range(len(gltf.get("nodes", [])))):
+        walk(i, np.eye(4))
+
+    textures = sorted({t for *_, t in prims if t is not None})
+    images = {t: image(t) for t in textures}
+    if images:
+        height = max(im.height for im in images.values())
+        resized = {t: im.resize((max(1, im.width * height // im.height), height), Image.LANCZOS) for t, im in images.items()}
+        width = sum(im.width for im in resized.values())
+        atlas = Image.new("RGBA", (width, height))
+        offset = {}
+        x = 0
+        for t in textures:
+            atlas.paste(resized[t], (x, 0))
+            offset[t] = (x / width, resized[t].width / width)
+            x += resized[t].width
+    else:
+        atlas, offset = Image.new("RGBA", (8, 8), (200, 200, 200, 255)), {}
+    positions, triangles, uvs = [], [], []
+    base = 0
+    for p, tris, uv, tex in prims:
+        u = uv.copy()
+        if tex is not None:
+            x0, w = offset[tex]
+            u[:, 0] = x0 + np.mod(u[:, 0], 1.0) * w
+        positions.append(p)
+        triangles.append(tris + base)
+        uvs.append(u)
+        base += len(p)
+    return np.concatenate(positions), np.concatenate(triangles), np.concatenate(uvs), np.array(atlas)
+
+
+def fit_textured(new_pos: np.ndarray, new_tris: np.ndarray, new_uv: np.ndarray, model: models3d.Model,
+                 target_shape: str, texture_size: tuple[int, int]):
+    """The new mesh placed on the original (as in fit) and drawn whole in place of one part,
+    `target_shape`, keeping its own texture coordinates (into the AI texture, which takes that
+    part's texture slot). Every vertex takes the bone of the nearest point on the original's
+    surface. The target part must be drawn after every bone it needs is set (the last-drawn part
+    is safe). Returns the mesh, the target draw and every draw."""
+    meshes = models3d.model_meshes(model)
+    target = next((d for d, _ in meshes if model.shapes[d.shape].name == target_shape), None)
+    if target is None:
+        raise SystemExit(f"{model.name} has no part named {target_shape}")
+    placed = _place(new_pos, meshes)
+    tri_pts, owner = [], []
+    for di, (d, mesh) in enumerate(meshes):
+        for tr in mesh.triangles:
+            tri_pts.append(mesh.positions[tr]); owner.append((di, tr))
+    tri_idx, bary = _closest_on_triangles(placed, np.array(tri_pts))
+    # slot -1 means "the matrix current when THAT part is drawn" (the eyes are drawn on the head's
+    # matrix); drawn as part of the target it would mean the target's matrix and drag the face to
+    # the body. Each part's current matrix goes to the stack slot that holds the same one.
+    current_slot = {}
+    for di, (d, _) in enumerate(meshes):
+        current_slot[di] = next((k for k, m in enumerate(d.stack) if np.allclose(m, d.current, atol=1e-6)), None)
+    slots = np.zeros(len(placed), np.int32)
+    unresolved = 0
+    for vi in range(len(placed)):
+        di, corners = owner[tri_idx[vi]]
+        slot = int(meshes[di][1].slots[corners[int(np.argmax(bary[vi]))]])
+        if slot < 0 and meshes[di][0] is not target:
+            slot = current_slot[di] if current_slot[di] is not None else -1
+            unresolved += slot < 0
+        slots[vi] = slot
+    if unresolved:
+        log(f"{unresolved} vertices sit on a part whose matrix no stack slot holds; they follow {target_shape}'s")
+    w, h = texture_size
+    mesh = models3d.Mesh(placed, np.zeros_like(placed), new_uv * np.array([w, h]),
+                         np.full((len(placed), 3), 31.0), slots, new_tris.astype(np.int32))
+    mesh.normals = models3d.smooth_normals(mesh)
+    return mesh, target, meshes

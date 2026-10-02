@@ -256,6 +256,27 @@ turned (4 degrees, and to face +X) comes back to about 1% of his height with his
 place; the Tripo client against a local fake of its v3 API (uploads, request body, polling,
 download, ledger, budget).
 
+**Textured AI models** (`models ai --textured`, `models fit --textured`): the model brings its
+own texture instead of wearing the game's. The reference views are flat colour (the DS lights
+the result itself, so painted light would be lit twice) on a transparent background, with the
+pack's HD textures; Tripo is asked for a textured mesh (texture model v3.5, detailed quality, no
+de-lighting since the views are flat; about 40-50 credits). The whole mesh is drawn in place of
+one part, by default the last-drawn one because every bone is set by then (`--part`), every
+other part is hidden unless kept (`--keep eyeL,eyeR` keeps parts that animate), and its texture
+goes into that part's texture slot at the pack's scale as `models/textures/<key>.png`, which the
+emulator loads after the pack's own textures so it wins. Vertices take the bone of the nearest
+point on the original; a part drawn on "the current matrix" (Link's eyes and mouth ride on his
+head bone) is translated to the stack slot that holds the same matrix. `push --models-only`
+installs the models folder with its textures.
+
+First result, Phantom Hourglass' Link: 5,522 triangles, 40 credits, 60 fps in-game with ~2,900
+replacement polygons a frame; head and face follow the game's animation. Limits seen: the
+texture slot (Link's largest texture is 64x64, so 256x256 at the pack's 4x) caps the AI texture's
+resolution; the face is the AI's (no blinking) unless the eye parts are kept; and the generator
+copies the low-poly references closely, so the gain is a cleaner model rather than new detail.
+Fixed on the way: ICP could shrink a wrongly turned mesh into the original and win the facing
+search; facings are now scored by distance both ways and ICP's scale is limited to +-15%.
+
 Making replacements from meshes: `mesh_to_display_list` turns a bind-pose mesh back into a
 shape's display list (each vertex into its matrix-stack slot's space, TEXCOORD, NORMAL for lit
 shapes or COLOR, VTX_16). `pn_triangles` is an automatic remaster that needs no new art: curved

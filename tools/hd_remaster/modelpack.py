@@ -386,7 +386,34 @@ def _load_model(work: Path, mid: str):
     raise SystemExit(f"{mid} not found in the ROM")
 
 
-def _textured_parts(model, folder: Path, info: dict):
+def _material_keys(model, blobs) -> dict[int, str]:
+    """material index -> the pack key of the texture (and palette) it draws with"""
+    tex_of, pal_of = _texture_lookup(blobs)
+    keys = {}
+    for i, mat in enumerate(model.materials):
+        tex = tex_of(mat.texture, model.source) if mat.texture else None
+        if tex is None:
+            continue
+        pal = pal_of(mat.palette, model.source) if mat.palette else None
+        ph = tex3d.palhash(tex, pal)
+        if ph is not None:
+            keys[i] = tex3d.key_name(tex, ph)
+    return keys
+
+
+def _hd_image(work: Path, packs_root: Path, key: str) -> Path | None:
+    """The pack's (or the work folder's) HD image for a texture key, exact or palette-wildcard."""
+    parts = key.split("_")
+    wild = "_".join(parts[:3] + ["$"] + parts[4:])
+    for folder in (packs_root / work.name / "textures", work / "redrawn" / "textures", work / "upscaled" / "textures"):
+        for name in (key, wild):
+            if (folder / f"{name}.png").exists():
+                return folder / f"{name}.png"
+    return None
+
+
+def _textured_parts(model, folder: Path, info: dict, hd: dict[int, Path] | None = None):
+    """The model's draws as render3d parts with their textures (HD ones from `hd`, by material)."""
     parts = []
     sizes = {s["name"]: tuple(s["texture_size"]) for s in info["shapes"]}
     for d, mesh in models3d.model_meshes(model):
@@ -394,6 +421,8 @@ def _textured_parts(model, folder: Path, info: dict):
         mat = model.materials[d.material] if d.material is not None and d.material < len(model.materials) else None
         shape = model.shapes[d.shape]
         tex = folder / f"tex_{mat.name}.png" if mat else None
+        if hd and d.material in hd:
+            tex = hd[d.material]
         w, h = sizes.get(shape.name, (0, 0))
         if tex and tex.exists() and w and h:
             part["texture"] = np.array(Image.open(tex).convert("RGBA"))
@@ -431,10 +460,16 @@ def fit_mesh(work: Path, mid: str, mesh_path: Path) -> None:
         f"(+ edited_preview.png, hidden.txt); next: models build {work}")
 
 
-def ai_model(work: Path, mid: str, polycount: int, budget: int, dry_run: bool, provider: str = "tripo") -> None:
+def ai_model(work: Path, mid: str, polycount: int, budget: int, dry_run: bool, provider: str = "tripo",
+             textured: bool = False, packs_root: Path | None = None, target: str | None = None,
+             keep: list[str] | None = None) -> None:
     import ai3d
-    model, folder, info, _ = _load_model(work, mid)
-    refs = ai3d.reference_views(_textured_parts(model, folder, info))
+    model, folder, info, blobs = _load_model(work, mid)
+    packs_root = packs_root or Path(__file__).resolve().parent / "packs"
+    # the references show the pack's HD textures where there are some: more for the generator to go on
+    keys = _material_keys(model, blobs)
+    hd = {i: img for i, k in keys.items() if (img := _hd_image(work, packs_root, k)) is not None}
+    refs = ai3d.reference_views(_textured_parts(model, folder, info, hd))
     ai_dir = folder / "ai"
     ai_dir.mkdir(exist_ok=True)
     for name, img in zip(("front", "right", "back", "left"), refs):
@@ -442,6 +477,59 @@ def ai_model(work: Path, mid: str, polycount: int, budget: int, dry_run: bool, p
     if dry_run:
         log(f"reference pictures in {ai_dir}; nothing sent (dry run)")
         return
+    if textured and provider != "tripo":
+        raise SystemExit("textured models: --provider tripo")
+    ledger = work / "models" / "ai_ledger.jsonl"
+    if textured:
+        glb = ai3d.tripo_multiview(refs, ai_dir, ledger, budget, polycount, mid, textured=True)
+        fit_textured_mesh(work, mid, glb, packs_root, target, keep or [])
+        return
     generate = ai3d.tripo_multiview if provider == "tripo" else ai3d.meshy_multi_image
-    glb = generate(refs, ai_dir, work / "models" / "ai_ledger.jsonl", budget, polycount, mid)
+    glb = generate(refs, ai_dir, ledger, budget, polycount, mid)
     fit_mesh(work, mid, glb)
+
+
+def fit_textured_mesh(work: Path, mid: str, glb: Path, packs_root: Path, target: str | None,
+                      keep: list[str]) -> None:
+    """A textured mesh (a Tripo GLB) as the whole model: drawn in place of one part (`target`,
+    default the last-drawn one, which has every bone set), wearing its own texture in that part's
+    texture slot (models/textures/<key>.png at the pack's scale, loaded over the pack's own image),
+    every other part hidden except `keep` (e.g. the eyes, to keep their animation)."""
+    import ai3d
+    model, folder, info, blobs = _load_model(work, mid)
+    pos, tris, uv, atlas = ai3d.read_glb_textured(glb)
+    draws = models3d.model_meshes(model)
+    target = target or model.shapes[draws[-1][0].shape].name
+    sizes = {s["name"]: tuple(s["texture_size"]) for s in info["shapes"]}
+    if not all(sizes.get(target, (0, 0))):
+        raise SystemExit(f"{target} has no texture to carry the new one")
+    mesh, draw, meshes = ai3d.fit_textured(pos, tris, uv, model, target, sizes[target])
+    keys = _material_keys(model, blobs)
+    if draw.material not in keys:
+        raise SystemExit(f"no pack key for {target}'s texture")
+    pack_info = packs_root / work.name / "pack.json"
+    scale = int(json.loads(pack_info.read_text(encoding="utf-8")).get("scale", 4)) if pack_info.exists() else 4
+    w, h = sizes[target]
+    built = work / "models_built"
+    (built / "textures").mkdir(parents=True, exist_ok=True)
+    tex_key = keys[draw.material]
+    Image.fromarray(atlas).resize((w * scale, h * scale), Image.LANCZOS).save(built / "textures" / f"{tex_key}.png")
+    originals: dict[str, bytes] = {}
+    for d, _ in meshes:
+        shape = model.shapes[d.shape]
+        if shape.name == target:
+            dl = models3d.mesh_to_display_list(mesh, d, models3d.is_lit(shape.dl))
+        elif shape.name in keep:
+            continue
+        else:
+            dl = struct.pack("<I", 0)                  # a NOP: the new mesh covers this part
+        models3d.write_replacement(built, shape.key, dl)
+        originals[shape.key] = shape.dl
+    models3d.write_originals(built, originals)
+    preview = [dict(positions=mesh.positions, triangles=mesh.triangles, texture=atlas,
+                    uv=mesh.texcoords / np.array([w, h]))]
+    Image.fromarray(np.concatenate([render3d.render(preview, 256, yaw=y, pitch=10) for y in (0, 40, 90, 180)], 1)) \
+        .save(folder / "edited_preview.png")
+    log(f"{len(pos)} vertices, {len(tris)} triangles drawn in place of {target} with its own texture "
+        f"({tex_key}, {w * scale}x{h * scale}); {len(originals) - 1} other parts hidden; keep {keep or 'none'}")
+    install(work, packs_root)

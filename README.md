@@ -27,6 +27,7 @@ external display support, RetroAchievements, RetroArch shader presets. On top of
 | HD remastering | — | Build an AI-upscaled pack for a whole game straight from its ROM, no playthrough needed |
 | HD text | — | Text the game draws at runtime is redrawn from an upscaled copy of its own font, in sprites and in BG layers, without the native letters' blocky edge around it (Spirit Tracks' message boxes, Phantom Hourglass' story, Lufia's dialogue) |
 | AI redraws | — | Character portraits redrawn by an image model from the official art, checked against the game's faces ([guide](tools/hd_remaster/REDRAW.md)) |
+| HD 3D models | — | A pack can replace any 3D model part (Vulkan renderer): the new mesh hangs on the game's own skeleton and animations and is lit by the game's lights; smoothing of the original models with no new art, or new meshes from any 3D tool or from an AI model generator (Tripo), with their own HD texture ([3D models](tools/hd_remaster/README.md#3d-models-first-step-extraction-and-keys)) |
 | Upscaling | Full-screen RetroArch shaders | Also per-layer filters for 3D, sprites and BG separately (ScaleFX, Anime4K, HQ2x, ...) with a disk cache |
 | In-game overlay | Pause menu | Adds a turbo speed picker, live texture-filter switching, and "stretch to fit both screens" |
 | Enhancements (widescreen and more) | — | An "Enhancements" pause-menu panel for games whose bundled cheat database has visual codes (about 300 games): widescreen 16:9 / 16:10 (the top screen stretches to match, so 3D gets a wider view at the right proportions; 2D menus and HUDs stretch), smooth 3D edges (anti-aliasing, no outlines) and draw distance, each with its own switch. Some games apply a change from the next scene, or on the next launch |
@@ -93,6 +94,26 @@ Hourglass's story text and Lufia's dialogue boxes.
 HD art isn't clipped to the blocky outline of the pixel art it replaces: an edge the upscaler
 smoothed shows the layer behind it, and may extend a pixel past the original silhouette where
 nothing covered it.
+
+**3D models** (Vulkan renderer) are replaced part by part. Each part of a model is a list of
+drawing commands the game sends to the DS 3D chip, recognised by a fingerprint of its content,
+whether the game sends it by DMA or writes it with the CPU (Link's eyes). The original still
+runs, so the game behaves exactly the same; its polygons are hidden and the pack's version is
+drawn in their place from the same bone positions, lights and camera, without the DS polygon
+limits. Exact copies render pixel-identical to the originals (Phantom Hourglass, Lufia). A pack
+can use:
+
+* smoothing of the original models, no new art needed (Link, Maxim and a Lufia boss, 60 fps);
+* models edited in any 3D tool (`hd_remaster.py models extract` exports them, `models build`
+  reads them back);
+* AI-generated models: `models ai --textured` renders a character from four sides, has Tripo
+  build a textured mesh, fits it onto the game's skeleton and gives it its own texture in the
+  slot of the part it replaces. The first one, Phantom Hourglass' Link (5,522 triangles, $0.40),
+  runs in-game at 60 fps. The plan for main characters (keeping their animated eyes, a Blender
+  round trip with the skeleton, higher-resolution model textures) is in progress.
+
+The Remaster Studio has a page for all of it, and debug builds can trace which models a scene
+draws.
 
 ### HD texture packs
 * **3D texture dump & replace**: content-hash keyed (texture hash + palette hash), compatible

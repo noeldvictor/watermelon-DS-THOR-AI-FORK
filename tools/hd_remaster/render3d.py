@@ -20,10 +20,13 @@ def look(yaw_deg: float, pitch_deg: float) -> np.ndarray:
 
 
 def render(parts: list[dict], size: int = 512, yaw: float = 0.0, pitch: float = 10.0,
-           background: tuple[int, int, int] = (40, 44, 52), frame: tuple | None = None) -> np.ndarray:
+           background: tuple[int, int, int] | None = (40, 44, 52), frame: tuple | None = None,
+           shade: bool = True) -> np.ndarray:
     """parts: dicts with positions (n,3), triangles (m,3) and optionally uv (n,2, 0..1 with v down),
     texture (h,w,4 uint8), colors (n,3 0..1). Orthographic, fitted to the parts' bounds (or to
-    `frame` = (center xyz, half extent) so several renders share a scale)."""
+    `frame` = (center xyz, half extent) so several renders share a scale). shade=False draws flat
+    colour (no light), for pictures a model generator must not mistake for paint. background=None
+    returns RGBA, transparent where nothing is drawn."""
     rot = look(yaw, pitch)
     allp = np.concatenate([p["positions"] for p in parts if len(p["positions"])])
     if frame is None:
@@ -32,7 +35,7 @@ def render(parts: list[dict], size: int = 512, yaw: float = 0.0, pitch: float = 
     else:
         center, half = frame
     img = np.zeros((size, size, 3), np.float32)
-    img[:] = np.array(background, np.float32) / 255
+    img[:] = np.array(background or (0, 0, 0), np.float32) / 255
     zbuf = np.full((size, size), np.inf, np.float32)
     light = np.array([0.4, 0.6, 0.7])
     light /= np.linalg.norm(light)
@@ -68,7 +71,7 @@ def render(parts: list[dict], size: int = 512, yaw: float = 0.0, pitch: float = 
                 continue
             n = np.cross(pos[b] - pos[a], pos[c] - pos[a])
             ln = np.linalg.norm(n)
-            shade = 0.45 + 0.55 * abs(float(n @ (rot @ light)) / ln) if ln > 1e-12 else 1.0
+            lit = 0.45 + 0.55 * abs(float(n @ (rot @ light)) / ln) if ln > 1e-12 and shade else 1.0
             if tex is not None and uv is not None:
                 u = w0 * uv[a, 0] + w1 * uv[b, 0] + w2 * uv[c, 0]
                 v = w0 * uv[a, 1] + w1 * uv[b, 1] + w2 * uv[c, 1]
@@ -85,5 +88,9 @@ def render(parts: list[dict], size: int = 512, yaw: float = 0.0, pitch: float = 
             if not vis.any():
                 continue
             region[vis] = z[vis]
-            img[miny:maxy, minx:maxx][vis] = (color * shade)[vis]
-    return (np.clip(img, 0, 1) * 255).astype(np.uint8)
+            img[miny:maxy, minx:maxx][vis] = (color * lit)[vis]
+    rgb = (np.clip(img, 0, 1) * 255).astype(np.uint8)
+    if background is not None:
+        return rgb
+    alpha = np.where(np.isfinite(zbuf), 255, 0).astype(np.uint8)
+    return np.dstack([rgb, alpha])

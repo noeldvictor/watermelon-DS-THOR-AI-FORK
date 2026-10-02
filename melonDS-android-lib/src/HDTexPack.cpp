@@ -145,6 +145,9 @@ HDTexPack::HDTexPack(const std::string& packDir, const std::string& dumpDir,
         LoadDir(PackDir + "/bgtiles", "bg1");
         FontSet.Load(PackDir + "/fonts", PackScale);
         LoadModels(PackDir + "/models");
+        // a model replacement's own textures (an AI model's atlas in the slot of the texture its
+        // part used); loaded last, so they win over the pack's upscale of the same key
+        LoadDir(PackDir + "/models/textures", "tex1");
         // Warn so it shows in release builds: once per game start, and the only way to tell
         // from a log whether a pack was found at all
         if (EntryCount > 0)

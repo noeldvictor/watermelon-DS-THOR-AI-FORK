@@ -523,11 +523,17 @@ def cmd_models(args) -> None:
     elif args.action == "fit":
         if not args.model or not args.mesh:
             raise SystemExit("models fit work/<CODE> --model <id> --mesh <file.glb|obj>")
-        modelpack.fit_mesh(Path(args.target), args.model, Path(args.mesh))
+        if args.textured:
+            modelpack.fit_textured_mesh(Path(args.target), args.model, Path(args.mesh), Path(args.packs or PACKS),
+                                        args.part, [k for k in (args.keep or "").split(",") if k])
+        else:
+            modelpack.fit_mesh(Path(args.target), args.model, Path(args.mesh))
     else:
         if not args.model:
             raise SystemExit("models ai work/<CODE> --model <id> [--dry-run]")
-        modelpack.ai_model(Path(args.target), args.model, args.polycount, args.budget, args.dry_run, args.provider)
+        modelpack.ai_model(Path(args.target), args.model, args.polycount, args.budget, args.dry_run, args.provider,
+                           args.textured, Path(args.packs or PACKS), args.part,
+                           [k for k in (args.keep or "").split(",") if k])
 
 
 def cmd_push(args) -> None:
@@ -750,6 +756,10 @@ def main() -> None:
     p.add_argument("--dry-run", action="store_true", help="ai: write the reference pictures only")
     p.add_argument("--provider", choices=("tripo", "meshy"), default="tripo",
                    help="ai: tripo (TRIPO_API_KEY) or meshy (MESHY_API_KEY)")
+    p.add_argument("--textured", action="store_true",
+                   help="ai, fit: the mesh's own texture (Tripo, about 50 credits) drawn in place of one part")
+    p.add_argument("--part", help="ai/fit --textured: the part to draw it in place of (default: the last drawn)")
+    p.add_argument("--keep", help="ai/fit --textured: parts to keep drawing, comma-separated (e.g. the eyes)")
     p.add_argument("--out", help=f"extract: work root (default {WORK})")
     p.add_argument("--trace", help="extract: a dl_trace json (tools/re) marking the shapes a scene uses")
     p.add_argument("--previews", action="store_true", help="extract: a preview for every model, not only seen ones")
