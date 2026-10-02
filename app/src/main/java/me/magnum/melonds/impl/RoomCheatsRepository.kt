@@ -45,6 +45,9 @@ class RoomCheatsRepository(
 
     private val bundledCheatDatabase = BundledCheatDatabase(context)
     private val bundledImportMutex = Mutex()
+    private val codeFixes by lazy { CheatCodeFixes.load(context) }
+    // games whose stored cheats were checked against the fixes in this process
+    private val fixedGames = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     override suspend fun getGames(): List<Game> {
         return database.gameDao().getGames().map { game ->
@@ -61,6 +64,7 @@ class RoomCheatsRepository(
     override suspend fun findGameForRom(romInfo: RomInfo): Game? {
         val gameChecksum = romInfo.headerChecksumString()
         val gameEntity = database.gameDao().findGame(romInfo.gameCode, gameChecksum)
+            ?.also { applyCodeFixes(romInfo.gameCode, gameChecksum) }
             ?: importBundledGame(romInfo.gameCode, gameChecksum)
 
         return gameEntity?.let {
@@ -91,12 +95,38 @@ class RoomCheatsRepository(
             ?: addCheatDatabase(bundled.databaseName).id
             ?: return@withLock null
         val cheats = bundled.game.cheats.map { folder ->
-            folder.copy(cheats = folder.cheats.map { it.copy(cheatDatabaseId = databaseId) })
+            folder.copy(cheats = folder.cheats.map {
+                val fixedCode = codeFixes.fixedCode(gameCode, it.name, it.code)
+                it.copy(cheatDatabaseId = databaseId, code = fixedCode ?: it.code)
+            })
         }
         addGameCheats(bundled.game.copy(cheats = cheats))
         Log.i(TAG, "Added ${cheats.sumOf { it.cheats.size }} bundled cheats for $gameCode $gameChecksum")
 
+        fixedGames.add(BundledCheatDatabase.indexKey(gameCode, gameChecksum))
         database.gameDao().findGame(gameCode, gameChecksum)
+    }
+
+    /**
+     * Swaps known-broken codes (assets/cheats/code_fixes.txt) in a game read in from the bundled
+     * database before the fix existed. Only a code still exactly the broken one is replaced; the
+     * cheat keeps its enabled state.
+     */
+    private suspend fun applyCodeFixes(gameCode: String, gameChecksum: String) {
+        if (!fixedGames.add(BundledCheatDatabase.indexKey(gameCode, gameChecksum))) return
+        val fixes = codeFixes.fixesFor(gameCode)
+        if (fixes.isEmpty()) return
+
+        var changed = false
+        for (name in fixes.map { it.cheatName }.distinct()) {
+            for (cheat in database.cheatDao().getRomCheatsNamed(gameCode, gameChecksum, name)) {
+                val fixedCode = codeFixes.fixedCode(gameCode, cheat.name, cheat.code) ?: continue
+                database.cheatDao().insertCheat(cheat.copy(code = fixedCode))
+                Log.i(TAG, "Fixed the code of '${cheat.name}' for $gameCode $gameChecksum")
+                changed = true
+            }
+        }
+        if (changed) settingsBackupManager.requestMirrorWrite()
     }
 
     override fun getAllGameCheats(game: Game): Flow<List<CheatFolder>> {
@@ -138,6 +168,8 @@ class RoomCheatsRepository(
     }
 
     override suspend fun getRomEnabledCheats(romInfo: RomInfo): List<Cheat> {
+        // a broken code enabled before its fix shipped runs fixed from the next launch
+        applyCodeFixes(romInfo.gameCode, romInfo.headerChecksumString())
         return database.cheatDao().getEnabledRomCheats(romInfo.gameCode, romInfo.headerChecksumString()).map { cheat ->
             Cheat(
                 cheat.id,

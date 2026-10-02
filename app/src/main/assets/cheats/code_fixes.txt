@@ -1,0 +1,6 @@
+# Our own fixes to codes in the bundled cheat database (cheats/bundled_cheats.zip), found with
+# tools/re. One fix per line: game code | cheat name | the broken code | the fixed code | why.
+# A fix replaces a cheat only while its code is exactly the broken one, so a user's edit stays.
+# Codes are space-separated 8-digit hex words (the form the native cheat parser reads).
+
+ASFE|Widescreen|52324998 00001555 02324998 00001C72 D2000000 00000000|420CF1F0 02000000 320CF1F0 02400000 B20CF1F0 00000000 DC000000 00000178 50000000 00001555 00000000 00001C72 D2000000 00000000|The old code wrote a heap camera at a fixed address, which moves between sessions (0x02326E58 on the Thor). The fix follows the camera manager's active-camera pointer (0x020CF1F0, manager 0x020CF0DC + 0x114) to the aspect field (+0x178) and writes 16:9 only over 4:3.
