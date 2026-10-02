@@ -197,25 +197,38 @@ OBJ, else from that vertex), writes `work\<CODE>\models_built\<key>.dl` and copi
 PN-smoothed replacements instead, no new art. An edit round-trips exactly: Link widened 10% and
 built comes back from the display lists at s3.12 precision, skinned shapes included.
 
-AI models (`ai3d.py`, Meshy):
+AI models (`ai3d.py`; Tripo by default, or Meshy):
 
 ```
-.venv\Scripts\python hd_remaster.py models ai work\<CODE> --model <id> [--dry-run] [--polycount 6000] [--budget 100]
+.venv\Scripts\python hd_remaster.py models ai work\<CODE> --model <id> [--provider tripo|meshy] [--dry-run] [--polycount 6000] [--budget 100]
 .venv\Scripts\python hd_remaster.py models fit work\<CODE> --model <id> --mesh new.glb
 ```
 
 `ai` renders the model from the front, right, back and left with its own textures
-(`models\<id>ief_*.png`; `--dry-run` stops there), sends them to Meshy's multi-image-to-3D
-(mesh only, remeshed to `--polycount` triangles, 20 credits a call, logged in
-`modelsi_ledger.jsonl` and capped by `--budget`; the key is `MESHY_API_KEY` in `.env`) and fits
-the result. `fit` takes any GLB or OBJ (an AI result or a 3D tool's, any scale or position, facing
-+Z like the references): scaled onto the original by height, refined with ICP, then every vertex
-takes the bone of the nearest point on the original surface, and every triangle maps its corners
-through the texture mapping of the original triangle nearest its centre (per-vertex transfer
-smeared triangles that straddle texture islands, like face and hair). It writes `edited.obj`,
-`hidden.txt` (shapes the new mesh covers, replaced by nothing) and `edited_preview.png`; then
-`models build`. Tested offline on Link moved, scaled 3.7x and turned 4 degrees: placed back to
-about 1% of his height, textures where they belong.
+(`models\<id>\ai\ref_*.png`; `--dry-run` stops there) and sends them to a multiview image-to-3D
+service for bare geometry (the game's own textures go on in the fit):
+
+- `tripo` (default): Tripo API v3 (`https://openapi.tripo3d.ai/v3`; the v2 API retires on
+  2026-11-01). Each view is uploaded (`POST /files`), a `multiview-to-model` task is created with
+  view-keyed inputs, model `v3.1-20260211`, texture and PBR off, `face_limit` = `--polycount`, then
+  `GET /tasks/{id}` is polled and `output.model_url` downloaded at once (it expires 5 minutes after
+  success). Key `TRIPO_API_KEY`.
+- `meshy`: Meshy multi-image-to-3D, mesh only, remeshed to `--polycount`. Key `MESHY_API_KEY`.
+
+Either costs 20 credits a call (Tripo: $1 = 100 credits, new accounts get 300 free). Every call is
+logged in `models\ai_ledger.jsonl` and refused once the ledger would pass `--budget`. Keys live in
+`.env` (gitignored) and are never printed.
+
+`fit` takes any GLB or OBJ (an AI result or a 3D tool's, any scale, position or facing; Tripo
+exports +X forward): scaled onto the original by height, turned to whichever of four facings ICP
+fits best, refined with ICP; then every vertex takes the bone of the nearest point on the
+original surface, and every triangle maps its corners through the texture mapping of the original
+triangle nearest its centre (per-vertex transfer smeared triangles that straddle texture islands,
+like face and hair). It writes `edited.obj`, `hidden.txt` (shapes the new mesh covers, replaced by
+nothing) and `edited_preview.png`; then `models build`. Tested offline: Link moved, scaled 3.7x and
+turned (4 degrees, and to face +X) comes back to about 1% of his height with his textures in
+place; the Tripo client against a local fake of its v3 API (uploads, request body, polling,
+download, ledger, budget).
 
 Making replacements from meshes: `mesh_to_display_list` turns a bind-pose mesh back into a
 shape's display list (each vertex into its matrix-stack slot's space, TEXCOORD, NORMAL for lit
