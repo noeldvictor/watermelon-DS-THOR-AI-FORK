@@ -565,6 +565,8 @@ void DMA::Run9()
     if (NDS.ARM9Timestamp >= NDS.ARM9Target) return;
 
     Executing = true;
+    // the geometry engine tells DMA'd display list words from ones the CPU writes
+    NDS.GPU.GPU3D.HDWritingFromDma = IsGXFIFODMA;
 
     // add NS penalty for first accesses in burst
     bool burststart = (Running == 2);
@@ -607,6 +609,7 @@ void DMA::Run9()
 
     Executing = false;
     Stall = false;
+    NDS.GPU.GPU3D.HDWritingFromDma = false;
 
     if (RemCount)
     {

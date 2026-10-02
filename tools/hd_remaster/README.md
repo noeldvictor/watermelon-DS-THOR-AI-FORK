@@ -159,8 +159,9 @@ A shape's display list reaches the geometry FIFO byte for byte (the SDK DMAs it 
 file), so it is keyed like the textures, by content: `mdl1_<size>_<xxh64>`. The debug build's
 `dl_trace` tool (tools/re) lists the keys a scene sends. Phantom Hourglass, Mercay beach: all 33
 display lists sent in 6 seconds (7351 transfers: Link, the island, palm trees, bridge, beach,
-sea) are shapes extracted from the ROM; 1285 models, 4844 distinct shapes in the ROM. Very small
-shapes (Link's eyes) don't show up there; the SDK seems to send short lists with the CPU.
+sea) are shapes extracted from the ROM; 1285 models, 4844 distinct shapes in the ROM. Short
+lists don't show up there: NitroSystem writes them with the CPU (PH: the first word by itself,
+then `MI_CpuSend32` for the rest), e.g. Link's eyes and eyebrows and 13 more on that beach.
 
 **Runtime replacement** (Vulkan renderer): a pack's `models/mdl1_<size>_<hash>.dl` is a display
 list that replaces the shape with that key. When the shape's DMA into the GX FIFO starts, its
@@ -173,11 +174,22 @@ list as the original (matrix-stack restores, normals or colours, texture coordin
 so skinned and animated models follow their bones. `models3d.parse_display_list`,
 `encode_display_list` and `absolute_vertices` read, write and reshape them.
 
+Lists the CPU writes have no DMA to hash, and mid-block CPU registers are stale under the JIT, so
+they are recognised by content as the words arrive: the pack's `models/originals.txt` (written by
+`models build`) gives each replaced list's first four words; a command word that starts one opens
+a speculation whose words' entries carry a draw tag of their own from the first one (the engine
+may run them before the list is complete), candidates are pruned word by word, and at a
+candidate's length its XXH64 decides. A match gives the draw its replacement; a dead end leaves
+the original polygons as they are.
+
 Checked on Phantom Hourglass (Mercay beach, `HDModels[Stats]` ~2500 replaced display lists and
 ~15700 polygons per 60 frames, 60 fps): re-encoded copies of all 33 shapes give frames
 bit-identical to no replacement (frame_compare, 60 frames, both screens); Link's shapes with
 every vertex scaled 1.25 draw a puffier Link that still animates; save states made and loaded
-with models on work (a state keeps only the hardware's polygons).
+with models on work (a state keeps only the hardware's polygons). CPU-sent lists: Link's eyes and
+eyebrows scaled 1.8 are replaced on every frame (4 a frame, no false matches among ~18 candidate
+starts a frame), and identity copies of all 50 shapes on that beach (33 DMA'd, 17 CPU-sent) are
+bit-identical to no replacement over 60 frames.
 
 Commands (`modelpack.py`):
 

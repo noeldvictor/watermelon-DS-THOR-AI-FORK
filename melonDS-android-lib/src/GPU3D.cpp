@@ -2653,12 +2653,20 @@ bool GPU3D::IsRendererAccelerated() const noexcept
 
 void GPU3D::WriteToGXFIFO(u32 val) noexcept
 {
-    // words of a display list an HD model replaces (see OnDisplayListDMA)
+    // words of a display list an HD model replaces (see OnDisplayListDMA); display lists the
+    // CPU writes are recognised by content as they arrive (HDSpeculate)
     u16 tag = 0;
     if (HDTaggedWordsLeft) [[unlikely]]
     {
         tag = HDTaggedWriteTag;
         HDTaggedWordsLeft--;
+    }
+    else if (ModelSource) [[unlikely]]
+    {
+        if (HDWritingFromDma)
+            HDSpecWords.clear();            // DMA'd words: not a CPU display list
+        else
+            tag = HDSpeculate(val, NumCommands == 0);
     }
 
     if (NumCommands == 0)
@@ -2697,6 +2705,7 @@ void GPU3D::WriteToGXFIFO(u32 val) noexcept
         if (ParamCount < TotalParams)
             break;
     }
+
 }
 
 
@@ -3039,6 +3048,7 @@ void GPU3D::Write32(u32 addr, u32 val) noexcept
         entry.Command = (addr & 0x1FC) >> 2;
         entry.Param = val;
         CmdFIFOWrite(entry);
+        HDSpecWords.clear();
         return;
     }
 

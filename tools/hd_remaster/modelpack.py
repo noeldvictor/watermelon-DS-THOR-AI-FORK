@@ -279,6 +279,7 @@ def build(work: Path, packs_root: Path, smooth: float | None, only: str | None, 
         log("nothing to build: no edited.obj, and no --smooth selection")
         return
     made = 0
+    originals: dict[str, bytes] = {}      # key -> the replaced display list (first words go to originals.txt)
     for blob in nitro.blobs(rom):
         for model in models3d.models_in(blob):
             mid = model_id(model)
@@ -299,6 +300,7 @@ def build(work: Path, packs_root: Path, smooth: float | None, only: str | None, 
                     continue
                 if shape.name in hidden and shape.name not in edits:
                     models3d.write_replacement(built, shape.key, struct.pack("<I", 0))   # a NOP: draws nothing
+                    originals[shape.key] = shape.dl
                     done.add(shape.key)
                     made += 1
                     log(f"{mid}: {shape.name} hidden ({shape.key})")
@@ -312,9 +314,11 @@ def build(work: Path, packs_root: Path, smooth: float | None, only: str | None, 
                     continue
                 dl = models3d.mesh_to_display_list(new, d, models3d.is_lit(shape.dl))
                 models3d.write_replacement(built, shape.key, dl)
+                originals[shape.key] = shape.dl
                 done.add(shape.key)
                 made += 1
                 log(f"{mid}: {shape.name} {len(mesh.triangles)} -> {len(new.triangles)} triangles ({shape.key})")
+    models3d.write_originals(built, originals)
     log(f"{made} replacements in {built}")
     install(work, packs_root)
 

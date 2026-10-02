@@ -204,8 +204,42 @@ void HDTexPack::LoadModels(const std::string& dir)
             continue;
         Models[hash] = ModelEntry{static_cast<u32>(size), std::move(words)};
     }
+    // the first words of the replaced display lists, for those the game writes with the CPU
+    if (std::FILE* index = std::fopen((dir + "/originals.txt").c_str(), "r"))
+    {
+        char key[64];
+        unsigned int w[4];
+        char line[256];
+        while (std::fgets(line, sizeof(line), index))
+        {
+            int n = std::sscanf(line, "%63s %x %x %x %x", key, &w[0], &w[1], &w[2], &w[3]);
+            if (n < 2)
+                continue;
+            auto parts = SplitStem(key);
+            if (parts.size() != 3 || parts[0] != "mdl1")
+                continue;
+            Original o{};
+            o.Hash = strtoull(parts[2].c_str(), nullptr, 16);
+            o.Size = static_cast<u32>(strtoul(parts[1].c_str(), nullptr, 10));
+            o.PrefixLength = static_cast<u32>(n - 1);
+            for (int i = 0; i < n - 1; i++)
+                o.Prefix[i] = w[i];
+            if (Models.count(o.Hash) && o.Size % 4 == 0 && o.Size >= 4)
+                ModelOriginals[o.Prefix[0]].push_back(o);
+        }
+        std::fclose(index);
+    }
     if (!Models.empty())
-        Platform::Log(Platform::LogLevel::Warn, "HDTexPack: %zu HD models from %s\n", Models.size(), dir.c_str());
+        Platform::Log(Platform::LogLevel::Warn, "HDTexPack: %zu HD models from %s (%zu first words for CPU-sent lists)\n",
+                      Models.size(), dir.c_str(), ModelOriginals.size());
+}
+
+const std::vector<HDModelSource::Original>* HDTexPack::OriginalsStartingWith(u32 word) const
+{
+    if (!LoadEnabled)
+        return nullptr;
+    auto it = ModelOriginals.find(word);
+    return it == ModelOriginals.end() ? nullptr : &it->second;
 }
 
 const std::vector<u32>* HDTexPack::LookupModel(u64 hash, u32 size) const

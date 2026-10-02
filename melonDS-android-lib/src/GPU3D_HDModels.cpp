@@ -60,6 +60,9 @@ void GPU3D::ClearHDModelState() noexcept
     HDTaggedWordsLeft = 0;
     HDTaggedWriteTag = 0;
     HDExecTag = 0;
+    HDSpecWords.clear();
+    HDSpecCandidates.clear();
+    HDSpecTag = 0;
     for (auto& draw : HDDraws)
         draw = HDModelDraw{};
     HDNumVertices = 0;
@@ -97,13 +100,18 @@ void GPU3D::OnDisplayListDMA(u32 src, u32 bytes) noexcept
         hash = XXH64(copy.data(), bytes, 0);
     }
 
+    HDSpecWords.clear();
     const std::vector<u32>* replacement = ModelSource->LookupModel(hash, bytes);
     if (!replacement)
     {
         HDTaggedWordsLeft = 0;
         return;
     }
+    HDTagDraw(replacement, bytes / 4);
+}
 
+void GPU3D::HDTagDraw(const std::vector<u32>* replacement, u32 words) noexcept
+{
     // tags cycle through the draw slots; a draw lives until its frame is flushed, a few
     // frames at most, so a slot is long free when its tag comes round again
     HDNextTag = (HDNextTag % HDDrawSlots) + 1;
@@ -111,7 +119,74 @@ void GPU3D::OnDisplayListDMA(u32 src, u32 bytes) noexcept
     draw = HDModelDraw{};
     draw.Replacement = replacement;
     HDTaggedWriteTag = static_cast<u16>(HDNextTag);
-    HDTaggedWordsLeft = bytes / 4;
+    HDTaggedWordsLeft = words;
+}
+
+/*
+    Display lists the CPU writes (NitroSystem sends short ones with MI_CpuSend32) have no DMA to
+    hash them from, and the CPU registers can't be trusted mid-block under the JIT. So the words
+    are matched as they arrive: a command word that starts a known replaced list opens a
+    speculation with a draw of its own, whose tag its words' entries carry from the first one on
+    (the engine may run them before the list is complete, and the state must be saved before its
+    first command, as for a DMA'd list). The following words prune the candidates by their first
+    words, and when a candidate's length is reached its XXH64 decides: a match gives the draw its
+    replacement, which runs when the list's last command has; a dead end leaves the draw without
+    one, so its polygons are drawn as they are.
+*/
+u16 GPU3D::HDSpeculate(u32 word, bool commandStart) noexcept
+{
+    if (!HDSpecWords.empty())
+    {
+        HDSpecWords.push_back(word);
+        const u32 n = static_cast<u32>(HDSpecWords.size());
+        size_t keep = 0;
+        for (const HDModelSource::Original* c : HDSpecCandidates)
+        {
+            if (n <= c->PrefixLength && c->Prefix[n - 1] != word)
+                continue;
+            if (c->Size / 4 == n)
+            {
+                if (XXH64(HDSpecWords.data(), c->Size, 0) == c->Hash)
+                {
+                    HDDraws[HDSpecTag - 1].Replacement = ModelSource->LookupModel(c->Hash, c->Size);
+                    HDStatCpuLists++;
+                    HDSpecWords.clear();
+                    HDSpecCandidates.clear();
+                    return HDSpecTag;          // the last word belongs to the list too
+                }
+                continue;
+            }
+            HDSpecCandidates[keep++] = c;
+        }
+        HDSpecCandidates.resize(keep);
+        if (keep)
+            return HDSpecTag;
+        HDSpecWords.clear();
+    }
+    if (!commandStart)
+        return 0;
+    const std::vector<HDModelSource::Original>* originals = ModelSource->OriginalsStartingWith(word);
+    if (!originals)
+        return 0;
+    HDSpecCandidates.clear();
+    for (const HDModelSource::Original& c : *originals)
+        HDSpecCandidates.push_back(&c);
+    HDStatSpecStarts++;
+    // a draw for it, with no replacement until the list is recognised
+    HDTagDraw(nullptr, 0);
+    HDSpecTag = HDTaggedWriteTag;
+    for (const HDModelSource::Original* c : HDSpecCandidates)
+    {
+        if (c->Size == 4 && XXH64(&word, 4, 0) == c->Hash)
+        {
+            HDDraws[HDSpecTag - 1].Replacement = ModelSource->LookupModel(c->Hash, c->Size);
+            HDStatCpuLists++;
+            HDSpecCandidates.clear();
+            return HDSpecTag;
+        }
+    }
+    HDSpecWords.assign(1, word);
+    return HDSpecTag;
 }
 
 void GPU3D::HDModelTagChange(u16 next) noexcept
@@ -364,11 +439,14 @@ void GPU3D::BuildRenderListWithHDModels() noexcept
     // Warn, so release builds show whether a pack's models are found at all
     if (++HDStatFrames >= 60)
     {
-        Log(LogLevel::Warn, "HDModels[Stats]: %u replaced display lists, %u replacement polygons in 60 frames\n",
-            HDStatDraws, HDStatPolygons);
+        Log(LogLevel::Warn, "HDModels[Stats]: %u replaced display lists (%u written by the CPU), %u replacement "
+            "polygons in 60 frames (%u CPU list candidates)\n",
+            HDStatDraws, HDStatCpuLists, HDStatPolygons, HDStatSpecStarts);
+        HDStatSpecStarts = 0;
         HDStatFrames = 0;
         HDStatDraws = 0;
         HDStatPolygons = 0;
+        HDStatCpuLists = 0;
     }
 }
 }

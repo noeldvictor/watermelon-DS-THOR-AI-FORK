@@ -214,6 +214,8 @@ private:
     void ReplayHDModel(HDModelDraw& draw) noexcept;
     void BuildRenderListWithHDModels() noexcept;
     void ClearHDModelState() noexcept;
+    void HDTagDraw(const std::vector<u32>* replacement, u32 words) noexcept;
+    u16 HDSpeculate(u32 word, bool commandStart) noexcept;
 
     void UpdateClipMatrix() noexcept;
     void ResetRenderingState() noexcept;
@@ -413,6 +415,13 @@ public:
     std::vector<HDModelDraw> HDDraws;
     u32 HDNextTag = 0;
     u32 HDTaggedWordsLeft = 0;
+    bool HDWritingFromDma = false;                      // set by the ARM9 DMA while it writes the GX FIFO
+    // a display list the CPU is writing word by word, while it may be a replaced one
+    std::vector<u32> HDSpecWords;
+    std::vector<const HDModelSource::Original*> HDSpecCandidates;
+    u16 HDSpecTag = 0;                                  // the draw its entries are tagged with meanwhile
+    u32 HDStatCpuLists = 0;
+    u32 HDStatSpecStarts = 0;
     u16 HDTaggedWriteTag = 0;
     u16 HDExecTag = 0;
     std::vector<Vertex> HDVertexRAM[2];

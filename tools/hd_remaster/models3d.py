@@ -701,3 +701,21 @@ def pn_triangles(mesh: Mesh, level: int = 3, strength: float = 1.0) -> Mesh:
     as_np = lambda x, w_: np.array(x, dtype=np.float64).reshape(-1, w_)
     return Mesh(as_np(pos, 3), as_np(nrm, 3), as_np(uv, 2), as_np(col, 3),
                 np.array(slots, dtype=np.int32), np.array(out, dtype=np.int32).reshape(-1, 3))
+
+
+def write_originals(folder, originals: dict) -> None:
+    """models/originals.txt: each replaced display list's key and first four words. The emulator
+    recognises lists the game writes with the CPU (no DMA to hash) by these as they arrive."""
+    import os
+    path = os.path.join(folder, "originals.txt")
+    known = {}
+    if os.path.exists(path):
+        for line in open(path, encoding="utf-8"):
+            parts = line.split()
+            if parts:
+                known[parts[0]] = line.rstrip("\n")
+    for key, dl in originals.items():
+        words = struct.unpack_from(f"<{min(4, len(dl) // 4)}I", dl)
+        known[key] = key + " " + " ".join(f"{w:08X}" for w in words)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(known[k] for k in sorted(known)) + "\n")

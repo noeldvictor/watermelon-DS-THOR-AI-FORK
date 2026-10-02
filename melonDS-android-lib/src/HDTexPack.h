@@ -74,6 +74,7 @@ public:
     // (see GPU3D::SetModelSource)
     bool HasModels() const { return !Models.empty(); }
     const std::vector<u32>* LookupModel(u64 hash, u32 size) const override;
+    const std::vector<Original>* OriginalsStartingWith(u32 word) const override;
 
     bool Has3DEntries() const
     {
@@ -163,6 +164,8 @@ private:
         std::vector<u32> Words;    // the replacement display list
     };
     std::unordered_map<u64, ModelEntry> Models;
+    // models/originals.txt: "<key> <first words>" of each replaced display list, by first word
+    std::unordered_map<u32, std::vector<Original>> ModelOriginals;
     void LoadModels(const std::string& dir);
 
     // Keyed by XXH64 over the canonical key fields; wildcard maps ignore the palette hash.
