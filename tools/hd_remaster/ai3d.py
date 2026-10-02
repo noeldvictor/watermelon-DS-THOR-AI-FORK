@@ -1,18 +1,26 @@
-"""AI-generated 3D models for a pack (Meshy), fitted onto the game's own model.
+"""AI-generated 3D models for a pack (Tripo or Meshy), fitted onto the game's own model.
 
-    hd_remaster.py models ai work/<CODE> <model id> [--polycount 6000] [--budget 100] [--dry-run]
-    hd_remaster.py models fit work/<CODE> <model id> <mesh.glb>
+    hd_remaster.py models ai work/<CODE> --model <id> [--provider tripo|meshy] [--polycount 6000]
+                             [--budget 100] [--dry-run]
+    hd_remaster.py models fit work/<CODE> --model <id> --mesh <mesh.glb>
 
 ai renders the original model from the front, right, back and left (with its own textures),
-sends the four pictures to Meshy's multi-image-to-3D (mesh only, remeshed to --polycount
-triangles: 20 credits) and saves the result as work/<CODE>/models/<model>/ai/<task>.glb, then
-fits it. Every call is logged with its credits in work/<CODE>/models/ai_ledger.jsonl and refused
-once the ledger would pass --budget credits. The key is MESHY_API_KEY in tools/hd_remaster/.env
-(never printed). --dry-run writes the reference pictures and stops.
+sends the four pictures to a multiview image-to-3D service for bare geometry (no texture: the
+game's own textures go on in the fit) and saves the result as
+work/<CODE>/models/<model>/ai/<task>.glb, then fits it.
+  tripo (default): Tripo API v3 (openapi.tripo3d.ai/v3, the v2 API retires 2026-11-01): upload
+    each view (POST /files -> file_token), POST /generation/multiview-to-model with view-keyed
+    inputs, model v3.1-20260211, texture and pbr off, face_limit = --polycount; poll
+    GET /tasks/{id}; output.model_url expires 5 minutes after success. 20 credits ($0.20; new
+    accounts get 300 free). Key: TRIPO_API_KEY.
+  meshy: Meshy multi-image-to-3D, mesh only, remeshed to --polycount. 20 credits. Key: MESHY_API_KEY.
+Every call is logged with its credits in work/<CODE>/models/ai_ledger.jsonl and refused once the
+ledger would pass --budget credits. Keys live in tools/hd_remaster/.env (never printed).
+--dry-run writes the reference pictures and stops.
 
-fit turns any mesh (an AI result, or a GLB/OBJ from a 3D tool, in any scale and position, facing
-+Z like the reference pictures) into replacements: it is scaled and moved onto the original's
-bounds, refined with ICP, and every vertex takes from the nearest point on the original's
+fit turns any mesh (an AI result, or a GLB/OBJ from a 3D tool, in any scale, position and facing:
+Tripo exports +X forward) into replacements: it is scaled and moved onto the original's bounds,
+turned to whichever of the four facings ICP fits best, refined with ICP, and every vertex takes from the nearest point on the original's
 surface its shape, bone (matrix-stack slot), texture coordinates and normal direction, so the new
 mesh wears the game's own (or the pack's HD) textures and follows the game's animation. The
 result is written as edited.obj (groups = shapes), which `models build` turns into display lists.
@@ -25,6 +33,7 @@ import json
 import os
 import struct
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -36,7 +45,9 @@ import render3d
 
 HERE = Path(__file__).resolve().parent
 MESHY = "https://api.meshy.ai/openapi/v1"
-CREDITS_MULTI_IMAGE_MESH = 20
+TRIPO = "https://openapi.tripo3d.ai/v3"
+TRIPO_MODEL = "v3.1-20260211"
+CREDITS_MULTI_IMAGE_MESH = 20          # both services: multiview, geometry only
 
 
 def log(msg: str) -> None:
@@ -73,6 +84,82 @@ def _request(method: str, url: str, key: str, body: dict | None = None) -> dict:
                                  headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=120) as r:
         return json.loads(r.read().decode("utf-8"))
+
+
+def _png_bytes(img: np.ndarray) -> bytes:
+    buf = io.BytesIO()
+    Image.fromarray(img).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _tripo(method: str, path: str, key: str, body: dict | None = None, upload: bytes | None = None) -> dict:
+    """One Tripo v3 call; returns `data` (raises with the service's message on code != 0)."""
+    headers = {"Authorization": f"Bearer {key}"}
+    if upload is not None:
+        boundary = "----watermelonthor" + os.urandom(8).hex()
+        data = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"view.png\"\r\n"
+                f"Content-Type: image/png\r\n\r\n").encode("ascii") + upload + f"\r\n--{boundary}--\r\n".encode("ascii")
+        headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+    elif body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    else:
+        data = None
+    req = urllib.request.Request(TRIPO + path, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            reply = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        reply = json.loads(e.read().decode("utf-8", "replace") or "{}")
+    if reply.get("code") != 0:
+        raise SystemExit(f"tripo {path}: {reply.get('code')} {reply.get('message')} ({reply.get('suggestion')})")
+    return reply["data"]
+
+
+def tripo_multiview(images: list[np.ndarray], out_dir: Path, ledger: Path, budget: int, polycount: int,
+                    label: str) -> Path:
+    """images: front, right, back, left (reference_views order)."""
+    key = _key("TRIPO_API_KEY")
+    if not key:
+        raise SystemExit("no TRIPO_API_KEY in tools/hd_remaster/.env")
+    spent = _ledger_total(ledger)
+    if spent + CREDITS_MULTI_IMAGE_MESH > budget:
+        raise SystemExit(f"budget: {spent} credits used, a call costs {CREDITS_MULTI_IMAGE_MESH}, cap {budget}")
+    tokens = {}
+    for view, img in zip(("front", "right", "back", "left"), images):
+        tokens[view] = _tripo("POST", "/files", key, upload=_png_bytes(img))["file_token"]
+    body = {
+        "inputs": [{"front": tokens["front"]}, {"left": tokens["left"]},
+                   {"back": tokens["back"]}, {"right": tokens["right"]}],
+        "model": TRIPO_MODEL,
+        "texture": False,
+        "pbr": False,
+        "face_limit": int(polycount),
+    }
+    task = _tripo("POST", "/generation/multiview-to-model", key, body)["task_id"]
+    log(f"tripo task {task}")
+    entry = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "provider": "tripo", "task": task, "model": label,
+             "credits": CREDITS_MULTI_IMAGE_MESH, "kind": "multiview-to-model geometry"}
+    with ledger.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+    while True:
+        time.sleep(5)
+        info = _tripo("GET", f"/tasks/{task}", key)
+        status = info.get("status")
+        log(f"  {status} {info.get('progress', 0)}%")
+        if status == "success":
+            break
+        if status in ("failed", "cancelled", "banned"):
+            raise SystemExit(f"tripo task {task} {status}: {info.get('error_code')} {info.get('error_message')}")
+    url = (info.get("output") or {}).get("model_url")
+    if not url:
+        raise SystemExit(f"tripo task {task}: no model_url in {list((info.get('output') or {}).keys())}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{task}.glb"
+    with urllib.request.urlopen(url, timeout=300) as r:        # the URL expires after 5 minutes
+        path.write_bytes(r.read())
+    log(f"saved {path} ({info.get('credits_consumed')} credits)")
+    return path
 
 
 def _ledger_total(ledger: Path) -> int:
@@ -290,7 +377,22 @@ def fit(new_pos: np.ndarray, new_tris: np.ndarray, model: models3d.Model, icp: b
     scale = (hi[1] - lo[1]) / max(nhi[1] - nlo[1], 1e-9)          # by height, the most reliable
     placed = (new_pos - (nlo + nhi) / 2) * scale + (lo + hi) / 2
     if icp:
-        m = _icp(placed[::max(1, len(placed) // 3000)], orig_pos)
+        # services disagree on which way a model faces (Tripo: +X forward): try the four turns
+        # about the vertical axis and keep the one ICP fits best
+        centre = (lo + hi) / 2
+        sample = placed[::max(1, len(placed) // 3000)]
+        best = None
+        for quarter in range(4):
+            a = quarter * np.pi / 2
+            turn = np.array([[np.cos(a), 0, np.sin(a)], [0, 1, 0], [-np.sin(a), 0, np.cos(a)]])
+            turned = (sample - centre) @ turn.T + centre
+            m = _icp(turned, orig_pos)
+            moved = (m[:3, :3] @ turned.T).T + m[:3, 3]
+            residual = float(np.mean([((orig_pos - q) ** 2).sum(1).min() for q in moved[::5]]))
+            if best is None or residual < best[0]:
+                best = (residual, turn, m)
+        _, turn, m = best
+        placed = (placed - centre) @ turn.T + centre
         placed = (m[:3, :3] @ placed.T).T + m[:3, 3]
 
     # the original's triangles, with where each came from

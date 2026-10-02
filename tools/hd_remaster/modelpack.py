@@ -396,7 +396,7 @@ def fit_mesh(work: Path, mid: str, mesh_path: Path) -> None:
         f"(+ edited_preview.png, hidden.txt); next: models build {work}")
 
 
-def ai_model(work: Path, mid: str, polycount: int, budget: int, dry_run: bool) -> None:
+def ai_model(work: Path, mid: str, polycount: int, budget: int, dry_run: bool, provider: str = "tripo") -> None:
     import ai3d
     model, folder, info, _ = _load_model(work, mid)
     refs = ai3d.reference_views(_textured_parts(model, folder, info))
@@ -407,5 +407,6 @@ def ai_model(work: Path, mid: str, polycount: int, budget: int, dry_run: bool) -
     if dry_run:
         log(f"reference pictures in {ai_dir}; nothing sent (dry run)")
         return
-    glb = ai3d.meshy_multi_image(refs, ai_dir, work / "models" / "ai_ledger.jsonl", budget, polycount, mid)
+    generate = ai3d.tripo_multiview if provider == "tripo" else ai3d.meshy_multi_image
+    glb = generate(refs, ai_dir, work / "models" / "ai_ledger.jsonl", budget, polycount, mid)
     fit_mesh(work, mid, glb)

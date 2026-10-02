@@ -526,7 +526,7 @@ def cmd_models(args) -> None:
     else:
         if not args.model:
             raise SystemExit("models ai work/<CODE> --model <id> [--dry-run]")
-        modelpack.ai_model(Path(args.target), args.model, args.polycount, args.budget, args.dry_run)
+        modelpack.ai_model(Path(args.target), args.model, args.polycount, args.budget, args.dry_run, args.provider)
 
 
 def cmd_push(args) -> None:
@@ -724,6 +724,8 @@ def main() -> None:
     p.add_argument("--polycount", type=int, default=6000, help="ai: triangles Meshy remeshes to")
     p.add_argument("--budget", type=int, default=100, help="ai: credit cap over the ledger (a call: 20)")
     p.add_argument("--dry-run", action="store_true", help="ai: write the reference pictures only")
+    p.add_argument("--provider", choices=("tripo", "meshy"), default="tripo",
+                   help="ai: tripo (TRIPO_API_KEY) or meshy (MESHY_API_KEY)")
     p.add_argument("--out", help=f"extract: work root (default {WORK})")
     p.add_argument("--trace", help="extract: a dl_trace json (tools/re) marking the shapes a scene uses")
     p.add_argument("--previews", action="store_true", help="extract: a preview for every model, not only seen ones")
