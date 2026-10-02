@@ -62,6 +62,8 @@ whatever got dumped. [`tools/hd_remaster`](tools/hd_remaster/README.md) skips th
 powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 game.nds -Push
 ```
 
+Prefer buttons? [Watermelon Remaster Studio](tools/studio/README.md) runs the same steps from a local web page, with live output, a live view of both Thor screens and the renderer checks (`tools\studio\studio.ps1`).
+
 Games with a [recipe](tools/hd_remaster/games/README.md) get the settings and game-specific
 rules that were verified for them, so anyone with the same ROM gets the same pack. **[The HD
 games list](tools/hd_remaster/games/GAMES.md)** has every one - Lufia: Curse of the Sinistrals,

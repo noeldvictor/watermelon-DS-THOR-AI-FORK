@@ -1,0 +1,6 @@
+# machine-specific settings (device serial, local paths) and check results (game frames)
+studio_settings.json
+studio_settings.json.tmp
+runs/
+__pycache__/
+*.pyc

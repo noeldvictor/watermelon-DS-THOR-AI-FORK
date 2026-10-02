@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Remaster Studio</title>
+  <meta name="description" content="Watermelon Remaster Studio: build HD texture packs from DS ROMs and test them on the AYN Thor.">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script type="module" src="/static/js/main.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/library" aria-label="Remaster Studio home">
+      <img src="/static/icon.svg" alt="" width="28" height="28">
+      <span class="brand-name"><span class="brand-sub">Watermelon</span> Remaster Studio</span>
+    </a>
+    <nav class="nav" aria-label="Pages">
+      <a href="#/library" data-nav="library">Library</a>
+      <a href="#/checks" data-nav="checks">Checks</a>
+      <a href="#/jobs" data-nav="jobs">Jobs <span class="nav-badge" id="jobs-badge" hidden></span></a>
+      <a href="#/settings" data-nav="settings">Settings</a>
+    </nav>
+    <button class="device-toggle" id="device-toggle" type="button" aria-controls="device-panel" aria-expanded="false">
+      <span class="dot" id="device-dot"></span>
+      <span class="device-toggle-label">Thor</span>
+    </button>
+  </header>
+  <div class="layout" id="layout">
+    <main id="view" class="view" tabindex="-1"></main>
+    <aside id="device-panel" class="device-panel" aria-label="AYN Thor"></aside>
+  </div>
+  <div class="scrim" id="scrim" hidden></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <dialog id="dialog" class="dialog"></dialog>
+</body>
+</html>
