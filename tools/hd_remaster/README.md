@@ -179,6 +179,14 @@ bit-identical to no replacement (frame_compare, 60 frames, both screens); Link's
 every vertex scaled 1.25 draw a puffier Link that still animates; save states made and loaded
 with models on work (a state keeps only the hardware's polygons).
 
+Making replacements from meshes: `mesh_to_display_list` turns a bind-pose mesh back into a
+shape's display list (each vertex into its matrix-stack slot's space, TEXCOORD, NORMAL for lit
+shapes or COLOR, VTX_16). `pn_triangles` is an automatic remaster that needs no new art: curved
+PN triangles (the ATI TruForm scheme) through the original corners, so outlines and points stay
+where they are while the faces between them round out (strength 0.6, 3x3 per triangle looks
+faithful; `loop_subdivide` rounds more but shrinks points like Link's cap tip). PN-smoothed Link
+in PH: 9x the triangles (~1400 more polygons a frame), 60 fps.
+
 ## Limits
 
 - Anything a game builds at runtime can't be found in the ROM (see above), except text drawn

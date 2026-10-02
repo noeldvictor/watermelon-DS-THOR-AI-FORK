@@ -486,3 +486,211 @@ def write_replacement(folder, key: str, dl: bytes) -> str:
     with open(path, "wb") as f:
         f.write(dl)
     return path
+
+
+# ---------------------------------------------------------------------------- meshes back to display lists
+
+def _slot_matrix(draw: Draw, slot: int) -> np.ndarray:
+    return draw.current if slot < 0 else draw.stack[slot]
+
+
+def mesh_to_display_list(mesh: Mesh, draw: Draw, lit: bool) -> bytes:
+    """A bind-pose mesh as a display list for the shape `draw` draws: each vertex goes back into
+    the space of its matrix-stack slot (MTX_RESTORE when the slot changes), with TEXCOORD,
+    NORMAL (lit shapes; the engine lights it) or COLOR, and VTX_16, as a triangle list."""
+    cmds: list[tuple[int, list[int]]] = []
+    inverse = {}
+    current_slot = None
+    cmds.append((0x40, [0]))                                   # BEGIN_VTXS triangles
+    for tri in mesh.triangles:
+        for vi in tri:
+            slot = int(mesh.slots[vi])
+            if slot != current_slot:
+                if slot >= 0:
+                    cmds.append((0x14, [slot]))                # MTX_RESTORE
+                current_slot = slot
+            m = _slot_matrix(draw, slot)
+            if slot not in inverse:
+                inverse[slot] = np.linalg.inv(m)
+            inv = inverse[slot]
+            s, t = mesh.texcoords[vi]
+            cmds.append((0x22, [(int(round(s * 16)) & 0xFFFF) | ((int(round(t * 16)) & 0xFFFF) << 16)]))
+            if lit:
+                n = m[:3, :3].T @ mesh.normals[vi]
+                length = float(np.linalg.norm(n))
+                n = n / length if length > 1e-9 else np.array([0.0, 0.0, 1.0])
+                q = [max(-511, min(511, int(round(c * 512)))) & 0x3FF for c in n]
+                cmds.append((0x21, [q[0] | (q[1] << 10) | (q[2] << 20)]))
+            else:
+                r, g, b_ = (int(round(c)) & 31 for c in mesh.colors[vi])
+                cmds.append((0x20, [r | (g << 5) | (b_ << 10)]))
+            local = inv @ np.append(mesh.positions[vi], 1.0)
+            cmds.append(vtx16(*(local[:3] * 4096)))
+    cmds.append((0x41, []))                                    # END_VTXS
+    return encode_display_list(cmds)
+
+
+def is_lit(dl: bytes) -> bool:
+    """Whether a display list lights its vertices (NORMAL) rather than colouring them (COLOR)."""
+    return any(cmd == 0x21 for cmd, _ in parse_display_list(dl))
+
+
+def weld(mesh: Mesh, eps: float = 1e-5) -> np.ndarray:
+    """For each vertex, the index of the first vertex at the same bind-pose position: display
+    lists repeat a position for every strip and every texture seam."""
+    keys = {}
+    out = np.zeros(len(mesh.positions), dtype=np.int64)
+    for i, p in enumerate(mesh.positions):
+        k = tuple(np.round(p / eps).astype(np.int64))
+        out[i] = keys.setdefault(k, i)
+    return out
+
+
+def loop_subdivide(mesh: Mesh, smooth: float = 1.0) -> Mesh:
+    """One level of Loop subdivision: every triangle into four. Positions are smoothed on the
+    welded surface (boundary edges, where the surface is open, keep the boundary rules);
+    texture coordinates, colours, normals and slots follow each corner, so texture seams stay
+    sharp. `smooth` blends between plain midpoint splitting (0) and full Loop smoothing (1)."""
+    wid = weld(mesh)
+    tris = mesh.triangles
+    n = len(mesh.positions)
+    P = mesh.positions
+    # welded edges -> the opposite welded vertices (one for a boundary edge, two inside)
+    edge_opp: dict[tuple[int, int], list[int]] = {}
+    neighbours: dict[int, set[int]] = {}
+    for a, b, c in tris:
+        wa, wb, wc = wid[a], wid[b], wid[c]
+        for u, v, o in ((wa, wb, wc), (wb, wc, wa), (wc, wa, wb)):
+            edge_opp.setdefault((min(u, v), max(u, v)), []).append(o)
+            neighbours.setdefault(u, set()).add(v)
+            neighbours.setdefault(v, set()).add(u)
+    boundary_nb: dict[int, list[int]] = {}
+    for (u, v), opp in edge_opp.items():
+        if len(opp) == 1:
+            boundary_nb.setdefault(u, []).append(v)
+            boundary_nb.setdefault(v, []).append(u)
+
+    # new positions of the old (welded) vertices
+    moved = {}
+    for w, nb in neighbours.items():
+        if w in boundary_nb:
+            bn = boundary_nb[w]
+            target = 0.75 * P[w] + 0.125 * (P[bn[0]] + P[bn[-1]]) if len(bn) >= 2 else P[w]
+        else:
+            k = len(nb)
+            beta = 3.0 / 16 if k == 3 else 3.0 / (8 * k)
+            target = (1 - k * beta) * P[w] + beta * sum(P[x] for x in nb)
+        moved[w] = P[w] + smooth * (target - P[w])
+
+    # edge points, by welded edge
+    edge_point = {}
+    for (u, v), opp in edge_opp.items():
+        mid = 0.5 * (P[u] + P[v])
+        if len(opp) == 2:
+            target = 0.375 * (P[u] + P[v]) + 0.125 * (P[opp[0]] + P[opp[1]])
+        else:
+            target = mid
+        edge_point[(u, v)] = mid + smooth * (target - mid)
+
+    pos, nrm, uv, col, slots, out = [], [], [], [], [], []
+
+    def add(p, nn, t, c, s):
+        pos.append(p); nrm.append(nn); uv.append(t); col.append(c); slots.append(s)
+        return len(pos) - 1
+
+    for a, b, c in tris:
+        corners = (a, b, c)
+        old = [add(moved[wid[i]], mesh.normals[i], mesh.texcoords[i], mesh.colors[i], mesh.slots[i]) for i in corners]
+        mids = []
+        for i, j in ((a, b), (b, c), (c, a)):
+            key = (min(wid[i], wid[j]), max(wid[i], wid[j]))
+            nn = mesh.normals[i] + mesh.normals[j]
+            ln = float(np.linalg.norm(nn))
+            mids.append(add(edge_point[key], nn / ln if ln > 1e-9 else nn,
+                            0.5 * (mesh.texcoords[i] + mesh.texcoords[j]),
+                            0.5 * (mesh.colors[i] + mesh.colors[j]),
+                            mesh.slots[i]))
+        A, B, C = old
+        ab, bc, ca = mids
+        out += [(A, ab, ca), (ab, B, bc), (ca, bc, C), (ab, bc, ca)]
+    as_np = lambda x, w: np.array(x, dtype=np.float64).reshape(-1, w)
+    return Mesh(as_np(pos, 3), as_np(nrm, 3), as_np(uv, 2), as_np(col, 3),
+                np.array(slots, dtype=np.int32), np.array(out, dtype=np.int32).reshape(-1, 3))
+
+
+def smooth_normals(mesh: Mesh) -> np.ndarray:
+    """One normal per welded position (angle-weighted face normals), so curved patches built from
+    them meet without cracks."""
+    wid = weld(mesh)
+    acc = np.zeros_like(mesh.positions)
+    P = mesh.positions
+    for a, b, c in mesh.triangles:
+        pa, pb, pc = P[a], P[b], P[c]
+        n = np.cross(pb - pa, pc - pa)
+        ln = np.linalg.norm(n)
+        if ln < 1e-12:
+            continue
+        n = n / ln
+        for i, (u, v) in zip((a, b, c), ((pb - pa, pc - pa), (pc - pb, pa - pb), (pa - pc, pb - pc))):
+            cu, cv = np.linalg.norm(u), np.linalg.norm(v)
+            if cu < 1e-12 or cv < 1e-12:
+                continue
+            angle = np.arccos(np.clip(np.dot(u, v) / (cu * cv), -1, 1))
+            acc[wid[i]] += angle * n
+    out = acc[wid]
+    ln = np.linalg.norm(out, axis=1, keepdims=True)
+    return np.where(ln > 1e-12, out / np.maximum(ln, 1e-12), mesh.normals)
+
+
+def pn_triangles(mesh: Mesh, level: int = 3, strength: float = 1.0) -> Mesh:
+    """Curved PN triangles (Vlachos et al., the ATI TruForm scheme): each triangle becomes a cubic
+    patch through its three corners, shaped by smooth vertex normals, tessellated into level^2
+    triangles. Corners stay where they were, so outlines and points (a cap's tip, ears) keep
+    their place while the faces between them round out. `strength` scales the bulge (0 = flat).
+    Texture coordinates, colours and the lit normals interpolate linearly; each new vertex takes
+    the matrix-stack slot of its nearest corner."""
+    N = smooth_normals(mesh)
+    P = mesh.positions
+    pos, nrm, uv, col, slots, out = [], [], [], [], [], []
+    for a, b, c in mesh.triangles:
+        p1, p2, p3 = P[a], P[b], P[c]
+        n1, n2, n3 = N[a], N[b], N[c]
+        w = lambda i, j, ni: np.dot(P_[j] - P_[i], ni)
+        P_ = {0: p1, 1: p2, 2: p3}
+        b300, b030, b003 = p1, p2, p3
+        b210 = (2 * p1 + p2 - w(0, 1, n1) * n1) / 3
+        b120 = (2 * p2 + p1 - w(1, 0, n2) * n2) / 3
+        b021 = (2 * p2 + p3 - w(1, 2, n2) * n2) / 3
+        b012 = (2 * p3 + p2 - w(2, 1, n3) * n3) / 3
+        b102 = (2 * p3 + p1 - w(2, 0, n3) * n3) / 3
+        b201 = (2 * p1 + p3 - w(0, 2, n1) * n1) / 3
+        e = (b210 + b120 + b021 + b012 + b102 + b201) / 6
+        v = (p1 + p2 + p3) / 3
+        b111 = e + (e - v) / 2
+        grid = {}
+        for i in range(level + 1):
+            for j in range(level + 1 - i):
+                k = level - i - j
+                u_, v_, w_ = i / level, j / level, k / level     # weights of corners a, b, c
+                curved = (b300 * u_ ** 3 + b030 * v_ ** 3 + b003 * w_ ** 3
+                          + 3 * (b210 * u_ * u_ * v_ + b120 * u_ * v_ * v_ + b201 * u_ * u_ * w_
+                                 + b021 * v_ * v_ * w_ + b102 * u_ * w_ * w_ + b012 * v_ * w_ * w_)
+                          + 6 * b111 * u_ * v_ * w_)
+                flat = u_ * p1 + v_ * p2 + w_ * p3
+                corner = (a, b, c)[int(np.argmax((u_, v_, w_)))]
+                nn = u_ * mesh.normals[a] + v_ * mesh.normals[b] + w_ * mesh.normals[c]
+                ln = float(np.linalg.norm(nn))
+                pos.append(flat + strength * (curved - flat))
+                nrm.append(nn / ln if ln > 1e-9 else nn)
+                uv.append(u_ * mesh.texcoords[a] + v_ * mesh.texcoords[b] + w_ * mesh.texcoords[c])
+                col.append(u_ * mesh.colors[a] + v_ * mesh.colors[b] + w_ * mesh.colors[c])
+                slots.append(mesh.slots[corner])
+                grid[(i, j)] = len(pos) - 1
+        for i in range(level):
+            for j in range(level - i):
+                out.append((grid[(i + 1, j)], grid[(i, j + 1)], grid[(i, j)]))
+                if i + j < level - 1:
+                    out.append((grid[(i + 1, j)], grid[(i + 1, j + 1)], grid[(i, j + 1)]))
+    as_np = lambda x, w_: np.array(x, dtype=np.float64).reshape(-1, w_)
+    return Mesh(as_np(pos, 3), as_np(nrm, 3), as_np(uv, 2), as_np(col, 3),
+                np.array(slots, dtype=np.int32), np.array(out, dtype=np.int32).reshape(-1, 3))
