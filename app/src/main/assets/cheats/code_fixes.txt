@@ -12,3 +12,12 @@ ASFE|Widescreen|52324998 00001555 02324998 00001C72 D2000000 00000000|420CF1F0 0
 # spots: the 4:3 aspect literal at 0x020775D0 and the width scale (mov r0,#0x80000) at 0x0208A068;
 # each write is guarded so it only replaces the expected original. Verified on a race start.
 +AMCP|Enhancements|Widescreen|520775D0 00001555 020775D0 00001C72 D0000000 00000000 5208A068 E3A00702 0208A068 E3A00AAA D2000000 00000000|Added by Watermelon Thor (the US widescreen code fits this version)
+
+# Sonic & SEGA All-Stars Racing (Europe): the US code (CS3E "Widescreen"); the 4:3 aspect literal
+# sits at the same address, 0x02039288, read every frame. Verified on a race start (0.75x wide).
++CS3P|Enhancements|Widescreen|52039288 00001555 02039288 00001C72 D2000000 00000000|Added by Watermelon Thor (the US widescreen code fits this version)
+
+# Burnout Legends (Europe): the US code (ABOE "Widescreen") patches two 4:3 literals; the first is
+# at the same address (0x0201ADA4, read when a race camera is built), the second moved from
+# 0x0203A298 to 0x0203A2B4 (read every frame). Each write is guarded. Verified on a race start.
++ABOP|Enhancements|Widescreen|5201ADA4 00001555 0201ADA4 00001C72 D0000000 00000000 5203A2B4 00001555 0203A2B4 00001C72 D2000000 00000000|Added by Watermelon Thor (the US widescreen code, moved to this version's addresses)
