@@ -3059,7 +3059,9 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
     {
         PlaneOverlayGpuInstance gpu;
         u8 screen;
-        bool isSprite;
+        // sprites and glyphs overlap their neighbours, so they are drawn in order with
+        // barriers between overlapping ones; BG tiles never overlap and need none
+        bool ordered;
         // held here: the instance vector can be cleared once the lock below is released
         std::shared_ptr<const std::vector<u32>> native;
     };
@@ -3093,7 +3095,9 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
         out.gpu.masks = static_cast<u32>(inst.RequireMask) | (static_cast<u32>(inst.RejectMask) << 8);
         // bits 8-12: the sprite's blend weight (16 = drawn as-is; less = under an effect,
         // left native by the overlay and given the art's detail by the edge pass)
-        out.gpu.flags = static_cast<u32>(inst.Flip) | (static_cast<u32>(std::min<u8>(inst.BlendWeight, 16)) << 8);
+        // bit 2: a glyph of BG-layer text (HDPack2DInstance::Text)
+        out.gpu.flags = static_cast<u32>(inst.Flip) | (inst.Text ? 4u : 0u)
+            | (static_cast<u32>(std::min<u8>(inst.BlendWeight, 16)) << 8);
         // bits 16-23: how many ranks past Rank the instance also owns (a glyph across text sprites)
         out.gpu.rank = static_cast<u32>(inst.Rank) | (static_cast<u32>(inst.Engine & 3u) << 8)
             | (static_cast<u32>(inst.RankSpan) << 16);
@@ -3101,17 +3105,20 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
         // snapshot can already be the next frame's)
         out.screen = inst.Screen & 1u;
         out.gpu.screen = out.screen;
-        out.isSprite = inst.RequireMask == 0x90;
+        out.ordered = inst.RequireMask == 0x90 || inst.Text;
         if (inst.BlendWeight < 16)
             out.native = inst.Native;
         prepared.push_back(std::move(out));
     };
 
     // BG tiles never overlap within their producer, so they go first without
-    // ordering barriers; sprites run in reverse OAM priority so the topmost
-    // sprite writes last
+    // ordering barriers; then text glyphs drawn into BG layers, over those tiles;
+    // sprites run in reverse OAM priority so the topmost sprite writes last
     for (const auto& inst : resource.replacementInstances)
-        if (inst.RequireMask != 0x90)
+        if (inst.RequireMask != 0x90 && !inst.Text)
+            addInstance(inst);
+    for (const auto& inst : resource.replacementInstances)
+        if (inst.RequireMask != 0x90 && inst.Text)
             addInstance(inst);
     for (auto it = resource.replacementInstances.rbegin(); it != resource.replacementInstances.rend(); ++it)
         if (it->RequireMask == 0x90)
@@ -3269,13 +3276,16 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
             0, nullptr);
 
         std::vector<Rect> batchRects;
+        bool unorderedPending = false;   // BG tiles dispatched since the last barrier
         for (size_t i = 0; i < prepared.size(); i++)
         {
             const PreparedInstance& inst = prepared[i];
             if (inst.screen != screen)
                 continue;
 
-            if (inst.isSprite)
+            if (!inst.ordered)
+                unorderedPending = true;
+            else
             {
                 const Rect rect{inst.gpu.destX, inst.gpu.destY,
                                 inst.gpu.destX + static_cast<s32>(inst.gpu.nativeW),
@@ -3289,6 +3299,12 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
                         overlaps = true;
                         break;
                     }
+                }
+                // a glyph's soft edge can reach a replaced tile next to its own
+                if (unorderedPending)
+                {
+                    overlaps = true;
+                    unorderedPending = false;
                 }
                 if (overlaps)
                 {

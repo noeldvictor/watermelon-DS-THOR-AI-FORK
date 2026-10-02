@@ -65,6 +65,10 @@ struct HDPack2DInstance
     // can only add the art's detail over the native colours, which shows a redraw that
     // moved features as the native picture until the fade ends.
     std::shared_ptr<const std::vector<u32>> Native;
+    // a glyph of text drawn into a BG layer: every pixel its layer won there is the text's
+    // (the layer's other pixels around it are the box), so the renderer blends the HD glyph
+    // over the box colour next to it and lets the glyph's soft edge spill onto the box
+    bool Text = false;
 };
 
 constexpr u8 kNoObjRank = 0xFF;
@@ -118,10 +122,34 @@ private:
         std::vector<HDFontSet::Placement> Placements;
         // glyphs drawn over a one-pixel outline, with the outline's palette index
         std::vector<std::pair<HDFontSet::Placement, u16>> Outlined;
+        // BG text: each glyph's box index (Placements[i] sits on PlacementBg[i]); empty for
+        // sprite text, which has one box per group (Bg)
+        std::vector<u16> PlacementBg;
+    };
+
+    // a visible tile of a text BG layer the pack had no image for (screen tile column/row
+    // in the walk and the tilemap entry)
+    struct MissedTile
+    {
+        int Col, Row;
+        u16 Entry;
+        u64 TileHash;
     };
 
     void WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool load);
     void ReplaceText(GPU& gpu, int num, HDTexPack* pack, size_t spriteStart);
+    // text a game draws into a BG layer (NitroSystem's character canvas: Spirit Tracks'
+    // message boxes): the layer's missed tiles are assembled into one screen canvas and
+    // read like sprite text
+    void ReplaceBGText(HDTexPack* pack, int num, int layer, const std::vector<MissedTile>& tiles,
+                       const u8* bgvram, u32 bgvrammask, u32 tilesetaddr, bool eightbpp,
+                       const u16* pal, const u16* extPal, int fineX, int fineY);
+    // glyphs, outlines and the box index of TextCanvas (w x h) into group; the box is an index
+    // covering 40% of boxBasis pixels (0: the canvas area)
+    void RecognizeCanvas(const HDFontSet& fonts, int w, int h, TextGroup& group, u32 boxBasis = 0);
+    // BG text: a cluster can hold several boxes with different fills (a bubble, buttons, a
+    // border), so each common index is tried as the box in turn
+    void RecognizeBGCanvas(const HDFontSet& fonts, int w, int h, u32 filled, TextGroup& group);
     void WalkBGLayers(GPU& gpu, int num, HDTexPack* pack, bool dump, bool load);
     void EmitSpriteInstance(const HDTexPackImage* img, int num, u8 flip,
                             s32 xpos, s32 ypos, int width, int height, u8 rank, u8 blendWeight,
@@ -139,6 +167,7 @@ private:
     bool PrevValid = false;
 
     u32 FrameCounter = 0;
+    u32 NextTextLogFrame = 0;   // the text logs' rate limit
     u32 WalkBatch = 0;
 
     // bitmap sprites can alias volatile display-capture VRAM; only dump
@@ -154,6 +183,10 @@ private:
     u64 ColorKeyPack = 0;   // HDTexPack::Id() of the pack the cache belongs to
 
     std::vector<MissedSprite> Missed;
+    std::vector<MissedTile> MissedTiles;
+    // BG tiles (by content) a reading found no glyph in: background art, box fill. They are
+    // left out of later canvases, so art is looked at once, not every time it moves.
+    std::unordered_set<u64> NoTextTiles;
     std::vector<u16> TextCanvas;
     // recognised glyphs per sprite group, keyed by the group's sprites and positions, so
     // text that stays on screen is matched once

@@ -22,6 +22,7 @@
 #include "GPU.h"
 #include "HDTexPack.h"
 #include "NDS.h"
+#include "Platform.h"
 
 #include <algorithm>
 #include <functional>
@@ -616,6 +617,143 @@ void HDPack2D::WalkSprites(GPU& gpu, int num, HDTexPack* pack, bool dump, bool l
         ReplaceText(gpu, num, pack, spriteStart);
 }
 
+void HDPack2D::RecognizeCanvas(const HDFontSet& fonts, int w, int h, TextGroup& group, u32 boxBasis)
+{
+    // an opaque text box is filled with one index; ink rarely covers much of the area
+    // (boxBasis: the pixel count the fill is measured against, the area by default)
+    if (boxBasis == 0)
+        boxBasis = (u32)(w * h);
+    u16 bg = 0;
+    {
+        std::unordered_map<u16, u32> counts;
+        for (u16 v : TextCanvas)
+            if (v != HDFontSet::kEmpty) counts[v]++;
+        for (const auto& entry : counts)
+            if (entry.second * 5 > boxBasis * 2) bg = entry.first;
+    }
+    group.Bg = bg;
+    fonts.Recognize(TextCanvas.data(), w, h, bg, group.Placements);
+
+    // Outlined text (Lufia's HUD and name plates: white letters, dark outline) is the
+    // glyph drawn over a one-pixel ring of another index; the ring breaks the match. The
+    // same group can hold plain text too (a dialogue line beside its name plate) and
+    // outlined text in more than one colour (the HUD beside a damage number), so it is
+    // looked for in the ink plain matching left, one outline colour per round: each of
+    // the most common indices is taken as the outline (i.e. as background) in turn, and a
+    // glyph found that way only counts if the ring around its ink really is that index.
+    std::vector<u16> rest = TextCanvas;
+    for (const HDFontSet::Placement& p : group.Placements)
+        fonts.Erase(p, rest.data(), w, h);
+    std::vector<u16> stripped;
+    std::vector<int> ring;
+    for (int round = 0; round < 3; round++)
+    {
+        u32 restInk = 0;
+        std::unordered_map<u16, u32> inkCounts;
+        for (u16 v : rest)
+            if (v != HDFontSet::kEmpty && v != bg) { restInk++; inkCounts[v]++; }
+        if (restInk < 8 || inkCounts.size() < 2)
+            break;
+        std::vector<std::pair<u32, u16>> byCount;
+        for (const auto& e : inkCounts) byCount.push_back({ e.second, e.first });
+        std::sort(byCount.begin(), byCount.end(), std::greater<>());
+        if (byCount.size() > 3) byCount.resize(3);
+
+        u32 bestInk = 0;
+        u16 bestOutline = 0;
+        std::vector<HDFontSet::Placement> best;
+        for (const auto& cand : byCount)
+        {
+            stripped = rest;
+            for (u16& v : stripped)
+                if (v == cand.second) v = HDFontSet::kEmpty;
+            std::vector<HDFontSet::Placement> placements;
+            fonts.Recognize(stripped.data(), w, h, bg, placements);
+            std::vector<HDFontSet::Placement> kept;
+            u32 got = 0;
+            for (const HDFontSet::Placement& p : placements)
+            {
+                fonts.RingPixels(p, w, h, ring);
+                u32 outlinePixels = 0;
+                for (int o : ring)
+                    if (rest[o] == cand.second) outlinePixels++;
+                // most of the ring (ring pixels between letters are shared, and a
+                // neighbour's ink can touch it)
+                if (!ring.empty() && outlinePixels * 10 >= (u32)ring.size() * 7)
+                {
+                    kept.push_back(p);
+                    got += fonts.InkCount(p);
+                }
+            }
+            // a lone '.' or 'l' shape inside other art isn't text
+            if (kept.size() >= 2 && got > bestInk)
+            {
+                bestInk = got;
+                bestOutline = cand.second;
+                best = std::move(kept);
+            }
+        }
+        if (best.empty())
+            break;
+        for (const HDFontSet::Placement& p : best)
+        {
+            fonts.RingPixels(p, w, h, ring);
+            for (int o : ring)
+                if (rest[o] == bestOutline) rest[o] = HDFontSet::kEmpty;
+            fonts.Erase(p, rest.data(), w, h);
+            group.Outlined.push_back({ p, bestOutline });
+        }
+    }
+}
+
+void HDPack2D::RecognizeBGCanvas(const HDFontSet& fonts, int w, int h, u32 filled, TextGroup& group)
+{
+    std::unordered_map<u16, u32> counts;
+    for (u16 v : TextCanvas)
+        if (v != HDFontSet::kEmpty) counts[v]++;
+    std::vector<std::pair<u32, u16>> byCount;
+    for (const auto& e : counts)
+        if ((u64)e.second * 100 >= (u64)filled * 8)
+            byCount.push_back({ e.second, e.first });
+    std::sort(byCount.begin(), byCount.end(), std::greater<>());
+    if (byCount.size() > 4)
+        byCount.resize(4);
+    // the fills, most common first, then none (ink straight on a transparent layer)
+    std::vector<u16> boxes;
+    for (const auto& e : byCount)
+        boxes.push_back(e.second);
+    boxes.push_back(0);
+
+    std::vector<u16> rest = TextCanvas;
+    std::vector<HDFontSet::Placement> found, all;
+    std::vector<u16> allBg;
+    for (u16 box : boxes)
+    {
+        found.clear();
+        fonts.Recognize(rest.data(), w, h, box, found);
+        for (const HDFontSet::Placement& p : found)
+        {
+            fonts.Erase(p, rest.data(), w, h);
+            all.push_back(p);
+            allBg.push_back(box);
+        }
+    }
+
+    // Art holds the odd glyph-shaped spot ('l', '.', '-' in a pattern); text comes in rows.
+    // A line's glyph cells share their top row, so a glyph is kept only beside another on
+    // its row.
+    std::unordered_map<s32, u32> perRow;
+    for (const HDFontSet::Placement& p : all)
+        perRow[p.Y]++;
+    for (size_t i = 0; i < all.size(); i++)
+    {
+        if (perRow[all[i].Y] < 2)
+            continue;
+        group.Placements.push_back(all[i]);
+        group.PlacementBg.push_back(allBg[i]);
+    }
+}
+
 void HDPack2D::ReplaceText(GPU& gpu, int num, HDTexPack* pack, size_t spriteStart)
 {
     HDFontSet* fonts = pack->Fonts();
@@ -698,87 +836,18 @@ void HDPack2D::ReplaceText(GPU& gpu, int num, HDTexPack* pack, size_t spriteStar
                 }
             }
 
-            // an opaque text box is filled with one index; ink rarely covers much of the area
-            u16 bg = 0;
+            TextGroup group{ x0, y0, 0, {} };
+            RecognizeCanvas(*fonts, w, h, group);
+            // what a new group held, at most once a second (typed dialogue makes a new group
+            // per letter)
+            if (FrameCounter >= NextTextLogFrame)
             {
-                std::unordered_map<u16, u32> counts;
-                for (u16 v : TextCanvas)
-                    if (v != HDFontSet::kEmpty) counts[v]++;
-                for (const auto& entry : counts)
-                    if (entry.second * 5 > (u32)(w * h) * 2) bg = entry.first;
-            }
-            TextGroup group{ x0, y0, bg, {} };
-            fonts->Recognize(TextCanvas.data(), w, h, bg, group.Placements);
-
-            // Outlined text (Lufia's HUD and name plates: white letters, dark outline) is the
-            // glyph drawn over a one-pixel ring of another index; the ring breaks the match. The
-            // same group can hold plain text too (a dialogue line beside its name plate) and
-            // outlined text in more than one colour (the HUD beside a damage number), so it is
-            // looked for in the ink plain matching left, one outline colour per round: each of
-            // the most common indices is taken as the outline (i.e. as background) in turn, and a
-            // glyph found that way only counts if the ring around its ink really is that index.
-            std::vector<u16> rest = TextCanvas;
-            for (const HDFontSet::Placement& p : group.Placements)
-                fonts->Erase(p, rest.data(), w, h);
-            std::vector<u16> stripped;
-            std::vector<int> ring;
-            for (int round = 0; round < 3; round++)
-            {
-                u32 restInk = 0;
-                std::unordered_map<u16, u32> inkCounts;
-                for (u16 v : rest)
-                    if (v != HDFontSet::kEmpty && v != bg) { restInk++; inkCounts[v]++; }
-                if (restInk < 8 || inkCounts.size() < 2)
-                    break;
-                std::vector<std::pair<u32, u16>> byCount;
-                for (const auto& e : inkCounts) byCount.push_back({ e.second, e.first });
-                std::sort(byCount.begin(), byCount.end(), std::greater<>());
-                if (byCount.size() > 3) byCount.resize(3);
-
-                u32 bestInk = 0;
-                u16 bestOutline = 0;
-                std::vector<HDFontSet::Placement> best;
-                for (const auto& cand : byCount)
-                {
-                    stripped = rest;
-                    for (u16& v : stripped)
-                        if (v == cand.second) v = HDFontSet::kEmpty;
-                    std::vector<HDFontSet::Placement> placements;
-                    fonts->Recognize(stripped.data(), w, h, bg, placements);
-                    std::vector<HDFontSet::Placement> kept;
-                    u32 got = 0;
-                    for (const HDFontSet::Placement& p : placements)
-                    {
-                        fonts->RingPixels(p, w, h, ring);
-                        u32 outlinePixels = 0;
-                        for (int o : ring)
-                            if (rest[o] == cand.second) outlinePixels++;
-                        // most of the ring (ring pixels between letters are shared, and a
-                        // neighbour's ink can touch it)
-                        if (!ring.empty() && outlinePixels * 10 >= (u32)ring.size() * 7)
-                        {
-                            kept.push_back(p);
-                            got += fonts->InkCount(p);
-                        }
-                    }
-                    // a lone '.' or 'l' shape inside other art isn't text
-                    if (kept.size() >= 2 && got > bestInk)
-                    {
-                        bestInk = got;
-                        bestOutline = cand.second;
-                        best = std::move(kept);
-                    }
-                }
-                if (best.empty())
-                    break;
-                for (const HDFontSet::Placement& p : best)
-                {
-                    fonts->RingPixels(p, w, h, ring);
-                    for (int o : ring)
-                        if (rest[o] == bestOutline) rest[o] = HDFontSet::kEmpty;
-                    fonts->Erase(p, rest.data(), w, h);
-                    group.Outlined.push_back({ p, bestOutline });
-                }
+                NextTextLogFrame = FrameCounter + 60;
+                Platform::Log(Platform::LogLevel::Warn,
+                              "HDText[OBJ]: engine %c palette %d: %zu sprites, canvas %dx%d at %d,%d, box %u, "
+                              "%zu glyphs, %zu outlined\n",
+                              num ? 'B' : 'A', palOffset, members.size(), w, h, x0, y0, (u32)group.Bg,
+                              group.Placements.size(), group.Outlined.size());
             }
             cached = TextGroups.emplace(groupKey, std::move(group)).first;
         }
@@ -811,10 +880,10 @@ void HDPack2D::ReplaceText(GPU& gpu, int num, HDTexPack* pack, size_t spriteStar
             inst.Y = (s16)(group.Y0 + p.Y + by);
             inst.W = (u16)bw;
             inst.H = (u16)bh;
-            // outlined text: the glyph owns the text sprites it covers, so the renderer's edge
-            // pass redraws the game's blocky outline pixels as the HD outline over what is
-            // behind (plain text keeps drawing over its sprite as before)
-            if (outlined)
+            // the glyph owns the text sprites it covers, so the renderer's edge pass redraws the
+            // game's blocky pixels around the HD glyph (the native glyph's lighter shades, an
+            // outline) with what is behind the text. Unowned, plain text kept a grey staircase
+            // around every HD letter (Spirit Tracks' message boxes looked native).
             {
                 u8 lo = kNoObjRank, hi = 0;
                 for (size_t mi : members)
@@ -940,6 +1009,16 @@ void HDPack2D::WalkBGLayers(GPU& gpu, int num, HDTexPack* pack, bool dump, bool 
             return pal;
         };
 
+        auto tileBlank = [&](u16 curtile) -> bool
+        {
+            const u32 addr = tilesetaddr + ((u32)(curtile & 0x03FF) << (eightbpp ? 6 : 5));
+            const u32 size = eightbpp ? 64 : 32;
+            for (u32 i = 0; i < size; i++)
+                if (bgvram[(addr + i) & bgvrammask])
+                    return false;
+            return true;
+        };
+
         auto tileHashOf = [&](u16 curtile) -> u64
         {
             u32 tilenum = curtile & 0x03FF;
@@ -999,6 +1078,10 @@ void HDPack2D::WalkBGLayers(GPU& gpu, int num, HDTexPack* pack, bool dump, bool 
             const int fineY = yoff & 7;
             const int cols = fineX ? 33 : 32;
             const int rows = fineY ? 25 : 24;
+            // text drawn into the layer only ever lands in tiles the pack can't know
+            const HDFontSet* fonts = pack->Fonts();
+            const bool findText = fonts && !fonts->Empty();
+            MissedTiles.clear();
 
             for (int r = 0; r < rows; r++)
             {
@@ -1017,7 +1100,12 @@ void HDPack2D::WalkBGLayers(GPU& gpu, int num, HDTexPack* pack, bool dump, bool 
 
                     const HDTexPackImage* img = pack->LookupBGTile(tileHash, palHash, true, bpp);
                     if (!img)
+                    {
+                        // a blank tile holds no text, and would chain separate boxes together
+                        if (findText && !tileBlank(curtile) && !NoTextTiles.count(tileHash))
+                            MissedTiles.push_back({ c, r, curtile, tileHash });
                         continue;
+                    }
 
                     HDPack2DInstance inst;
                     inst.Image = img;
@@ -1032,8 +1120,205 @@ void HDPack2D::WalkBGLayers(GPU& gpu, int num, HDTexPack* pack, bool dump, bool 
                     Instances.push_back(inst);
                 }
             }
+
+            if (!MissedTiles.empty())
+            {
+                // an 8bpp layer with extended palettes: the text's palette is the one its
+                // first tile uses (a message box is drawn with one)
+                const u16* extRowPal = (eightbpp && extpal)
+                    ? const_cast<GPU2D::Unit&>(unit).GetBGExtPal(extpalslot, MissedTiles.front().Entry >> 12)
+                    : nullptr;
+                ReplaceBGText(pack, num, layer, MissedTiles, bgvram, bgvrammask, tilesetaddr, eightbpp,
+                              pal, extRowPal, fineX, fineY);
+            }
         }
     }
 }
 
+void HDPack2D::ReplaceBGText(HDTexPack* pack, int num, int layer, const std::vector<MissedTile>& tiles,
+                             const u8* bgvram, u32 bgvrammask, u32 tilesetaddr, bool eightbpp,
+                             const u16* pal, const u16* extPal, int fineX, int fineY)
+{
+    HDFontSet& fonts = *pack->Fonts();
+
+    // Each box of text (a message bubble, a button label) is a cluster of touching missed
+    // tiles with its own fill, so the clusters are read separately: one canvas over the
+    // whole layer would hold several fills, none of them common enough to be the box.
+    // Canvases are in tile space (tile column * 8, unscrolled), so a layer scrolling by a
+    // pixel keeps its readings; the scroll is applied when the glyphs are placed.
+    std::vector<int> cell(33 * 25, -1);
+    for (size_t i = 0; i < tiles.size(); i++)
+        cell[(size_t)tiles[i].Row * 33 + tiles[i].Col] = (int)i;
+    std::vector<int> cluster(tiles.size(), -1);
+    std::vector<size_t> members, stack;
+    u32 clusters = 0, glyphCount = 0, readNow = 0, readGlyphs = 0;
+    int readW = 0, readH = 0;
+    for (size_t seed = 0; seed < tiles.size(); seed++)
+    {
+        if (cluster[seed] >= 0) continue;
+        members.clear();
+        stack.assign(1, seed);
+        cluster[seed] = (int)clusters;
+        while (!stack.empty())
+        {
+            const size_t i = stack.back();
+            stack.pop_back();
+            members.push_back(i);
+            static const int dc[4] = { 1, -1, 0, 0 }, dr[4] = { 0, 0, 1, -1 };
+            for (int d = 0; d < 4; d++)
+            {
+                const int c = tiles[i].Col + dc[d], r = tiles[i].Row + dr[d];
+                if (c < 0 || r < 0 || c >= 33 || r >= 25) continue;
+                const int j = cell[(size_t)r * 33 + c];
+                if (j >= 0 && cluster[j] < 0)
+                {
+                    cluster[j] = (int)clusters;
+                    stack.push_back((size_t)j);
+                }
+            }
+        }
+        clusters++;
+        std::sort(members.begin(), members.end());
+
+        s32 x0 = 33 * 8, y0 = 25 * 8, x1 = 0, y1 = 0;
+        const s32 salt[4] = { 0x42475458, num, layer, eightbpp ? 8 : 4 };
+        u64 key = XXH64(salt, sizeof(salt), extPal ? 1 : 0);
+        for (size_t i : members)
+        {
+            const MissedTile& t = tiles[i];
+            x0 = std::min(x0, t.Col * 8);
+            y0 = std::min(y0, t.Row * 8);
+            x1 = std::max(x1, t.Col * 8 + 8);
+            y1 = std::max(y1, t.Row * 8 + 8);
+            const u64 fields[2] = { ((u64)(u32)t.Col << 32) | ((u64)(u32)t.Row << 16) | t.Entry, t.TileHash };
+            key = XXH64(fields, sizeof(fields), key);
+        }
+
+        auto cached = TextGroups.find(key);
+        if (cached == TextGroups.end())
+        {
+            if (TextGroups.size() >= kMaxTextGroups)
+                TextGroups.clear();
+            readNow++;
+            const int w = x1 - x0, h = y1 - y0;
+            TextCanvas.assign((size_t)w * h, HDFontSet::kEmpty);
+            // 4bpp: palette row and colour (row * 16 + colour, the palette entry); 8bpp:
+            // colour. Colour 0 is transparent, as the renderer draws it.
+            u32 filled = 0;
+            for (size_t i : members)
+            {
+                const MissedTile& t = tiles[i];
+                const u32 base = tilesetaddr + ((u32)(t.Entry & 0x3FF) << (eightbpp ? 6 : 5));
+                const bool hflip = (t.Entry & 0x0400) != 0, vflip = (t.Entry & 0x0800) != 0;
+                const u16 row = (u16)((t.Entry >> 12) << 4);
+                for (int y = 0; y < 8; y++)
+                {
+                    const int ty = vflip ? 7 - y : y;
+                    u16* out = &TextCanvas[(size_t)(t.Row * 8 + y - y0) * w + (t.Col * 8 - x0)];
+                    for (int x = 0; x < 8; x++)
+                    {
+                        const int tx = hflip ? 7 - x : x;
+                        u16 col;
+                        if (eightbpp)
+                            col = bgvram[(base + (u32)(ty * 8 + tx)) & bgvrammask];
+                        else
+                        {
+                            const u8 byte = bgvram[(base + (u32)(ty * 4 + (tx >> 1))) & bgvrammask];
+                            col = (tx & 1) ? (byte >> 4) : (byte & 0xF);
+                        }
+                        if (!col) continue;
+                        out[x] = eightbpp ? col : (u16)(row | col);
+                        filled++;
+                    }
+                }
+            }
+
+            TextGroup group{ x0, y0, 0, {} };
+            if (filled >= 8)
+                RecognizeBGCanvas(fonts, w, h, filled, group);
+            readGlyphs += (u32)group.Placements.size();
+            readW = std::max(readW, w);
+            readH = std::max(readH, h);
+
+            // tiles no glyph touches hold art or box fill: left out from now on
+            for (size_t i : members)
+            {
+                const MissedTile& tile = tiles[i];
+                const int tx0 = tile.Col * 8 - x0, ty0 = tile.Row * 8 - y0;
+                bool touched = false;
+                for (const HDFontSet::Placement& gp : group.Placements)
+                {
+                    int bx, by, bw, bh;
+                    fonts.GlyphBox(gp, bx, by, bw, bh);
+                    if (gp.X + bx < tx0 + 8 && gp.X + bx + bw > tx0 && gp.Y + by < ty0 + 8 && gp.Y + by + bh > ty0)
+                    {
+                        touched = true;
+                        break;
+                    }
+                }
+                if (!touched)
+                {
+                    if (NoTextTiles.size() >= 65536)
+                        NoTextTiles.clear();
+                    NoTextTiles.insert(tile.TileHash);
+                }
+            }
+            cached = TextGroups.emplace(key, std::move(group)).first;
+        }
+
+        const TextGroup& group = cached->second;
+        auto colour = [&](u32 index) -> u32 {
+            const u16 entry = (eightbpp && extPal) ? extPal[index & 0xFF] : pal[index & 0xFF];
+            return Pal555ToRGBA8(entry, true);
+        };
+        auto emitGlyph = [&](const HDFontSet::Placement& p, bool outlined, u16 outlineIndex, u16 box) {
+            if (Instances.size() >= kMaxInstances)
+                return;
+            u32 shades[16] = {};
+            const int maxShade = fonts.MaxShade(p);
+            for (int s = 1; s <= maxShade; s++)
+                shades[s] = colour(p.Base + (u32)s);
+            // a fill in the text's own layer is baked in (the renderer can't see past the
+            // layer's pixels to it); otherwise the renderer blends over the box around the ink
+            const HDTexPackImage* img = fonts.GlyphImage(p, shades, box != 0, colour(box),
+                                                         outlined, colour(outlineIndex));
+            if (!img) return;
+            int bx, by, bw, bh;
+            fonts.GlyphBox(p, bx, by, bw, bh);
+            const s32 sx = group.X0 + p.X + bx - fineX, sy = group.Y0 + p.Y + by - fineY;
+            if (sx + bw <= 0 || sy + bh <= 0 || sx >= 256 || sy >= 192)
+                return;
+            HDPack2DInstance inst;
+            inst.Image = img;
+            inst.Engine = (u8)num;
+            inst.RequireMask = (u8)(1u << layer);
+            inst.RejectMask = 0x90;
+            inst.Flip = 0;
+            inst.X = (s16)sx;
+            inst.Y = (s16)sy;
+            inst.W = (u16)bw;
+            inst.H = (u16)bh;
+            inst.Text = true;
+            Instances.push_back(inst);
+            glyphCount++;
+        };
+        for (size_t i = 0; i < group.Placements.size(); i++)
+            emitGlyph(group.Placements[i], false, 0,
+                      i < group.PlacementBg.size() ? group.PlacementBg[i] : group.Bg);
+        for (const auto& [p, outline] : group.Outlined)
+            emitGlyph(p, true, outline, group.Bg);
+    }
+
+    // what the pass found when it read something new, at most once a second (an animated
+    // layer is read anew every frame)
+    if (readNow > 0 && FrameCounter >= NextTextLogFrame)
+    {
+        NextTextLogFrame = FrameCounter + 60;
+        Platform::Log(Platform::LogLevel::Warn,
+                      "HDText[BG]: engine %c layer %d: %u tiles in %u clusters, %u read anew (largest %dx%d, "
+                      "%u glyphs found), %u glyphs shown, %u text-free tiles known\n",
+                      num ? 'B' : 'A', layer, (u32)tiles.size(), clusters, readNow, readW, readH,
+                      readGlyphs, glyphCount, (u32)NoTextTiles.size());
+    }
+}
 }

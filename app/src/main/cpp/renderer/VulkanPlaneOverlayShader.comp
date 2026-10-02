@@ -25,6 +25,12 @@
 // each native pixel. A sprite's art lands only where that sprite won, never on
 // a sprite above it, even one without replacement art (a name plate's art
 // used to paint over the unreplaced name drawn on it).
+//
+// Text a game draws into a BG layer (flags bit 2) has no art silhouette to go by:
+// every pixel the layer won under a glyph is its ink, and the box around it is
+// another layer or the layer's own fill. Its HD glyph blends over the box colour
+// sampled next to the ink (the Compatibility composite keeps no layer beneath a
+// 2D pixel), and its soft edge may spill onto the box unless a sprite is there.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -34,7 +40,7 @@ struct OverlayInstance
     uvec2 nativeSize;   // native pixel size
     uvec2 atlasPos;     // scaled atlas texel origin
     uint masks;         // bits 0-7 required flag bits, bits 8-15 rejected bits
-    uint flags;         // bit 0 flipH, bit 1 flipV, bits 8-12 blend weight (16 = as-is)
+    uint flags;         // bit 0 flipH, bit 1 flipV, bit 2 BG-layer text, bits 8-12 blend weight (16 = as-is)
     uint rank;          // bits 0-7 sprite rank (0xFF: BG tile or glyph), bits 8-9 ownership slot,
                         // bits 16-23 span: the instance owns ranks rank..rank+span (a glyph
                         // across several text sprites)
@@ -71,6 +77,37 @@ bool ownedBy(uint producer, uint requireMask, uint rejectMask)
 uint producerAt(ivec2 coord)
 {
     return uint(imageLoad(planes, coord).a * 255.0 + 0.5);
+}
+
+// the colour of the box around BG-layer text: the nearest native pixels (ring 1, else
+// ring 2) the text layer didn't win and no sprite or 3D covers, averaged
+vec3 textBoxColour(ivec2 p, uint requireMask, uint rejectMask, vec3 fallback)
+{
+    int step = int(pc.scale);
+    vec3 sum = vec3(0.0);
+    float n = 0.0;
+    for (int r = 1; r <= 2 && n == 0.0; r++)
+    {
+        for (int dy = -r; dy <= r; dy++)
+        {
+            for (int dx = -r; dx <= r; dx++)
+            {
+                if (max(abs(dx), abs(dy)) != r)
+                    continue;
+                ivec2 q = ivec2(p.x + dx * step, p.y + dy * step);
+                if (q.x < 0 || q.y < 0 || q.x >= 256 * step || q.y >= 192 * step)
+                    continue;
+                vec4 c = imageLoad(planes, q);
+                uint producer = uint(c.a * 255.0 + 0.5);
+                if (ownedBy(producer, requireMask, rejectMask) || (producer & 0x90u) != 0u
+                    || (producer & 0xC0u) == 0x40u)
+                    continue;
+                sum += c.rgb;
+                n += 1.0;
+            }
+        }
+    }
+    return n > 0.0 ? sum / n : fallback;
 }
 
 uint rankAt(uint engine, ivec2 scaledCoord)
@@ -114,7 +151,11 @@ void main()
     }
     vec4 hd = imageLoad(hdAtlas, ivec2(inst.atlasPos + srcTexel));
     // whether the art's own native pixel here was opaque
-    bool nativeInk = imageLoad(hdAtlas, ivec2(inst.atlasPos + centreTexel)).a >= 0.5;
+    float centreAlpha = imageLoad(hdAtlas, ivec2(inst.atlasPos + centreTexel)).a;
+    bool nativeInk = centreAlpha >= 0.5;
+    // text: this glyph's ink, not a touching neighbour's (thin HD strokes cover little of
+    // a native pixel's centre, a neighbour's ink none)
+    bool textInk = centreAlpha > 0.15;
 
     uint requireMask = inst.masks & 0xFFu;
     uint rejectMask = (inst.masks >> 8u) & 0xFFu;
@@ -122,6 +163,7 @@ void main()
     uint engine = (inst.rank >> 8u) & 3u;
     uint lastRank = myRank + ((inst.rank >> 16u) & 0xFFu);
     bool ranked = myRank != 0xFFu;
+    bool text = (inst.flags & 4u) != 0u;
     uint winner = ranked ? rankAt(engine, ivec2(px, py)) : 0xFFu;
     if (ranked)
         nativeInk = winner >= myRank && winner <= lastRank;
@@ -134,9 +176,28 @@ void main()
             continue;
 
         vec3 base = existing.rgb;
+        if (text && plane != 0)
+            continue;
         if (ownedBy(producer, requireMask, rejectMask) && (!ranked || (winner >= myRank && winner <= lastRank)))
         {
-            if (nativeInk && plane == 0)
+            if (text)
+            {
+                // the text layer won here: this glyph's ink (blocky native ink the HD glyph
+                // doesn't cover becomes the box), or the layer's own box fill (then the glyph
+                // image is opaque and carries the fill colour)
+                if (textInk)
+                {
+                    vec4 below = imageLoad(planes, ivec2(px, py + planeHeight));
+                    uint belowProducer = uint(below.a * 255.0 + 0.5);
+                    vec3 fallback = (belowProducer != 0u && (belowProducer & 0xC0u) != 0x40u) ? below.rgb : existing.rgb;
+                    base = textBoxColour(ivec2(px, py), requireMask, rejectMask, fallback);
+                }
+                else if (hd.a <= 0.0)
+                {
+                    continue;
+                }
+            }
+            else if (nativeInk && plane == 0)
             {
                 // blend over the layer beneath; a 3D pixel there isn't in the planes yet
                 vec4 below = imageLoad(planes, ivec2(px, py + planeHeight));
@@ -153,7 +214,10 @@ void main()
         {
             // occluded: the sprite's own pixel is under something else, or (ranked) a
             // sprite above it won here
-            if (plane != 0 || nativeInk || hd.a <= 0.0 || (ranked && winner < myRank))
+            if (plane != 0 || (nativeInk && !text) || hd.a <= 0.0 || (ranked && winner < myRank))
+                continue;
+            // text spills onto its box, never onto a sprite or 3D in front of it
+            if (text && ((producer & 0x90u) != 0u || (producer & 0xC0u) == 0x40u))
                 continue;
             bool besideOwn = false;
             int step = int(pc.scale);
