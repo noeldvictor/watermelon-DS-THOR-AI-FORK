@@ -347,6 +347,44 @@ internal class ReTools(private val context: Context) {
             .put("note", "counts reset on every read; bit 0 of a target = Thumb")
     }
 
+    fun dlTrace(args: JSONObject): JSONObject {
+        requireGame()?.let { return it }
+        return when (val action = args.optString("action", "read").lowercase(Locale.US)) {
+            "start" -> {
+                MelonEmulator.debugDisplayListTraceStart()
+                JSONObject().put("tracing", "display lists DMA'd into the geometry FIFO")
+                    .put("next", "play or step frames, then dl_trace action=read")
+            }
+            "read" -> displayLists(args)
+            "stop" -> {
+                MelonEmulator.debugDisplayListTraceStop()
+                displayLists(args).put("stopped", true)
+            }
+            else -> error("action: start, read or stop (got $action)")
+        }
+    }
+
+    private fun displayLists(args: JSONObject): JSONObject {
+        val raw = MelonEmulator.debugDisplayListTraceTake()
+        val top = args.optInt("top", 100).coerceIn(0, 20000)
+        val lists = JSONArray()
+        var transfers = 0L
+        var i = 0
+        while (i + 6 < raw.size) {
+            transfers += raw[i + 3]
+            if (lists.length() < top) {
+                val hash = (u32(raw[i + 1]) shl 32) or u32(raw[i])
+                lists.put(JSONObject()
+                    .put("key", "mdl1_${raw[i + 2]}_${"%016x".format(hash)}")
+                    .put("count", raw[i + 3]).put("src", hex(u32(raw[i + 4])))
+                    .put("frames", "${raw[i + 5]}-${raw[i + 6]}"))
+            }
+            i += 7
+        }
+        return JSONObject().put("distinct", raw.size / 7).put("transfers", transfers).put("lists", lists)
+            .put("note", "counts reset on every read; keys match tools/hd_remaster/models3d.py shape keys")
+    }
+
     fun gdb(args: JSONObject): JSONObject {
         requireGame()?.let { return it }
         val port9 = args.optInt("port_arm9", 3333)

@@ -182,6 +182,13 @@ internal class DevTools(private val context: Context) {
                 "top" to prop("integer", "entries per list (default 50)"),
                 "recent" to prop("integer", "recent calls to list (default 20)"),
             )) { re.trace(it) },
+        Tool("dl_trace", "Display-list trace: which display lists the game DMAs into the geometry FIFO (model " +
+            "shapes, by content key `mdl1_<size>_<xxh64>`, as tools/hd_remaster/models3d.py computes from the ROM). " +
+            "`action` start, read (counts since the last read, most frequent first) or stop. Works with the JIT on.",
+            schema(
+                "action" to prop("string", "start|read|stop"),
+                "top" to prop("integer", "display lists to list (default 100)"),
+            )) { re.dlTrace(it) },
         Tool("gdb", "GDB remote stub on the device's 127.0.0.1 (ARM9 `port_arm9` 3333, ARM7 `port_arm7` 3334): " +
             "`action` start or stop. Then adb forward and gdb-multiarch or Ghidra's debugger. Breakpoints, " +
             "stepping, memory; runs on the interpreter.",

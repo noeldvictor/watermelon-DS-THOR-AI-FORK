@@ -19,7 +19,7 @@ HLE patches. The skill `.claude/skills/ghidra/SKILL.md` is the short how-to; thi
 ## Device tools (dev server, debug builds)
 
 `mem_read`, `mem_write`, `mem_dump`, `mem_search`, `mem_refine`, `regs`, `debug_mode`, `watch`, `trace`,
-`gdb`, `rom_info`, `rom_dump`, `cheat_test`. Through MCP (`watermelon-thor`), curl (`POST /tool/<name>`) or
+`gdb`, `rom_info`, `rom_dump`, `cheat_test`, `dl_trace`. Through MCP (`watermelon-thor`), curl (`POST /tool/<name>`) or
 `python re.py dev <tool> '<json>'`.
 
 - **Memory** reads skip I/O registers (reads there have side effects); writes go through the bus, so a
@@ -36,6 +36,9 @@ HLE patches. The skill `.claude/skills/ghidra/SKILL.md` is the short how-to; thi
 - **cheat_test** runs an Action Replay code through the core's cheat engine in place of the session's
   cheats (an empty code runs none), so a ported code is checked the way players will run it - guards,
   D2 blocks and all - before it goes into `code_fixes.txt`. The list is swapped in between frames.
+- **dl_trace** lists the display lists the game DMAs into the geometry FIFO (hooked where an ARM9
+  DMA from main RAM to 0x04000400 starts, so it works with the JIT), keyed `mdl1_<size>_<xxh64>`
+  like the model shapes `tools/hd_remaster/models3d.py` extracts. Lists the CPU writes are not seen.
 - **GDB stub**: melonDS's own (`src/debug/Gdb*`), compiled into debug builds only (`ENABLE_GDBSTUB`
   follows `MELONDS_ANDROID_DEBUG_BUILD`; the core exports `GDBSTUB_ENABLED` because it changes the ARM
   class layout). It listens on 127.0.0.1 only (patched from INADDR_ANY: it can read and write all

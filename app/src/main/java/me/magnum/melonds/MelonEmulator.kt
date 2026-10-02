@@ -177,6 +177,10 @@ object MelonEmulator {
     external fun debugTraceTakeEvents(): IntArray
     /** per (call site, target): from, to, count; most frequent first */
     external fun debugTraceTakeCounts(): IntArray
+    external fun debugDisplayListTraceStart(): Boolean
+    external fun debugDisplayListTraceStop()
+    /** Per display list: hash low, hash high, size, count, last source, first frame, last frame. */
+    external fun debugDisplayListTraceTake(): IntArray
 
     external fun resetEmulation()
 

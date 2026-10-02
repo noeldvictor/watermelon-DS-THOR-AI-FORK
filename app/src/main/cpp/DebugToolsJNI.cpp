@@ -286,4 +286,38 @@ Java_me_magnum_melonds_MelonEmulator_debugTraceTakeCounts(JNIEnv* env, jobject)
     return ToIntArray(env, values);
 }
 
+JNIEXPORT jboolean JNICALL
+Java_me_magnum_melonds_MelonEmulator_debugDisplayListTraceStart(JNIEnv*, jobject)
+{
+    if (!DebugInstance())
+        return JNI_FALSE;
+    melonDS::DebugHooks::StartDisplayListTrace();
+    return JNI_TRUE;
+}
+
+JNIEXPORT void JNICALL
+Java_me_magnum_melonds_MelonEmulator_debugDisplayListTraceStop(JNIEnv*, jobject)
+{
+    melonDS::DebugHooks::StopDisplayListTrace();
+}
+
+/** per display list: hash low, hash high, size, count, last source, first frame, last frame; most frequent first */
+JNIEXPORT jintArray JNICALL
+Java_me_magnum_melonds_MelonEmulator_debugDisplayListTraceTake(JNIEnv* env, jobject)
+{
+    const auto stats = melonDS::DebugHooks::TakeDisplayListStats();
+    std::vector<jint> values;
+    values.reserve(stats.size() * 7);
+    for (const auto& s : stats)
+    {
+        values.insert(values.end(), {
+            static_cast<jint>(static_cast<u32>(s.hash)), static_cast<jint>(static_cast<u32>(s.hash >> 32)),
+            static_cast<jint>(s.size), static_cast<jint>(s.count), static_cast<jint>(s.lastSrc),
+            static_cast<jint>(s.firstFrame), static_cast<jint>(s.lastFrame),
+        });
+    }
+    return ToIntArray(env, values);
+}
+
+
 }

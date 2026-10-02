@@ -24,6 +24,7 @@
 #include "GPU3D.h"
 #include "DMA_Timings.h"
 #include "Platform.h"
+#include "DebugHooks.h"
 
 namespace melonDS
 {
@@ -157,6 +158,7 @@ void DMA::Start()
 {
     if (Running) return;
 
+    const bool fresh = !InProgress;
     if (!InProgress)
     {
         u32 countmask;
@@ -184,6 +186,10 @@ void DMA::Start()
     //printf("ARM%d DMA%d %08X %02X %08X->%08X %d bytes %dbit\n", CPU?7:9, Num, Cnt, StartMode, CurSrcAddr, CurDstAddr, RemCount*((Cnt&0x04000000)?4:2), (Cnt&0x04000000)?32:16);
 
     IsGXFIFODMA = (CPU == 0 && (CurSrcAddr>>24) == 0x02 && CurDstAddr == 0x04000400 && DstAddrInc == 0);
+    // a display list on its way to the geometry engine (debug tools; later chunks of a
+    // GX FIFO-paced transfer belong to the same list)
+    if (fresh && IsGXFIFODMA)
+        DebugHooks::OnDisplayList(NDS.MainRAM, NDS.MainRAMMask, CurSrcAddr, RemCount * ((Cnt & 0x04000000) ? 4 : 2));
 
     // TODO eventually: not stop if we're running code in ITCM
 

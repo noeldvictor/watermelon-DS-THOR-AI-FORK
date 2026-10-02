@@ -6,11 +6,13 @@
 #include <unordered_map>
 
 #include "ARM.h"
+#include "xxhash/xxhash.h"
 
 namespace melonDS::DebugHooks
 {
 std::atomic<bool> WatchActive = false;
 std::atomic<bool> CallTraceActive = false;
+std::atomic<bool> DisplayListTraceActive = false;
 
 namespace
 {
@@ -41,6 +43,11 @@ struct CallConfig
 std::deque<CallEvent> CallEvents;
 std::unordered_map<u64, u32> CallCounts;
 u32 CallDropped = 0;
+
+// keyed by hash; a different size with the same hash is not worth telling apart
+std::unordered_map<u64, DisplayListStat> DisplayLists;
+constexpr size_t MaxDisplayLists = 20000;
+std::vector<u8> DisplayListCopy;
 
 u32 InstructionAddress(const ARM& cpu)
 {
@@ -114,6 +121,65 @@ std::vector<CallCount> TakeCallCounts()
     CallCounts.clear();
     std::sort(counts.begin(), counts.end(), [](const CallCount& a, const CallCount& b) { return a.count > b.count; });
     return counts;
+}
+
+void StartDisplayListTrace()
+{
+    std::lock_guard guard(Lock);
+    DisplayLists.clear();
+    DisplayListTraceActive.store(true, std::memory_order_relaxed);
+}
+
+void StopDisplayListTrace()
+{
+    DisplayListTraceActive.store(false, std::memory_order_relaxed);
+}
+
+std::vector<DisplayListStat> TakeDisplayListStats()
+{
+    std::lock_guard guard(Lock);
+    std::vector<DisplayListStat> stats;
+    stats.reserve(DisplayLists.size());
+    for (const auto& [hash, stat] : DisplayLists)
+        stats.push_back(stat);
+    DisplayLists.clear();
+    std::sort(stats.begin(), stats.end(), [](const DisplayListStat& a, const DisplayListStat& b) { return a.count > b.count; });
+    return stats;
+}
+
+void RecordDisplayList(const u8* ram, u32 ramMask, u32 src, u32 size)
+{
+    if (size == 0 || size > 0x100000)
+        return;
+    std::lock_guard guard(Lock);
+    if (!DisplayListTraceActive.load(std::memory_order_relaxed))
+        return;
+    // main RAM mirrors: the transfer may run past the end of the mask and wrap
+    const u32 start = src & ramMask;
+    u64 hash;
+    if (start + size <= ramMask + 1)
+    {
+        hash = XXH64(&ram[start], size, 0);
+    }
+    else
+    {
+        DisplayListCopy.resize(size);
+        for (u32 i = 0; i < size; i++)
+            DisplayListCopy[i] = ram[(start + i) & ramMask];
+        hash = XXH64(DisplayListCopy.data(), size, 0);
+    }
+    const u32 frame = Frame.load(std::memory_order_relaxed);
+    auto it = DisplayLists.find(hash);
+    if (it == DisplayLists.end())
+    {
+        if (DisplayLists.size() >= MaxDisplayLists)
+            return;
+        DisplayLists.emplace(hash, DisplayListStat{hash, size, 1, src, frame, frame});
+        return;
+    }
+    it->second.count++;
+    it->second.lastSrc = src;
+    it->second.lastFrame = frame;
 }
 
 void RecordAccess(const ARM& cpu, u32 addr, u32 value, u8 size, bool write)

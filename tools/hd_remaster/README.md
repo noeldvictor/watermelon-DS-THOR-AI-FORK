@@ -146,6 +146,24 @@ The rest are built by the game at runtime: character parts assembled into one te
 render buffers, dialogue text drawn into sprite memory, and captures of the 3D scene shown as
 sprites. The per-layer filters still apply to those.
 
+## 3D models (first step: extraction and keys)
+
+Models are NSBMD files (MDL0 blocks). `models3d.py` reads them the way the SDK draws them: the
+node tree, the render commands (SBC: node matrices into matrix-stack slots, skinning blends,
+materials, shapes) and each shape's display list, decoded like the geometry engine does, into
+bind-pose triangles with texture coordinates, normals, colours and the stack slot every vertex
+used. `render3d.py` draws them (numpy only) with the model's own textures, which is how bind
+poses are checked and how reference pictures for an AI model generator are made.
+
+A shape's display list reaches the geometry FIFO byte for byte (the SDK DMAs it from the model
+file), so it is keyed like the textures, by content: `mdl1_<size>_<xxh64>`. The debug build's
+`dl_trace` tool (tools/re) lists the keys a scene sends. Phantom Hourglass, Mercay beach: all 33
+display lists sent in 6 seconds (7351 transfers: Link, the island, palm trees, bridge, beach,
+sea) are shapes extracted from the ROM; 1285 models, 4844 distinct shapes in the ROM. Very small
+shapes (Link's eyes) don't show up there; the SDK seems to send short lists with the CPU.
+
+Replacing models at runtime is the next step (not in the emulator yet).
+
 ## Limits
 
 - Anything a game builds at runtime can't be found in the ROM (see above), except text drawn
