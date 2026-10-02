@@ -193,12 +193,24 @@ eyebrows scaled 1.8 are replaced on every frame (4 a frame, no false matches amo
 starts a frame), and identity copies of all 50 shapes on that beach (33 DMA'd, 17 CPU-sent) are
 bit-identical to no replacement over 60 frames.
 
+Other games: Spirit Tracks' title (29 DMA'd lists, all ROM shapes, plus 7 CPU-sent) and Lufia's
+boss fight (another developer and engine, models in its custom archive: 20 DMA'd lists, 5601 of
+5601 transfers, plus 2 CPU-sent). Lufia identity copies of those 20 shapes, the boss's single
+20 KB list included, are bit-identical over 60 frames; PN-smoothed Maxim and boss (up to 5490
+triangles for the boss body, ~1800 replacement polygons a frame) run at 60 fps and stay
+consistent with the originals over 400 frame-exact frames, the boss's attack included.
+
 Commands (`modelpack.py`):
 
 ```
 .venv\Scripts\python hd_remaster.py models extract ROM.nds [--trace dl.json] [--previews]
 .venv\Scripts\python hd_remaster.py models build work\<CODE> [--smooth 0.6 --only TEXT | --seen]
+.venv\Scripts\python hd_remaster.py push packs\<CODE> --models-only
 ```
+
+`push --models-only` replaces only `files/texturepacks/<CODE>/models` on the device with
+`packs\<CODE>\models` (no backup, the textures stay); the models load the next time the game
+starts.
 
 `extract` writes `work\<CODE>\models\<model>\`: `model.obj`/`.mtl` (bind pose, one group per
 shape), the decoded textures, `model.json` (shape keys, materials, texture sizes, lighting) and
