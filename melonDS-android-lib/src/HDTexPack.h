@@ -22,6 +22,7 @@
 
 #include "types.h"
 #include "HDFont.h"
+#include "HDModelSource.h"
 
 #include <atomic>
 #include <mutex>
@@ -48,7 +49,7 @@ struct HDTexPackImage
     std::vector<u32> RGBA;       // packed r | g<<8 | b<<16 | a<<24, 8-bit channels
 };
 
-class HDTexPack
+class HDTexPack : public HDModelSource
 {
 public:
     // packDir: TexturePacks/<GAMECODE> root holding textures/ and sprites/.
@@ -56,7 +57,7 @@ public:
     HDTexPack(const std::string& packDir, const std::string& dumpDir,
               bool loadEnabled, bool dumpEnabled);
 
-    bool LoadActive() const { return LoadEnabled && (EntryCount > 0 || !FontSet.Empty()); }
+    bool LoadActive() const { return LoadEnabled && (EntryCount > 0 || !FontSet.Empty() || !Models.empty()); }
     // unique per pack object, for callers that cache image pointers across frames (a new pack
     // can be allocated at the old one's address)
     u64 Id() const { return InstanceId; }
@@ -69,6 +70,11 @@ public:
     }
     // the pack's fonts/ folder: HD glyphs for text the game draws at runtime (see HDFont.h)
     HDFontSet* Fonts() { return FontSet.Empty() ? nullptr : &FontSet; }
+    // HD models: models/mdl1_<size>_<hash16>.dl, display lists that replace a model shape's
+    // (see GPU3D::SetModelSource)
+    bool HasModels() const { return !Models.empty(); }
+    const std::vector<u32>* LookupModel(u64 hash, u32 size) const override;
+
     bool Has3DEntries() const
     {
         return !TexIndex.empty() || !TexWildIndex.empty();
@@ -150,6 +156,14 @@ private:
     bool LoadEnabled = false, DumpEnabled = false;
     u32 PackScale = 1;
     u32 EntryCount = 0;
+
+    struct ModelEntry
+    {
+        u32 Size = 0;              // bytes of the display list it replaces
+        std::vector<u32> Words;    // the replacement display list
+    };
+    std::unordered_map<u64, ModelEntry> Models;
+    void LoadModels(const std::string& dir);
 
     // Keyed by XXH64 over the canonical key fields; wildcard maps ignore the palette hash.
     // The index (key -> PNG path) is built at startup from file names and headers only. An

@@ -81,6 +81,10 @@ public:
         return Entries[ReadPos];
     }
 
+    // every slot, used or not: lets an owner fix entries up after a savestate load
+    T* RawEntries() { return Entries; }
+    static constexpr u32 Capacity = NumEntries;
+
     T Peek(u32 offset) const
     {
         u32 pos = ReadPos + offset;

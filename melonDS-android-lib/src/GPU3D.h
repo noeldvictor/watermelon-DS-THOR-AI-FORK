@@ -20,10 +20,12 @@
 #define GPU3D_H
 
 #include <array>
+#include <vector>
 #include <memory>
 
 #include "Savestate.h"
 #include "FIFO.h"
+#include "HDModelSource.h"
 #include "VulkanPipelineProfile.h"
 
 namespace melonDS
@@ -80,6 +82,10 @@ struct Polygon
 
     u32 SortKey;
 
+    // HD model replacement: the replaced display list that made this polygon (1-based draw tag),
+    // 0 for none. Not hardware state, not saved.
+    u16 HDTag;
+
     void DoSavestate(Savestate* file) noexcept;
 };
 
@@ -128,6 +134,17 @@ public:
 
     void WriteToGXFIFO(u32 val) noexcept;
 
+    /**
+     * HD model replacement (GPU3D_HDModels.cpp). A display list the source replaces is recognised
+     * when its DMA into the GX FIFO starts; its commands are tagged on their way through the FIFO,
+     * the polygons they make are left out of the render list, and the replacement display list
+     * runs instead, from the state the original started with, into separate buffers that count
+     * neither against the hardware's polygon/vertex limits nor as emulated time. Only for
+     * renderers that take more than 2048 polygons (Vulkan); nullptr turns it off.
+     */
+    void SetModelSource(const HDModelSource* source) noexcept;
+    void OnDisplayListDMA(u32 src, u32 bytes) noexcept;
+
     [[nodiscard]] bool IsRendererAccelerated() const noexcept;
     [[nodiscard]] Renderer3D& GetCurrentRenderer() noexcept { return *CurrentRenderer; }
     [[nodiscard]] const Renderer3D& GetCurrentRenderer() const noexcept { return *CurrentRenderer; }
@@ -149,9 +166,54 @@ private:
         {
             u32 Param;
             u8 Command;
+            u8 Unused;
+            u16 Tag;    // HD model replacement: draw tag of the display list it came from, 0 = none
         };
 
     } CmdFIFOEntry;
+
+    // what running a display list can change, saved and put back around a replacement's replay
+    struct GeometrySnapshot
+    {
+        u32 ExecParams[32];
+        u32 ExecParamCount;
+        s32 CycleCount, VertexPipeline, NormalPipeline, PolygonPipeline, VertexSlotCounter;
+        u32 VertexSlotsFree;
+        u32 MatrixMode;
+        s32 PosMatrix[16], VecMatrix[16], ClipMatrix[16];
+        bool ClipMatrixDirty;
+        u32 PolygonMode;
+        s16 CurVertex[3];
+        u8 VertexColor[3];
+        s16 TexCoords[2], RawTexCoords[2], Normal[3];
+        u32 PolygonAttr, CurPolygonAttr, TexParam, TexPalette;
+        u8 MatDiffuse[3], MatAmbient[3], MatSpecular[3], MatEmission[3];
+        Vertex TempVertexBuffer[4];
+        u32 VertexNum, VertexNumInPoly, NumConsecutivePolygons, NumOpaquePolygons;
+        Polygon* LastStripPolygon;
+        Vertex* CurVertexRAM;
+        Polygon* CurPolygonRAM;
+        u32 NumVertices, NumPolygons, VertexLimit, PolygonLimit;
+        u32 GXStat, DispCnt;
+    };
+
+    struct HDModelDraw
+    {
+        const std::vector<u32>* Replacement = nullptr;
+        bool Started = false;
+        bool Replayed = false;
+        u32 FirstHDPolygon = 0;     // its polygons in this frame's replacement buffer
+        u32 NumHDPolygons = 0;
+        GeometrySnapshot Start {};
+    };
+
+    void ExecuteEntry(CmdFIFOEntry entry) noexcept;
+    void SaveGeometry(GeometrySnapshot& s) const noexcept;
+    void LoadGeometry(const GeometrySnapshot& s) noexcept;
+    void HDModelTagChange(u16 next) noexcept;
+    void ReplayHDModel(HDModelDraw& draw) noexcept;
+    void BuildRenderListWithHDModels() noexcept;
+    void ClearHDModelState() noexcept;
 
     void UpdateClipMatrix() noexcept;
     void ResetRenderingState() noexcept;
@@ -328,6 +390,9 @@ public:
 
     Vertex VertexRAM[6144 * 2] {};
     Polygon PolygonRAM[2048 * 2] {};
+    // the hardware's limits; raised while a replacement replays into its own buffers
+    u32 VertexLimit = 6144;
+    u32 PolygonLimit = 2048;
 
     Vertex* CurVertexRAM = nullptr;
     Polygon* CurPolygonRAM = nullptr;
@@ -335,8 +400,30 @@ public:
     u32 NumPolygons = 0;
     u32 CurRAMBank = 0;
 
-    std::array<Polygon*,2048> RenderPolygonRAM {};
+    // the first 2048 entries are the hardware's (and all a savestate keeps); replacement
+    // geometry from HD models follows when that is on
+    std::vector<Polygon*> RenderPolygonRAM = std::vector<Polygon*>(2048, nullptr);
     u32 RenderNumPolygons = 0;
+
+    // HD model replacement (GPU3D_HDModels.cpp)
+    static constexpr u32 HDDrawSlots = 4096;            // tags cycle through these
+    static constexpr u32 HDVertexCapacity = 6144 * 16;
+    static constexpr u32 HDPolygonCapacity = 2048 * 16;
+    const HDModelSource* ModelSource = nullptr;
+    std::vector<HDModelDraw> HDDraws;
+    u32 HDNextTag = 0;
+    u32 HDTaggedWordsLeft = 0;
+    u16 HDTaggedWriteTag = 0;
+    u16 HDExecTag = 0;
+    std::vector<Vertex> HDVertexRAM[2];
+    std::vector<Polygon> HDPolygonRAM[2];
+    u32 HDBank = 0;
+    u32 HDNumVertices = 0;
+    u32 HDNumPolygons = 0;
+    std::vector<u8> HDPlaced;                           // by tag, while building the render list
+    u32 HDStatDraws = 0;
+    u32 HDStatPolygons = 0;
+    u32 HDStatFrames = 0;
 
     u32 FlushRequest = 0;
     u32 FlushAttributes = 0;

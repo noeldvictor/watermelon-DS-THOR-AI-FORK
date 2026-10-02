@@ -162,7 +162,22 @@ display lists sent in 6 seconds (7351 transfers: Link, the island, palm trees, b
 sea) are shapes extracted from the ROM; 1285 models, 4844 distinct shapes in the ROM. Very small
 shapes (Link's eyes) don't show up there; the SDK seems to send short lists with the CPU.
 
-Replacing models at runtime is the next step (not in the emulator yet).
+**Runtime replacement** (Vulkan renderer): a pack's `models/mdl1_<size>_<hash>.dl` is a display
+list that replaces the shape with that key. When the shape's DMA into the GX FIFO starts, its
+commands are tagged on their way through the FIFO; the original still runs (its timing and its
+polygons' count against the DS limits stay, so the game sees no difference), its polygons are
+left out of the render list, and the replacement runs through the geometry engine's own
+transform, lighting, clipping and viewport code from the state the original started with,
+into separate buffers without the hardware limits. A replacement is the same kind of command
+list as the original (matrix-stack restores, normals or colours, texture coordinates, vertices),
+so skinned and animated models follow their bones. `models3d.parse_display_list`,
+`encode_display_list` and `absolute_vertices` read, write and reshape them.
+
+Checked on Phantom Hourglass (Mercay beach, `HDModels[Stats]` ~2500 replaced display lists and
+~15700 polygons per 60 frames, 60 fps): re-encoded copies of all 33 shapes give frames
+bit-identical to no replacement (frame_compare, 60 frames, both screens); Link's shapes with
+every vertex scaled 1.25 draw a puffier Link that still animates; save states made and loaded
+with models on work (a state keeps only the hardware's polygons).
 
 ## Limits
 

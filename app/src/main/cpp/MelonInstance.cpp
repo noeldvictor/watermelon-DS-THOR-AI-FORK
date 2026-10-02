@@ -5515,6 +5515,9 @@ void MelonInstance::applyTexturePack(const EmulatorConfiguration& config)
     // Content-hash naming matches the desktop melonDS HD pack format. The
     // settings toggles enable loading and dumping.
     melonDS::HDTexPack* pack = nullptr;
+    // the geometry engine holds the pack's HD models: let go before the pack may be replaced (a
+    // new pack can land at the old one's address)
+    nds->GPU.GPU3D.SetModelSource(nullptr);
 
     // only the Vulkan and compute renderers consume the pack; keeping it
     // alive under Software/OpenGL would leave the 2D walker scanning and
@@ -5567,7 +5570,12 @@ void MelonInstance::applyTexturePack(const EmulatorConfiguration& config)
 
     auto& renderer3d = nds->GPU.GetRenderer3D();
     if (auto* vulkan = dynamic_cast<VulkanRenderer3D*>(&renderer3d))
+    {
         vulkan->SetTexPack(pack);
+        // HD models add polygons beyond the hardware's 2048; only the Vulkan renderer takes them
+        if (pack && pack->LoadActive() && pack->HasModels())
+            nds->GPU.GPU3D.SetModelSource(pack);
+    }
     else if (auto* compute = dynamic_cast<ComputeRenderer*>(&renderer3d))
         compute->SetTexPack(pack);
 

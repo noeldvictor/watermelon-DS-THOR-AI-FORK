@@ -413,3 +413,76 @@ def model_meshes(model: Model) -> list[tuple[Draw, Mesh]]:
         if d.shape < len(model.shapes):
             out.append((d, decode_display_list(model.shapes[d.shape].dl, d.current, d.stack)))
     return out
+
+
+# ---------------------------------------------------------------------------- replacement display lists
+
+def parse_display_list(dl: bytes) -> list[tuple[int, list[int]]]:
+    """A display list as (command, parameters) pairs, unpacked as the GX FIFO does: each packed
+    word holds up to four command bytes, zero bytes are NOPs, parameters follow in order."""
+    words = struct.unpack_from(f"<{len(dl) // 4}I", dl)
+    out: list[tuple[int, list[int]]] = []
+    i = 0
+    while i < len(words):
+        packed = words[i]
+        i += 1
+        for k in range(4):
+            cmd = (packed >> (8 * k)) & 0xFF
+            if cmd == 0:
+                continue
+            n = GX_PARAMS.get(cmd)
+            if n is None:
+                return out
+            out.append((cmd, list(words[i:i + n])))
+            i += n
+    return out
+
+
+def encode_display_list(commands: list[tuple[int, list[int]]]) -> bytes:
+    """Commands back into a display list, one command per packed word (the rest NOPs)."""
+    words: list[int] = []
+    for cmd, params in commands:
+        words.append(cmd)
+        words.extend(p & 0xFFFFFFFF for p in params)
+    return struct.pack(f"<{len(words)}I", *words)
+
+
+def vtx16(x: int, y: int, z: int) -> tuple[int, list[int]]:
+    """VTX_16 for s3.12 coordinates (clamped to the 16-bit range)."""
+    c = [max(-0x8000, min(0x7FFF, int(round(v)))) & 0xFFFF for v in (x, y, z)]
+    return 0x23, [c[0] | (c[1] << 16), c[2]]
+
+
+def absolute_vertices(commands: list[tuple[int, list[int]]], transform) -> list[tuple[int, list[int]]]:
+    """Every vertex command as an absolute VTX_16 of transform(x, y, z) (s3.12 units), so a
+    display list's geometry can be changed while everything else (matrix restores, normals,
+    texture coordinates, colours, primitive types) stays as it was."""
+    out = []
+    v = [0, 0, 0]
+    for cmd, par in commands:
+        if cmd == 0x23:
+            v = [sext(par[0] & 0xFFFF, 16), sext(par[0] >> 16, 16), sext(par[1] & 0xFFFF, 16)]
+        elif cmd == 0x24:
+            c = par[0]
+            v = [sext(c & 0x3FF, 10) << 6, sext((c >> 10) & 0x3FF, 10) << 6, sext((c >> 20) & 0x3FF, 10) << 6]
+        elif cmd in (0x25, 0x26, 0x27):
+            a, b_ = sext(par[0] & 0xFFFF, 16), sext(par[0] >> 16, 16)
+            v = [a, b_, v[2]] if cmd == 0x25 else ([a, v[1], b_] if cmd == 0x26 else [v[0], a, b_])
+        elif cmd == 0x28:
+            c = par[0]
+            v = [v[0] + sext(c & 0x3FF, 10), v[1] + sext((c >> 10) & 0x3FF, 10), v[2] + sext((c >> 20) & 0x3FF, 10)]
+        else:
+            out.append((cmd, par))
+            continue
+        out.append(vtx16(*transform(*v)))
+    return out
+
+
+def write_replacement(folder, key: str, dl: bytes) -> str:
+    """models/<key>.dl in a pack folder; key is the replaced shape's mdl1_<size>_<hash>."""
+    import os
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, key + ".dl")
+    with open(path, "wb") as f:
+        f.write(dl)
+    return path

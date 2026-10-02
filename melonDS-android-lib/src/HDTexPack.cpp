@@ -144,6 +144,7 @@ HDTexPack::HDTexPack(const std::string& packDir, const std::string& dumpDir,
         LoadDir(PackDir + "/sprites", "obj1");
         LoadDir(PackDir + "/bgtiles", "bg1");
         FontSet.Load(PackDir + "/fonts", PackScale);
+        LoadModels(PackDir + "/models");
         // Warn so it shows in release builds: once per game start, and the only way to tell
         // from a log whether a pack was found at all
         if (EntryCount > 0)
@@ -163,6 +164,58 @@ HDTexPack::HDTexPack(const std::string& packDir, const std::string& dumpDir,
         Platform::Log(Platform::LogLevel::Info,
                       "HDTexPack: dumping to %s\n", DumpDir.c_str());
     }
+}
+
+void HDTexPack::LoadModels(const std::string& dir)
+{
+    std::error_code ec;
+    if (!fs::is_directory(fs::u8path(dir), ec))
+        return;
+
+    for (auto it = fs::recursive_directory_iterator(fs::u8path(dir), ec);
+         it != fs::recursive_directory_iterator(); it.increment(ec))
+    {
+        if (ec) break;
+        if (!it->is_regular_file(ec)) continue;
+        const fs::path& p = it->path();
+        if (p.extension() != ".dl") continue;
+        // mdl1_<size>_<hash16>.dl
+        const std::string name = p.stem().u8string();
+        auto parts = SplitStem(name);
+        if (parts.size() != 3 || parts[0] != "mdl1" || parts[2].size() != 16)
+            continue;
+        char* end = nullptr;
+        const unsigned long size = strtoul(parts[1].c_str(), &end, 10);
+        if (!end || *end != '\0' || size == 0)
+            continue;
+        const u64 hash = strtoull(parts[2].c_str(), &end, 16);
+        if (!end || *end != '\0')
+            continue;
+
+        std::FILE* file = std::fopen(p.u8string().c_str(), "rb");
+        if (!file)
+            continue;
+        std::vector<u32> words;
+        u32 word;
+        while (std::fread(&word, 4, 1, file) == 1)
+            words.push_back(word);
+        std::fclose(file);
+        if (words.empty())
+            continue;
+        Models[hash] = ModelEntry{static_cast<u32>(size), std::move(words)};
+    }
+    if (!Models.empty())
+        Platform::Log(Platform::LogLevel::Warn, "HDTexPack: %zu HD models from %s\n", Models.size(), dir.c_str());
+}
+
+const std::vector<u32>* HDTexPack::LookupModel(u64 hash, u32 size) const
+{
+    if (!LoadEnabled)
+        return nullptr;
+    auto it = Models.find(hash);
+    if (it == Models.end() || it->second.Size != size)
+        return nullptr;
+    return &it->second.Words;
 }
 
 void HDTexPack::LoadDir(const std::string& dir, const char* kind)

@@ -102,6 +102,8 @@ using Platform::LogLevel;
 // * additionally, some commands (BEGIN, LIGHT_VECTOR, BOXTEST) stall the polygon pipeline
 
 
+// external linkage: GPU3D_HDModels.cpp unpacks replacement display lists with it
+extern const u8 CmdNumParams[256];
 const u8 CmdNumParams[256] =
 {
     // 0x00
@@ -193,6 +195,7 @@ void GPU3D::Reset() noexcept
     CmdPIPE.Clear();
 
     CmdStallQueue.Clear();
+    ClearHDModelState();
 
     ZeroDotWLimit = 0xFFFFFF;
 
@@ -483,6 +486,7 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
 
         if (!file->Saving)
         {
+            poly->HDTag = 0;
             poly->Degenerate = false;
 
             for (u32 j = 0; j < poly->NumVertices; j++)
@@ -496,6 +500,8 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
     }
 
     CmdStallQueue.DoSavestate(file);
+    if (!file->Saving)
+        ClearHDModelState();
 
     file->Var32((u32*)&VertexPipeline);
     file->Var32((u32*)&NormalPipeline);
@@ -512,25 +518,46 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
         CurPolygonRAM = &PolygonRAM[CurRAMBank ? 2048 : 0];
     }
 
-    file->Var32(&RenderNumPolygons);
     if (file->Saving)
     {
-        for (const Polygon* p : RenderPolygonRAM)
+        // replacement geometry from HD models lives outside PolygonRAM: a state keeps only the
+        // hardware's polygons
+        u32 count = 0;
+        for (u32 i = 0; i < RenderNumPolygons && i < RenderPolygonRAM.size(); i++)
         {
-            u32 index = p ? (p - &PolygonRAM[0]) : UINT32_MAX;
-
+            const Polygon* p = RenderPolygonRAM[i];
+            if (p >= &PolygonRAM[0] && p < &PolygonRAM[2048 * 2])
+                count++;
+        }
+        file->Var32(&count);
+        u32 written = 0;
+        for (u32 i = 0; i < RenderNumPolygons && i < RenderPolygonRAM.size() && written < 2048; i++)
+        {
+            const Polygon* p = RenderPolygonRAM[i];
+            if (p < &PolygonRAM[0] || p >= &PolygonRAM[2048 * 2])
+                continue;
+            u32 index = (u32)(p - &PolygonRAM[0]);
+            file->Var32(&index);
+            written++;
+        }
+        for (; written < 2048; written++)
+        {
+            u32 index = UINT32_MAX;
             file->Var32(&index);
         }
     }
     else
     {
-        for (int i = 0; i < RenderPolygonRAM.size(); ++i)
+        file->Var32(&RenderNumPolygons);
+        RenderPolygonRAM.assign(2048, nullptr);
+        for (int i = 0; i < 2048; ++i)
         {
             u32 index = UINT32_MAX;
             file->Var32(&index);
 
             RenderPolygonRAM[i] = index == UINT32_MAX ? nullptr : &PolygonRAM[index];
         }
+        RenderNumPolygons = std::min<u32>(RenderNumPolygons, 2048);
     }
 
     file->VarArray(CurVertex, sizeof(s16)*3);
@@ -1094,7 +1121,7 @@ void GPU3D::SubmitPolygon() noexcept
 
     // reject the polygon if it's not going to fit in polygon/vertex RAM
 
-    if (NumPolygons >= 2048 || NumVertices+nverts > 6144)
+    if (NumPolygons >= PolygonLimit || NumVertices+nverts > VertexLimit)
     {
         LastStripPolygon = NULL;
         DispCnt |= (1<<13);
@@ -1214,6 +1241,7 @@ void GPU3D::SubmitPolygon() noexcept
 
     Polygon* poly = &CurPolygonRAM[NumPolygons++];
     poly->NumVertices = 0;
+    poly->HDTag = HDExecTag;
 
     poly->Attr = CurPolygonAttr;
     poly->TexParam = TexParam;
@@ -1759,6 +1787,13 @@ GPU3D::CmdFIFOEntry GPU3D::CmdFIFORead() noexcept
 void GPU3D::ExecuteCommand() noexcept
 {
     CmdFIFOEntry entry = CmdFIFORead();
+    if (entry.Tag != HDExecTag) [[unlikely]]
+        HDModelTagChange(entry.Tag);
+    ExecuteEntry(entry);
+}
+
+void GPU3D::ExecuteEntry(CmdFIFOEntry entry) noexcept
+{
 
     //printf("FIFO: processing %02X %08X. Levels: FIFO=%d, PIPE=%d\n", entry.Command, entry.Param, CmdFIFO->Level(), CmdPIPE->Level());
 
@@ -2469,7 +2504,12 @@ void GPU3D::VBlank() noexcept
     {
         if (RenderingEnabled)
         {
-            if (FlushRequest)
+            if (FlushRequest && ModelSource)
+            {
+                BuildRenderListWithHDModels();
+                RenderFrameIdentical = false;
+            }
+            else if (FlushRequest)
             {
                 if (NumPolygons)
                 {
@@ -2535,6 +2575,11 @@ void GPU3D::VBlank() noexcept
             NumVertices = 0;
             NumPolygons = 0;
             NumOpaquePolygons = 0;
+
+            // replacement geometry is double-buffered the same way
+            HDBank ^= 1;
+            HDNumVertices = 0;
+            HDNumPolygons = 0;
 
             FlushRequest = 0;
         }
@@ -2608,6 +2653,14 @@ bool GPU3D::IsRendererAccelerated() const noexcept
 
 void GPU3D::WriteToGXFIFO(u32 val) noexcept
 {
+    // words of a display list an HD model replaces (see OnDisplayListDMA)
+    u16 tag = 0;
+    if (HDTaggedWordsLeft) [[unlikely]]
+    {
+        tag = HDTaggedWriteTag;
+        HDTaggedWordsLeft--;
+    }
+
     if (NumCommands == 0)
     {
         NumCommands = 4;
@@ -2625,8 +2678,10 @@ void GPU3D::WriteToGXFIFO(u32 val) noexcept
         if ((CurCommand & 0xFF) || (NumCommands == 4 && CurCommand == 0))
         {
             CmdFIFOEntry entry;
+            entry._contents = 0;
             entry.Command = CurCommand & 0xFF;
             entry.Param = val;
+            entry.Tag = tag;
             CmdFIFOWrite(entry);
         }
 
@@ -2980,6 +3035,7 @@ void GPU3D::Write32(u32 addr, u32 val) noexcept
     if (addr >= 0x04000440 && addr < 0x040005CC)
     {
         CmdFIFOEntry entry;
+        entry._contents = 0;
         entry.Command = (addr & 0x1FC) >> 2;
         entry.Param = val;
         CmdFIFOWrite(entry);
