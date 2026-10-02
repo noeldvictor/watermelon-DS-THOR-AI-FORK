@@ -115,6 +115,24 @@ can use:
 The Remaster Studio has a page for all of it, and debug builds can trace which models a scene
 draws.
 
+The first AI model in-game, on the Thor: Phantom Hourglass' Link rebuilt by Tripo from four
+views of the original, on the game's own skeleton and lights (left), next to the original:
+
+![Phantom Hourglass Link, AI model vs original, in-game](tools/hd_remaster/games/AZEE/media/model_link_ai_ingame.jpg)
+
+What Tripo got (the four flat-colour views with the pack's HD textures, then the textured mesh
+it returned):
+
+![Reference views sent to Tripo](tools/hd_remaster/games/AZEE/media/model_link_ai_refs.jpg)
+![Tripo's textured Link](tools/hd_remaster/games/AZEE/media/model_link_ai_mesh.jpg)
+
+Proof-of-concept tests on the way: every vertex of Link scaled 1.25 (the replacement follows
+his bones), his eyes and eyebrows (sent by the CPU, not DMA) scaled 1.8, and Lufia's boss
+smoothed with PN triangles, compared on the same emulated frame:
+
+![Replacement tests: inflated Link, enlarged eyes](tools/hd_remaster/games/AZEE/media/model_poc_tests.jpg)
+![Lufia boss: original vs PN-smoothed, same frame](tools/hd_remaster/games/AZEE/media/model_lufia_smooth.jpg)
+
 ### HD texture packs
 * **3D texture dump & replace**: content-hash keyed (texture hash + palette hash), compatible
   with the desktop melonDS HD pack format, so packs can be authored and verified on PC and used
