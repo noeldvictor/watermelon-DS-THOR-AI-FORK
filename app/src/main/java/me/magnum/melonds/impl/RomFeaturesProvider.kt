@@ -25,6 +25,7 @@ class RomFeaturesProvider(
     }
 
     private val bundledCheatDatabase = BundledCheatDatabase(context)
+    private val codeFixes by lazy { CheatCodeFixes.load(context) }
 
     /** Features by ROM URI (as a string). */
     suspend fun getFeatures(roms: List<Rom>): Map<String, RomFeatures> = withContext(Dispatchers.IO) {
@@ -52,11 +53,13 @@ class RomFeaturesProvider(
                 RomFeatures.NONE
             } else {
                 val bundled = bundledIndex[BundledCheatDatabase.indexKey(gameCode, headerChecksum)]
+                // our added codes (code_fixes.txt) join a game the bundled database has
+                val added = bundled != null && codeFixes.additionsFor(gameCode).any { EnhancementCheats.isEnhancement(it.cheatName) }
                 // cheats imported without a checksum apply to every revision of the code
                 val userKeys = listOf(userGameKey(gameCode, headerChecksum), userGameKey(gameCode, null))
                 RomFeatures(
                     hdTextures = texturePackDirectoryName(gameCode) in packDirectories,
-                    enhanced = bundled?.enhanced == true || userKeys.any { it in gamesWithEnhancements },
+                    enhanced = bundled?.enhanced == true || added || userKeys.any { it in gamesWithEnhancements },
                     cheats = (bundled?.cheatCount ?: 0) > 0 || userKeys.any { it in gamesWithCheats },
                 )
             }

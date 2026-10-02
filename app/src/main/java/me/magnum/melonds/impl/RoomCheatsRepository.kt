@@ -48,6 +48,11 @@ class RoomCheatsRepository(
     private val codeFixes by lazy { CheatCodeFixes.load(context) }
     // games whose stored cheats were checked against the fixes in this process
     private val fixedGames = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    // additions already made once ("<code> <checksum> <cheat>"): one the user deleted stays deleted
+    private val additionsMade by lazy { context.getSharedPreferences("cheat_code_additions", Context.MODE_PRIVATE) }
+
+    private fun additionKey(gameCode: String, gameChecksum: String, cheatName: String) =
+        "${BundledCheatDatabase.indexKey(gameCode, gameChecksum)} $cheatName"
 
     override suspend fun getGames(): List<Game> {
         return database.gameDao().getGames().map { game ->
@@ -94,16 +99,25 @@ class RoomCheatsRepository(
         val databaseId = database.cheatDatabaseDao().findCheatDatabase(bundled.databaseName)?.id
             ?: addCheatDatabase(bundled.databaseName).id
             ?: return@withLock null
-        val cheats = bundled.game.cheats.map { folder ->
+        val fixedFolders = bundled.game.cheats.map { folder ->
             folder.copy(cheats = folder.cheats.map {
                 val fixedCode = codeFixes.fixedCode(gameCode, it.name, it.code)
                 it.copy(cheatDatabaseId = databaseId, code = fixedCode ?: it.code)
             })
         }
+        val existingNames = fixedFolders.flatMap { folder -> folder.cheats.map { it.name } }.toSet()
+        val additions = codeFixes.additionsFor(gameCode).filter { it.cheatName !in existingNames }
+        val addedFolders = additions.groupBy { it.folderName }.map { (folderName, entries) ->
+            CheatFolder(null, folderName, entries.map { Cheat(null, databaseId, it.cheatName, it.description, it.code, false) })
+        }
+        val cheats = fixedFolders + addedFolders
         addGameCheats(bundled.game.copy(cheats = cheats))
         Log.i(TAG, "Added ${cheats.sumOf { it.cheats.size }} bundled cheats for $gameCode $gameChecksum")
 
         fixedGames.add(BundledCheatDatabase.indexKey(gameCode, gameChecksum))
+        additionsMade.edit().apply {
+            additions.forEach { putBoolean(additionKey(gameCode, gameChecksum, it.cheatName), true) }
+        }.apply()
         database.gameDao().findGame(gameCode, gameChecksum)
     }
 
@@ -115,7 +129,8 @@ class RoomCheatsRepository(
     private suspend fun applyCodeFixes(gameCode: String, gameChecksum: String) {
         if (!fixedGames.add(BundledCheatDatabase.indexKey(gameCode, gameChecksum))) return
         val fixes = codeFixes.fixesFor(gameCode)
-        if (fixes.isEmpty()) return
+        val additions = codeFixes.additionsFor(gameCode)
+        if (fixes.isEmpty() && additions.isEmpty()) return
 
         var changed = false
         for (name in fixes.map { it.cheatName }.distinct()) {
@@ -123,6 +138,25 @@ class RoomCheatsRepository(
                 val fixedCode = codeFixes.fixedCode(gameCode, cheat.name, cheat.code) ?: continue
                 database.cheatDao().insertCheat(cheat.copy(code = fixedCode))
                 Log.i(TAG, "Fixed the code of '${cheat.name}' for $gameCode $gameChecksum")
+                changed = true
+            }
+        }
+
+        val gameId = database.gameDao().findGame(gameCode, gameChecksum)?.id
+        val databaseId = gameId?.let { database.cheatDao().getGameCheatDatabaseId(it) }
+        if (gameId != null && databaseId != null) {
+            for ((folderName, entries) in additions.groupBy { it.folderName }) {
+                val missing = entries.filter {
+                    !additionsMade.getBoolean(additionKey(gameCode, gameChecksum, it.cheatName), false)
+                        && database.cheatDao().getRomCheatsNamed(gameCode, gameChecksum, it.cheatName).isEmpty()
+                }
+                if (missing.isEmpty()) continue
+                val folderId = database.cheatFolderDao().insertCheatFolder(CheatFolderEntity(null, gameId, folderName))
+                database.cheatDao().insertCheats(missing.map { CheatEntity(null, folderId, databaseId, it.cheatName, it.description, it.code, false) })
+                additionsMade.edit().apply {
+                    missing.forEach { putBoolean(additionKey(gameCode, gameChecksum, it.cheatName), true) }
+                }.apply()
+                Log.i(TAG, "Added ${missing.size} code(s) to $gameCode $gameChecksum: ${missing.joinToString { it.cheatName }}")
                 changed = true
             }
         }

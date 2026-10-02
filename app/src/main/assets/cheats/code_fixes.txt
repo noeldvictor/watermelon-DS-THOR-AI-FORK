@@ -1,6 +1,14 @@
-# Our own fixes to codes in the bundled cheat database (cheats/bundled_cheats.zip), found with
-# tools/re. One fix per line: game code | cheat name | the broken code | the fixed code | why.
-# A fix replaces a cheat only while its code is exactly the broken one, so a user's edit stays.
+# Our own changes to the bundled cheat database (cheats/bundled_cheats.zip), found with tools/re.
 # Codes are space-separated 8-digit hex words (the form the native cheat parser reads).
+#
+# A fix: game code | cheat name | the broken code | the fixed code | why
+#   replaces a cheat only while its code is exactly the broken one, so a user's edit stays.
+# An addition: +game code | folder | cheat name | code | description (shown in the cheat list)
+#   joins a game the bundled database has, once (a deleted one is not brought back).
 
 ASFE|Widescreen|52324998 00001555 02324998 00001C72 D2000000 00000000|420CF1F0 02000000 320CF1F0 02400000 B20CF1F0 00000000 DC000000 00000178 50000000 00001555 00000000 00001C72 D2000000 00000000|The old code wrote a heap camera at a fixed address, which moves between sessions (0x02326E58 on the Thor). The fix follows the camera manager's active-camera pointer (0x020CF1F0, manager 0x020CF0DC + 0x114) to the aspect field (+0x178) and writes 16:9 only over 4:3.
+
+# Mario Kart DS (Europe): the US code (AMCE "Widescreen v2.0"). The European ARM9 has the same two
+# spots: the 4:3 aspect literal at 0x020775D0 and the width scale (mov r0,#0x80000) at 0x0208A068;
+# each write is guarded so it only replaces the expected original. Verified on a race start.
++AMCP|Enhancements|Widescreen|520775D0 00001555 020775D0 00001C72 D0000000 00000000 5208A068 E3A00702 0208A068 E3A00AAA D2000000 00000000|Added by Watermelon Thor (the US widescreen code fits this version)

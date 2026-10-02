@@ -36,6 +36,28 @@ class CheatCodeFixesTest {
     }
 
     @Test
+    fun everyAdditionIsWellFormedAndJoinsABundledGame() {
+        val all = CheatCodeFixes.parseAll(assetFile("code_fixes.txt").readLines())
+        val bundled = ZipFile(assetFile("bundled_cheats.zip"))
+        val additions = assetFile("code_fixes.txt").readLines().filter { it.trim().startsWith("+") }
+        assertTrue(additions.isNotEmpty())
+        for (line in additions) {
+            val gameCode = line.trim().removePrefix("+").substringBefore('|').trim()
+            val addition = all.additionsFor(gameCode).firstOrNull()
+            assertNotNull("$gameCode: not parsed", addition)
+            val words = addition!!.code.split(' ')
+            assertEquals("$gameCode ${addition.cheatName}: even word count", 0, words.size % 2)
+            assertTrue("$gameCode ${addition.cheatName}", words.all { it.matches(Regex("[0-9A-F]{8}")) })
+            // additions join a game the bundled database has (it supplies the game's name)
+            assertNotNull("$gameCode: not in the bundled database", bundled.getEntry("$gameCode.xml"))
+        }
+        // the parse keeps fixes and additions apart
+        assertTrue(all.fixesFor("AMCP").isEmpty())
+        assertEquals("Widescreen", all.additionsFor("AMCP").single().cheatName)
+        assertEquals("Enhancements", all.additionsFor("amcp").single().folderName)
+    }
+
+    @Test
     fun starFoxWidescreenIsReplacedOnlyWhileUnchanged() {
         val fixes = shippedFixes()
         val broken = "52324998 00001555 02324998 00001C72 D2000000 00000000"

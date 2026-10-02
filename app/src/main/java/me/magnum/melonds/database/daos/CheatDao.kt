@@ -34,6 +34,9 @@ interface CheatDao {
     @Query("SELECT cheat.* FROM game JOIN cheat_folder ON game.id = cheat_folder.game_id JOIN cheat ON cheat_folder.id = cheat.cheat_folder_id WHERE game.game_code = :gameCode AND (game.game_checksum IS NULL OR game.game_checksum = :gameChecksum) AND cheat.name = :name")
     suspend fun getRomCheatsNamed(gameCode: String, gameChecksum: String, name: String): List<CheatEntity>
 
+    @Query("SELECT cheat.cheat_database_id FROM cheat_folder JOIN cheat ON cheat_folder.id = cheat.cheat_folder_id WHERE cheat_folder.game_id = :gameId LIMIT 1")
+    suspend fun getGameCheatDatabaseId(gameId: Long): Long?
+
     @Query("SELECT * FROM cheat WHERE cheat_folder_id = :folderId")
     fun getFolderCheats(folderId: Long): Flow<List<CheatEntity>>
 
