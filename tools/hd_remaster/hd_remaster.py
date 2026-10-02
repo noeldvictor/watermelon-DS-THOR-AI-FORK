@@ -517,8 +517,16 @@ def find_device(serial: str | None) -> str:
 def cmd_models(args) -> None:
     if args.action == "extract":
         modelpack.extract(args.target, Path(args.out or WORK), args.trace, args.previews)
-    else:
+    elif args.action == "build":
         modelpack.build(Path(args.target), Path(args.packs or PACKS), args.smooth, args.only, args.seen, args.rom)
+    elif args.action == "fit":
+        if not args.model or not args.mesh:
+            raise SystemExit("models fit work/<CODE> --model <id> --mesh <file.glb|obj>")
+        modelpack.fit_mesh(Path(args.target), args.model, Path(args.mesh))
+    else:
+        if not args.model:
+            raise SystemExit("models ai work/<CODE> --model <id> [--dry-run]")
+        modelpack.ai_model(Path(args.target), args.model, args.polycount, args.budget, args.dry_run)
 
 
 def cmd_push(args) -> None:
@@ -709,8 +717,13 @@ def main() -> None:
     p.set_defaults(fn=cmd_build)
 
     p = sub.add_parser("models", help="3D models: export for editing, build replacements (see modelpack.py)")
-    p.add_argument("action", choices=("extract", "build"))
-    p.add_argument("target", help="extract: the ROM; build: work/<GAMECODE>")
+    p.add_argument("action", choices=("extract", "build", "fit", "ai"))
+    p.add_argument("target", help="extract: the ROM; build, fit, ai: work/<GAMECODE>")
+    p.add_argument("--model", help="fit, ai: the model id (models/index.json)")
+    p.add_argument("--mesh", help="fit: a GLB or OBJ to fit onto the model")
+    p.add_argument("--polycount", type=int, default=6000, help="ai: triangles Meshy remeshes to")
+    p.add_argument("--budget", type=int, default=100, help="ai: credit cap over the ledger (a call: 20)")
+    p.add_argument("--dry-run", action="store_true", help="ai: write the reference pictures only")
     p.add_argument("--out", help=f"extract: work root (default {WORK})")
     p.add_argument("--trace", help="extract: a dl_trace json (tools/re) marking the shapes a scene uses")
     p.add_argument("--previews", action="store_true", help="extract: a preview for every model, not only seen ones")

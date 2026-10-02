@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import struct
 from pathlib import Path
 
 import numpy as np
@@ -287,10 +288,20 @@ def build(work: Path, packs_root: Path, smooth: float | None, only: str | None, 
             info = json.loads((folder / "model.json").read_text(encoding="utf-8"))
             sizes = {s["name"]: tuple(s["texture_size"]) for s in info["shapes"]}
             edits = _read_obj(folder / "edited.obj") if (folder / "edited.obj").exists() else {}
+            # shapes a new mesh covers (hidden.txt, written by ai3d fit): replaced by nothing
+            hidden = set()
+            if edits and (folder / "hidden.txt").exists():
+                hidden = {l.strip() for l in (folder / "hidden.txt").read_text(encoding="utf-8").splitlines() if l.strip()}
             done = set()
             for d, mesh in models3d.model_meshes(model):
                 shape = model.shapes[d.shape]
                 if shape.key in done or not len(mesh.triangles):
+                    continue
+                if shape.name in hidden and shape.name not in edits:
+                    models3d.write_replacement(built, shape.key, struct.pack("<I", 0))   # a NOP: draws nothing
+                    done.add(shape.key)
+                    made += 1
+                    log(f"{mid}: {shape.name} hidden ({shape.key})")
                     continue
                 if shape.name in edits:
                     pos, uv, nrm, tris = edits[shape.name]
@@ -319,3 +330,82 @@ def install(work: Path, packs_root: Path) -> None:
         shutil.rmtree(target)
     shutil.copytree(built, target)
     log(f"copied {len(list(target.glob('*.dl')))} replacements to {target}")
+
+
+# ---------------------------------------------------------------------------- AI models / fitting
+
+def _load_model(work: Path, mid: str):
+    """The model with this id from the ROM extract read, its folder, and its textured meshes."""
+    folder = work / "models" / mid
+    if not (folder / "model.json").exists():
+        raise SystemExit(f"{folder} has no model.json: run models extract, ids are in models/index.json")
+    rom = Path((work / "models" / "rom.txt").read_text(encoding="utf-8").strip()).read_bytes()
+    blobs = nitro.blobs(rom)
+    info = json.loads((folder / "model.json").read_text(encoding="utf-8"))
+    for blob in blobs:
+        if blob.path != info["source"]:
+            continue
+        for model in models3d.models_in(blob):
+            if model.name == info["name"]:
+                return model, folder, info, blobs
+    raise SystemExit(f"{mid} not found in the ROM")
+
+
+def _textured_parts(model, folder: Path, info: dict):
+    parts = []
+    sizes = {s["name"]: tuple(s["texture_size"]) for s in info["shapes"]}
+    for d, mesh in models3d.model_meshes(model):
+        part = dict(positions=mesh.positions, triangles=mesh.triangles)
+        mat = model.materials[d.material] if d.material is not None and d.material < len(model.materials) else None
+        shape = model.shapes[d.shape]
+        tex = folder / f"tex_{mat.name}.png" if mat else None
+        w, h = sizes.get(shape.name, (0, 0))
+        if tex and tex.exists() and w and h:
+            part["texture"] = np.array(Image.open(tex).convert("RGBA"))
+            part["uv"] = mesh.texcoords / np.array([w, h])
+        parts.append(part)
+    return parts
+
+
+def fit_mesh(work: Path, mid: str, mesh_path: Path) -> None:
+    import ai3d
+    model, folder, info, _ = _load_model(work, mid)
+    if mesh_path.suffix.lower() == ".glb":
+        pos, tris = ai3d.read_glb(mesh_path)
+    else:
+        groups = _read_obj(mesh_path)
+        pos = np.concatenate([g[0] for g in groups.values()])
+        base = np.cumsum([0] + [len(g[0]) for g in list(groups.values())[:-1]])
+        tris = np.concatenate([g[3] + b for g, b in zip(groups.values(), base)])
+    fitted, meshes = ai3d.fit(pos, tris, model)
+    sizes = {s["name"]: tuple(s["texture_size"]) for s in info["shapes"]}
+    ai3d.write_edited_obj(folder / "edited.obj", model, fitted, meshes, sizes)
+    preview = []
+    for di, m in fitted.items():
+        d, _ = meshes[di]
+        part = dict(positions=m.positions, triangles=m.triangles)
+        mat = model.materials[d.material] if d.material is not None and d.material < len(model.materials) else None
+        w, h = sizes.get(model.shapes[d.shape].name, (0, 0))
+        if mat and (folder / f"tex_{mat.name}.png").exists() and w and h:
+            part["texture"] = np.array(Image.open(folder / f"tex_{mat.name}.png").convert("RGBA"))
+            part["uv"] = m.texcoords / np.array([w, h])
+        preview.append(part)
+    Image.fromarray(np.concatenate([render3d.render(preview, 256, yaw=y, pitch=10) for y in (0, 40, 90, 180)], 1)) \
+        .save(folder / "edited_preview.png")
+    log(f"{len(pos)} vertices, {len(tris)} triangles fitted onto {mid}: {folder / 'edited.obj'} "
+        f"(+ edited_preview.png, hidden.txt); next: models build {work}")
+
+
+def ai_model(work: Path, mid: str, polycount: int, budget: int, dry_run: bool) -> None:
+    import ai3d
+    model, folder, info, _ = _load_model(work, mid)
+    refs = ai3d.reference_views(_textured_parts(model, folder, info))
+    ai_dir = folder / "ai"
+    ai_dir.mkdir(exist_ok=True)
+    for name, img in zip(("front", "right", "back", "left"), refs):
+        Image.fromarray(img).save(ai_dir / f"ref_{name}.png")
+    if dry_run:
+        log(f"reference pictures in {ai_dir}; nothing sent (dry run)")
+        return
+    glb = ai3d.meshy_multi_image(refs, ai_dir, work / "models" / "ai_ledger.jsonl", budget, polycount, mid)
+    fit_mesh(work, mid, glb)

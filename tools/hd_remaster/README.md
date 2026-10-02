@@ -197,6 +197,26 @@ OBJ, else from that vertex), writes `work\<CODE>\models_built\<key>.dl` and copi
 PN-smoothed replacements instead, no new art. An edit round-trips exactly: Link widened 10% and
 built comes back from the display lists at s3.12 precision, skinned shapes included.
 
+AI models (`ai3d.py`, Meshy):
+
+```
+.venv\Scripts\python hd_remaster.py models ai work\<CODE> --model <id> [--dry-run] [--polycount 6000] [--budget 100]
+.venv\Scripts\python hd_remaster.py models fit work\<CODE> --model <id> --mesh new.glb
+```
+
+`ai` renders the model from the front, right, back and left with its own textures
+(`models\<id>ief_*.png`; `--dry-run` stops there), sends them to Meshy's multi-image-to-3D
+(mesh only, remeshed to `--polycount` triangles, 20 credits a call, logged in
+`modelsi_ledger.jsonl` and capped by `--budget`; the key is `MESHY_API_KEY` in `.env`) and fits
+the result. `fit` takes any GLB or OBJ (an AI result or a 3D tool's, any scale or position, facing
++Z like the references): scaled onto the original by height, refined with ICP, then every vertex
+takes the bone of the nearest point on the original surface, and every triangle maps its corners
+through the texture mapping of the original triangle nearest its centre (per-vertex transfer
+smeared triangles that straddle texture islands, like face and hair). It writes `edited.obj`,
+`hidden.txt` (shapes the new mesh covers, replaced by nothing) and `edited_preview.png`; then
+`models build`. Tested offline on Link moved, scaled 3.7x and turned 4 degrees: placed back to
+about 1% of his height, textures where they belong.
+
 Making replacements from meshes: `mesh_to_display_list` turns a bind-pose mesh back into a
 shape's display list (each vertex into its matrix-stack slot's space, TEXCOORD, NORMAL for lit
 shapes or COLOR, VTX_16). `pn_triangles` is an automatic remaster that needs no new art: curved
