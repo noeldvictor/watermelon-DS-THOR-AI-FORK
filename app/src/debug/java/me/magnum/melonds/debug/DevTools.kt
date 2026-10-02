@@ -196,6 +196,12 @@ internal class DevTools(private val context: Context) {
         Tool("rom_dump", "Write the running cartridge's ROM to files/re/<gamecode>.nds for adb pull (for Ghidra or " +
             "the HD tools; never commit it).",
             schema("name" to prop("string", "file name without extension"))) { re.romDump(it) },
+        Tool("cheat_test", "Run an Action Replay `code` (space-separated 8-digit hex words) on the running game " +
+            "through the core's cheat engine, in place of the session's cheats; an empty `code` runs none. The " +
+            "game's own cheats come back on the next launch or cheat-list change.",
+            schema("code" to prop("string", "e.g. \"520775D0 00001555 020775D0 00001C72 D2000000 00000000\""))) {
+            re.cheatTest(it)
+        },
     )
 
     fun has(name: String): Boolean = tools.any { it.name == name }

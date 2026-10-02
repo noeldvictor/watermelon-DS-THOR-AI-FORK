@@ -2,6 +2,7 @@ package me.magnum.melonds.debug
 
 import android.content.Context
 import me.magnum.melonds.MelonEmulator
+import me.magnum.melonds.domain.model.Cheat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -85,6 +86,21 @@ internal class ReTools(private val context: Context) {
         }
         if ((address shr 24) == 0x04L) result.put("note", "I/O registers are skipped")
         return result
+    }
+
+    fun cheatTest(args: JSONObject): JSONObject {
+        requireGame()?.let { return it }
+        val words = args.optString("code").trim().split(WHITESPACE).filter { it.isNotEmpty() }
+        if (words.size % 2 != 0 || words.any { !it.matches(HEX_WORD) }) {
+            return error("code: pairs of 8-digit hex words")
+        }
+        val cheats = if (words.isEmpty()) {
+            emptyArray()
+        } else {
+            arrayOf(Cheat(null, -1, "cheat_test", null, words.joinToString(" ") { it.uppercase(Locale.ROOT) }, true))
+        }
+        MelonEmulator.setupCheats(cheats)
+        return JSONObject().put("lines", words.size / 2).put("note", if (words.isEmpty()) "no cheats run now" else "runs every frame")
     }
 
     fun memDump(args: JSONObject): JSONObject {
@@ -578,6 +594,8 @@ internal class ReTools(private val context: Context) {
         const val MAX_DUMP = 0x1000000L
         const val DUMP_CHUNK = 0x400000L
         val MODES = mapOf(0x10 to "usr", 0x11 to "fiq", 0x12 to "irq", 0x13 to "svc", 0x17 to "abt", 0x1B to "und", 0x1F to "sys")
+        val WHITESPACE = Regex("\\s+")
+        val HEX_WORD = Regex("[0-9A-Fa-f]{8}")
     }
 }
 

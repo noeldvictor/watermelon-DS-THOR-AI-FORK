@@ -21,3 +21,10 @@ ASFE|Widescreen|52324998 00001555 02324998 00001C72 D2000000 00000000|420CF1F0 0
 # at the same address (0x0201ADA4, read when a race camera is built), the second moved from
 # 0x0203A298 to 0x0203A2B4 (read every frame). Each write is guarded. Verified on a race start.
 +ABOP|Enhancements|Widescreen|5201ADA4 00001555 0201ADA4 00001C72 D0000000 00000000 5203A2B4 00001555 0203A2B4 00001C72 D2000000 00000000|Added by Watermelon Thor (the US widescreen code, moved to this version's addresses)
+
+# New Super Mario Bros. (Europe): the US code (A2DE "Widescreen", expands to the right), moved to this
+# version's addresses: the BG matrix packer's x scale (0x02052320-38, guard 0x02052340), the level
+# camera's width (hook 0x020BFA08 in overlay 0, to a cave at 0x02000C00: width x 21/16), the sprite x
+# scale (0x0200E1C8: 16/21 instead of 1), the object view test's horizontal half (0x0200B410/14) and
+# the world map's 4:3 aspect (overlay 8, 0x020E3B58). Verified on the world map and in 1-1.
++A2DP|Enhancements|Widescreen|52052340 E1854804 0200E1C8 E3A00EC3 0200B410 E3A03000 0200B414 E3A01000 02052320 E3A0C015 02052328 E0050C95 02052338 E1A00000 02052330 E1A05425 02000C00 E1844A0E 02000C04 E3A00015 02000C08 E0040490 02000C0C E1A04224 02000C10 EA02FB7D D2000000 00000000 520E3B58 00001555 020E3B58 00001BFF D2000000 00000000 520BFA0C E59F0014 020BFA08 EAFD047C D2000000 00000000|Added by Watermelon Thor (the US widescreen code, moved to this version's addresses). The HUD stays stretched.

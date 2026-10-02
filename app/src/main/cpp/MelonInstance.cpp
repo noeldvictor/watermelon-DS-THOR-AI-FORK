@@ -3062,7 +3062,11 @@ void MelonInstance::loadCheats(std::list<Cheat> cheats)
         codeList.push_back(arCode);
     }
 
-    nds->AREngine.Cheats = codeList;
+    // the cheat list changes while a game runs (cheat screen, dev tools): swap it in between frames,
+    // never under the emulator thread's RunCheats
+    queueDebugAction([codes = std::move(codeList)](NDS& nds) mutable {
+        nds.AREngine.Cheats = std::move(codes);
+    });
 }
 
 int MelonInstance::sendNetPacket(u8* data, int length)
