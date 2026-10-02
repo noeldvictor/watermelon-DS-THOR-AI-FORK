@@ -3,6 +3,7 @@
 
 #include <list>
 #include <vector>
+#include <memory>
 #include <optional>
 #include <android/native_window.h>
 #include "AndroidFileHandler.h"
@@ -230,6 +231,9 @@ namespace MelonDSAndroid {
     extern void requestPreparedRendererDebugSnapshot();
     extern void clearPreparedRendererDebugSnapshot();
     extern void startDenseScreenBurstCaptureForDebug(int frameCount, int stepFrames, int warmupFrames, u32 captureKindsMask);
+    // the running instance for the reverse-engineering tools (DebugToolsJNI.cpp), or null
+    class MelonInstance;
+    extern std::shared_ptr<MelonInstance> getInstanceForDebug();
     extern bool isDenseScreenBurstCaptureCompleteForDebug();
     extern std::vector<u32> getDenseScreenBurstScheduleStatsForDebug();
     extern int getDenseScreenBurstCaptureFrameCountForDebug();

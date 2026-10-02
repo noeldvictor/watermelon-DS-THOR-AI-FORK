@@ -22,6 +22,8 @@ internal class DevTools(private val context: Context) {
 
     private class Tool(val name: String, val description: String, val schema: JSONObject, val run: (JSONObject) -> JSONObject)
 
+    private val re = ReTools(context)
+
     private val tools: List<Tool> = listOf(
         Tool("status", "App and emulator state: activities in front (the Thor is shared - check before taking it), " +
             "whether a game runs and which ROM, FPS, the debug pause, and the latest HD pack / compositor stats lines.",
@@ -86,6 +88,113 @@ internal class DevTools(private val context: Context) {
                 "filter" to prop("string", "substring"),
                 "level" to prop("string", "V|D|I|W|E"),
             ), ::log),
+    ) + reverseEngineeringTools()
+
+    /**
+     * Reverse engineering (see ReTools). Addresses are numbers or strings ("0x02000000"). `cpu` is
+     * arm9 (default) or arm7. Pause first for a still picture: reads then see one frame boundary and
+     * writes apply at once.
+     */
+    private fun reverseEngineeringTools(): List<Tool> = listOf(
+        Tool("mem_read", "Read emulated memory as the CPU sees it (TCMs included; I/O registers read as 0). " +
+            "`format` hex (default), u8/u16/u32 or ascii; `length` up to 65536.",
+            schema(
+                "address" to prop("string", "e.g. \"0x02000000\""),
+                "length" to prop("integer", "bytes (default 64)"),
+                "format" to prop("string", "hex|u8|u16|u32|ascii"),
+                "cpu" to prop("string", "arm9|arm7"),
+                required = listOf("address"),
+            )) { re.memRead(it) },
+        Tool("mem_write", "Write emulated memory: `hex` bytes (\"01 0A FF\") or `value` + `size` (1/2/4, little endian). " +
+            "Applied at once while paused, else at the next frame start. Code writes drop stale JIT blocks.",
+            schema(
+                "address" to prop("string", "e.g. \"0x02324998\""),
+                "hex" to prop("string", "bytes"),
+                "value" to prop("string", "number or \"0x...\""),
+                "size" to prop("integer", "1, 2 or 4"),
+                "cpu" to prop("string", "arm9|arm7"),
+                required = listOf("address"),
+            )) { re.memWrite(it) },
+        Tool("mem_dump", "Dump memory to a file in the app's files/re/ for adb pull: `region` main (main RAM, 4 MB at " +
+            "0x02000000: ARM9 code, loaded overlays, heap), itcm (0x01FF8000) or dtcm (16 KB wherever the game put " +
+            "it), or `address` + `length` (max 16 MB). tools/re/re.py pull loads these into Ghidra.",
+            schema(
+                "region" to prop("string", "main|itcm|dtcm"),
+                "address" to prop("string", "start instead of a region"),
+                "length" to prop("integer", "bytes"),
+                "name" to prop("string", "file name without extension"),
+                "cpu" to prop("string", "arm9|arm7"),
+            )) { re.memDump(it) },
+        Tool("mem_search", "Find where a value lives (cheat search). `value` + `size` (1/2/4) for equal values, `hex` " +
+            "for a byte pattern, or `snapshot`=true to start from everything and narrow with mem_refine. Region " +
+            "defaults to main RAM; `start` + `length` to change it.",
+            schema(
+                "value" to prop("string", "number or \"0x...\""),
+                "size" to prop("integer", "1, 2 or 4 (default 4)"),
+                "hex" to prop("string", "byte pattern"),
+                "snapshot" to prop("boolean", "unknown value: keep every address"),
+                "aligned" to prop("boolean", "only addresses aligned to size (default true)"),
+                "start" to prop("string", "region start"),
+                "length" to prop("integer", "region length"),
+                "limit" to prop("integer", "results to list (default 40)"),
+                "cpu" to prop("string", "arm9|arm7"),
+            )) { re.memSearch(it) },
+        Tool("mem_refine", "Narrow the last mem_search against memory now: `mode` equal/not_equal (with `value`), " +
+            "changed, unchanged, increased, decreased (against the previous search or refine).",
+            schema(
+                "mode" to prop("string", "equal|not_equal|changed|unchanged|increased|decreased"),
+                "value" to prop("string", "for equal / not_equal"),
+                "limit" to prop("integer", "results to list (default 40)"),
+            )) { re.memRefine(it) },
+        Tool("regs", "CPU registers (pc = the next instruction), mode, Thumb, JIT state. Exact only while paused.",
+            schema("cpu" to prop("string", "arm9|arm7"))) { re.regs(it) },
+        Tool("debug_mode", "`on`=true runs the CPUs on the interpreter (needed by watch and trace, ~2-4x slower), " +
+            "false goes back to the JIT (and stops the GDB stub).",
+            schema("on" to prop("boolean", "interpreter on (default true)"))) { re.debugMode(it) },
+        Tool("watch", "Memory watchpoint: which instructions read or write an address range. `action` start " +
+            "(`address`, `length` or `end`, `writes` default true, `reads`, `arm7`, `max_events`; `value` keeps only " +
+            "accesses of that value, and without an address watches all memory), read (grouped by instruction: pc, " +
+            "lr, values, r0-r3/sp of the first hit; `recent` raw events) or stop. Switches the interpreter on.",
+            schema(
+                "action" to prop("string", "start|read|stop"),
+                "value" to prop("string", "only this value, e.g. \"0x1555\""),
+                "address" to prop("string", "range start"),
+                "length" to prop("integer", "bytes (default 4)"),
+                "end" to prop("string", "range end (exclusive), instead of length"),
+                "reads" to prop("boolean", "watch reads"),
+                "writes" to prop("boolean", "watch writes (default true)"),
+                "arm7" to prop("boolean", "also the ARM7"),
+                "max_events" to prop("integer", "ring size (default 4096)"),
+                "groups" to prop("integer", "instructions to list (default 30)"),
+                "recent" to prop("integer", "raw events to list (default 10)"),
+            )) { re.watch(it) },
+        Tool("trace", "Call trace (BL/BLX): which functions run and who calls them. `action` start (optional " +
+            "`target_start`/`target_end` range of called functions, `arm7`), read (counts since the last read, " +
+            "per function and per call site, plus recent calls) or stop. Diff two reads (scene with and without " +
+            "e.g. dialogue) to find a routine. Switches the interpreter on.",
+            schema(
+                "action" to prop("string", "start|read|stop"),
+                "target_start" to prop("string", "only calls into this range"),
+                "target_end" to prop("string", "range end (exclusive)"),
+                "arm7" to prop("boolean", "also the ARM7"),
+                "max_events" to prop("integer", "ring of recent calls (default 2048)"),
+                "top" to prop("integer", "entries per list (default 50)"),
+                "recent" to prop("integer", "recent calls to list (default 20)"),
+            )) { re.trace(it) },
+        Tool("gdb", "GDB remote stub on the device's 127.0.0.1 (ARM9 `port_arm9` 3333, ARM7 `port_arm7` 3334): " +
+            "`action` start or stop. Then adb forward and gdb-multiarch or Ghidra's debugger. Breakpoints, " +
+            "stepping, memory; runs on the interpreter.",
+            schema(
+                "action" to prop("string", "start|stop"),
+                "port_arm9" to prop("integer", "default 3333"),
+                "port_arm7" to prop("integer", "default 3334"),
+            )) { re.gdb(it) },
+        Tool("rom_info", "The running cartridge's header (game code, ARM9/ARM7 load addresses, FAT/FNT) and overlay " +
+            "tables, with which overlays are in RAM now (`overlays`=false skips them).",
+            schema("overlays" to prop("boolean", "list overlays (default true)"))) { re.romInfo(it) },
+        Tool("rom_dump", "Write the running cartridge's ROM to files/re/<gamecode>.nds for adb pull (for Ghidra or " +
+            "the HD tools; never commit it).",
+            schema("name" to prop("string", "file name without extension"))) { re.romDump(it) },
     )
 
     fun has(name: String): Boolean = tools.any { it.name == name }

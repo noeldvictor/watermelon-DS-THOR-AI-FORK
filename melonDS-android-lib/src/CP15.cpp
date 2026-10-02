@@ -21,6 +21,7 @@
 #include "NDS.h"
 #include "DSi.h"
 #include "ARM.h"
+#include "DebugHooks.h"
 #include "Platform.h"
 #include "ARMJIT_Memory.h"
 #include "ARMJIT.h"
@@ -824,6 +825,7 @@ void ARMv5::DataRead8(u32 addr, u32* val)
     }
 
     DataRegion = addr;
+    DebugHooks::ReadWatch watch{*this, addr, val, 1};
 
     if (addr < ITCMSize)
     {
@@ -853,6 +855,7 @@ void ARMv5::DataRead16(u32 addr, u32* val)
     DataRegion = addr;
 
     addr &= ~1;
+    DebugHooks::ReadWatch watch{*this, addr, val, 2};
 
     if (addr < ITCMSize)
     {
@@ -882,6 +885,7 @@ void ARMv5::DataRead32(u32 addr, u32* val)
     DataRegion = addr;
 
     addr &= ~3;
+    DebugHooks::ReadWatch watch{*this, addr, val, 4};
 
     if (addr < ITCMSize)
     {
@@ -903,6 +907,7 @@ void ARMv5::DataRead32(u32 addr, u32* val)
 void ARMv5::DataRead32S(u32 addr, u32* val)
 {
     addr &= ~3;
+    DebugHooks::ReadWatch watch{*this, addr, val, 4};
 
     if (addr < ITCMSize)
     {
@@ -930,6 +935,7 @@ void ARMv5::DataWrite8(u32 addr, u8 val)
     }
 
     DataRegion = addr;
+    DebugHooks::OnAccess(*this, addr, val, 1, true);
 
     if (addr < ITCMSize)
     {
@@ -960,6 +966,7 @@ void ARMv5::DataWrite16(u32 addr, u16 val)
     DataRegion = addr;
 
     addr &= ~1;
+    DebugHooks::OnAccess(*this, addr, val, 2, true);
 
     if (addr < ITCMSize)
     {
@@ -990,6 +997,7 @@ void ARMv5::DataWrite32(u32 addr, u32 val)
     DataRegion = addr;
 
     addr &= ~3;
+    DebugHooks::OnAccess(*this, addr, val, 4, true);
 
     if (addr < ITCMSize)
     {
@@ -1012,6 +1020,7 @@ void ARMv5::DataWrite32(u32 addr, u32 val)
 void ARMv5::DataWrite32S(u32 addr, u32 val)
 {
     addr &= ~3;
+    DebugHooks::OnAccess(*this, addr, val, 4, true);
 
     if (addr < ITCMSize)
     {

@@ -33,7 +33,13 @@ endif()
 option(MELONDS_ENABLE_ADRENOTOOLS "Enable libadrenotools custom Adreno Vulkan driver support" OFF)
 
 set(BUILD_QT_SDL OFF)
-set(ENABLE_GDBSTUB OFF)
+# The GDB stub (debug builds only): gdb/Ghidra attach over adb for reverse engineering. The core exports
+# GDBSTUB_ENABLED to everything that links it.
+if (MELONDS_ANDROID_DEBUG_BUILD)
+    set(ENABLE_GDBSTUB ON)
+else()
+    set(ENABLE_GDBSTUB OFF)
+endif()
 
 set(ANDROID_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/main/cpp")
 set(CORE_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../melonDS-android-lib")
@@ -222,6 +228,7 @@ add_library(
 
         "${ANDROID_CPP_DIR}/AndroidMelonEventMessenger.cpp"
         "${ANDROID_CPP_DIR}/CartLoader.cpp"
+        "${ANDROID_CPP_DIR}/DebugToolsJNI.cpp"
         "${ANDROID_CPP_DIR}/DSiSupport.cpp"
         "${ANDROID_CPP_DIR}/EmulatorArgsBuilder.cpp"
         "${ANDROID_CPP_DIR}/EmulatorMessageQueueJNI.cpp"
@@ -234,6 +241,7 @@ add_library(
         "${ANDROID_CPP_DIR}/MelonDSAudio.cpp"
         "${ANDROID_CPP_DIR}/MelonDSNandJNI.cpp"
         "${ANDROID_CPP_DIR}/MelonInstance.cpp"
+        "${ANDROID_CPP_DIR}/MelonInstanceDebugTools.cpp"
         "${ANDROID_CPP_DIR}/MicInputOboeCallback.cpp"
         "${ANDROID_CPP_DIR}/NativeGlContext.cpp"
         "${ANDROID_CPP_DIR}/OboeCallback.cpp"

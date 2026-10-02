@@ -17,6 +17,7 @@
 */
 
 #include "ARM.h"
+#include "DebugHooks.h"
 #include "Platform.h"
 
 namespace melonDS::ARMInterpreter
@@ -34,6 +35,7 @@ void A_B(ARM* cpu)
 void A_BL(ARM* cpu)
 {
     s32 offset = (s32)(cpu->CurInstr << 8) >> 6;
+    DebugHooks::OnCall(*cpu, cpu->R[15] - 8, cpu->R[15] + offset);
     cpu->R[14] = cpu->R[15] - 4;
     cpu->JumpTo(cpu->R[15] + offset);
 }
@@ -42,6 +44,7 @@ void A_BLX_IMM(ARM* cpu)
 {
     s32 offset = (s32)(cpu->CurInstr << 8) >> 6;
     if (cpu->CurInstr & 0x01000000) offset += 2;
+    DebugHooks::OnCall(*cpu, cpu->R[15] - 8, cpu->R[15] + offset + 1);
     cpu->R[14] = cpu->R[15] - 4;
     cpu->JumpTo(cpu->R[15] + offset + 1);
 }
@@ -54,6 +57,7 @@ void A_BX(ARM* cpu)
 void A_BLX_REG(ARM* cpu)
 {
     u32 lr = cpu->R[15] - 4;
+    DebugHooks::OnCall(*cpu, cpu->R[15] - 8, cpu->R[cpu->CurInstr & 0xF]);
     cpu->JumpTo(cpu->R[cpu->CurInstr & 0xF]);
     cpu->R[14] = lr;
 }
@@ -85,6 +89,7 @@ void T_BLX_REG(ARM* cpu)
     }
 
     u32 lr = cpu->R[15] - 1;
+    DebugHooks::OnCall(*cpu, cpu->R[15] - 4, cpu->R[(cpu->CurInstr >> 3) & 0xF]);
     cpu->JumpTo(cpu->R[(cpu->CurInstr >> 3) & 0xF]);
     cpu->R[14] = lr;
 }
@@ -121,6 +126,8 @@ void T_BL_LONG_2(ARM* cpu)
         pc &= ~1;
     }
 
+    // the call site is the first half of the BL pair
+    DebugHooks::OnCall(*cpu, cpu->R[15] - 6, pc);
     cpu->R[14] = (cpu->R[15] - 2) | 1;
     cpu->JumpTo(pc);
 }

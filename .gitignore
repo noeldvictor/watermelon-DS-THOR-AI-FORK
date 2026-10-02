@@ -13,3 +13,6 @@ rcheevos-api/bin/
 *.patch
 !/app/librashader-patches/*.patch
 
+
+# agent worktrees (Claude Code)
+.claude/worktrees/

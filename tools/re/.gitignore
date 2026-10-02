@@ -1,0 +1,4 @@
+# RAM dumps, ROM pieces and Ghidra projects hold game code and data; never commit them
+work/
+__pycache__/
+*.pyc

@@ -22,6 +22,7 @@
 #include "NDS.h"
 #include "DSi.h"
 #include "ARM.h"
+#include "DebugHooks.h"
 #include "ARMInterpreter.h"
 #include "AREngine.h"
 #include "ARMJIT.h"
@@ -1121,6 +1122,7 @@ u32 ARMv5::ReadMem(u32 addr, int size)
 
 void ARMv4::DataRead8(u32 addr, u32* val)
 {
+    DebugHooks::ReadWatch watch{*this, addr, val, 1};
     *val = BusRead8(addr);
     DataRegion = addr;
     DataCycles = NDS.ARM7MemTimings[addr >> 15][0];
@@ -1129,6 +1131,7 @@ void ARMv4::DataRead8(u32 addr, u32* val)
 void ARMv4::DataRead16(u32 addr, u32* val)
 {
     addr &= ~1;
+    DebugHooks::ReadWatch watch{*this, addr, val, 2};
 
     *val = BusRead16(addr);
     DataRegion = addr;
@@ -1138,6 +1141,7 @@ void ARMv4::DataRead16(u32 addr, u32* val)
 void ARMv4::DataRead32(u32 addr, u32* val)
 {
     addr &= ~3;
+    DebugHooks::ReadWatch watch{*this, addr, val, 4};
 
     *val = BusRead32(addr);
     DataRegion = addr;
@@ -1147,6 +1151,7 @@ void ARMv4::DataRead32(u32 addr, u32* val)
 void ARMv4::DataRead32S(u32 addr, u32* val)
 {
     addr &= ~3;
+    DebugHooks::ReadWatch watch{*this, addr, val, 4};
 
     *val = BusRead32(addr);
     DataCycles += NDS.ARM7MemTimings[addr >> 15][3];
@@ -1154,6 +1159,7 @@ void ARMv4::DataRead32S(u32 addr, u32* val)
 
 void ARMv4::DataWrite8(u32 addr, u8 val)
 {
+    DebugHooks::OnAccess(*this, addr, val, 1, true);
     BusWrite8(addr, val);
     DataRegion = addr;
     DataCycles = NDS.ARM7MemTimings[addr >> 15][0];
@@ -1162,6 +1168,7 @@ void ARMv4::DataWrite8(u32 addr, u8 val)
 void ARMv4::DataWrite16(u32 addr, u16 val)
 {
     addr &= ~1;
+    DebugHooks::OnAccess(*this, addr, val, 2, true);
 
     BusWrite16(addr, val);
     DataRegion = addr;
@@ -1171,6 +1178,7 @@ void ARMv4::DataWrite16(u32 addr, u16 val)
 void ARMv4::DataWrite32(u32 addr, u32 val)
 {
     addr &= ~3;
+    DebugHooks::OnAccess(*this, addr, val, 4, true);
 
     BusWrite32(addr, val);
     DataRegion = addr;
@@ -1180,6 +1188,7 @@ void ARMv4::DataWrite32(u32 addr, u32 val)
 void ARMv4::DataWrite32S(u32 addr, u32 val)
 {
     addr &= ~3;
+    DebugHooks::OnAccess(*this, addr, val, 4, true);
 
     BusWrite32(addr, val);
     DataCycles += NDS.ARM7MemTimings[addr >> 15][3];

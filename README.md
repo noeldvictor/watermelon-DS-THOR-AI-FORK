@@ -42,6 +42,8 @@ external display support, RetroAchievements, RetroArch shader presets. On top of
 | RetroAchievements | Keep-alive ping blocks the emulator for the network round trip every two minutes | Ping is sent off the emulator thread, so it no longer causes periodic hitches |
 | Install | Application ID `me.magnum.melondualds` | Own application ID `app.watermelonthor`, so it installs alongside WatermelonDS and melonDS; its settings files in shared folders have their own names (`WatermelonThor.opts`, `<game>.thor.opts`) |
 | Updates | In-app updater that downloads WatermelonDS releases from GitHub | No in-app updater: new builds are installed by hand |
+| Reverse engineering | — | Debug builds carry a toolkit for game-specific fixes: memory search, read and write, watchpoints ("which code writes this", by address or by value), call traces, a GDB stub on the device's loopback, and Ghidra import of the live RAM or the ROM ([tools/re](tools/re/README.md)) |
+| Remaster Studio | — | A local web app for the HD pipeline, the renderer checks and the Thor ([tools/studio](tools/studio/README.md)) |
 
 **Install note:** this fork has its own application ID, `app.watermelonthor` (`.dev` for debug
 builds, `.nightly` for nightly builds), so it installs **alongside** WatermelonDS and melonDS

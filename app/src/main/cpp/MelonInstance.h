@@ -3,6 +3,8 @@
 
 #include <array>
 #include <condition_variable>
+#include <functional>
+#include <optional>
 #include <string>
 #include <atomic>
 #include <thread>
@@ -191,6 +193,27 @@ public:
     void clearDenseScreenBurstCaptureForDebug();
     void dumpDebugSnapshot();
 
+    // Reverse-engineering tools (MelonInstanceDebugTools.cpp). Reads work any time (a running game
+    // may change memory under them); writes need the emulator thread parked, or go through
+    // queueDebugAction, which runs on the emulator thread at the next frame start.
+    void readMemoryForDebug(int cpu, u32 address, u32 length, u8* out);
+    void writeMemoryForDebug(int cpu, u32 address, const u8* data, u32 length);
+    void queueDebugAction(std::function<void(NDS&)> action);
+    // R0-R14, the next instruction's address, CPSR, flags (bit 0 JIT on, bit 1 halted, bit 2 Thumb),
+    // then the ARM9's ITCM size, DTCM base and DTCM mask (CP15: games move the DTCM)
+    std::array<u32, 21> getRegistersForDebug(int cpu);
+    // queued: the interpreter for watchpoints and call traces (the JIT bypasses both), back to the JIT
+    void setInterpreterForDebug(bool enabled);
+    bool isJitActiveForDebug() const;
+    // queued: the GDB stub on 127.0.0.1 (reach it with adb forward); turns the interpreter on
+    void startGdbStubForDebug(int portArm9, int portArm7);
+    void stopGdbStubForDebug();
+    std::vector<u8> readRomForDebug(u32 offset, u32 length);
+    int getFrameForDebug() const { return frame; }
+    // runs the queued debug actions: on the emulator thread at a frame start, or by a caller that
+    // holds the emulator thread parked (paused)
+    void runPendingDebugActions();
+
     void updateConfiguration(std::shared_ptr<EmulatorConfiguration> newConfiguration);
     void normalizeVulkanPipelineProfileForSession(
         EmulatorConfiguration& newConfiguration) const noexcept;
@@ -329,6 +352,13 @@ private:
     int consoleType;
     NDS* nds;
     std::shared_ptr<Net> net;
+
+    std::mutex debugActionMutex;
+    std::vector<std::function<void(NDS&)>> debugActions;
+    std::atomic_bool debugActionsPending = false;
+    // the JIT settings to go back to after an interpreter session
+    std::optional<JITArgs> debugSavedJit;
+    bool debugGdbActive = false;
 
     std::mutex retroAchievementsManagerLifetimeMutex;
     std::unique_ptr<RetroAchievements::RetroAchievementsManager> retroAchievementsManager;

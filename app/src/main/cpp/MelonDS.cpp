@@ -433,6 +433,11 @@ namespace MelonDSAndroid
         return instance;
     }
 
+    std::shared_ptr<MelonInstance> getInstanceForDebug()
+    {
+        return GetInstanceSnapshot();
+    }
+
     void ReplaceInstance(std::shared_ptr<MelonInstance> replacement)
     {
         std::lock_guard lock(instanceLifetimeMutex);

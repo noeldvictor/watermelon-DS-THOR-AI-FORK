@@ -14,6 +14,7 @@ add_library(core STATIC
     ARMInterpreter_LoadStore.cpp
     CP15.cpp
     CRC32.cpp
+    DebugHooks.cpp
     DMA.cpp
     DMA_Timings.h
     DMA_Timings.cpp
@@ -98,6 +99,8 @@ if (ENABLE_GDBSTUB)
         debug/GdbProto.cpp
         debug/GdbCmds.cpp
     )
+    # PUBLIC: the define changes the ARM class layout, so everything that includes ARM.h must see it
+    target_compile_definitions(core PUBLIC GDBSTUB_ENABLED)
 endif()
 
 if (ENABLE_OGLRENDERER)

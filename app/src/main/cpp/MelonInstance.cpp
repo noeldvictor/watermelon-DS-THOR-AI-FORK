@@ -28,6 +28,7 @@
 #include "MelonInstance.h"
 #include "NDS.h"
 #include "NDSCart.h"
+#include "DebugHooks.h"
 #include "VulkanContext.h"
 #include "net/Net_Slirp.h"
 #include "Platform.h"
@@ -2485,6 +2486,9 @@ u32 MelonInstance::runFrame(bool frameskipRequested)
     if (currentRenderer == Renderer::Vulkan)
         joinPendingFrameTail();
     asyncFrameTailEnabled = MelonDSAndroid::isVulkanAsyncFrameTailEnabled();
+    // reverse-engineering tools: their events carry the frame; their actions run between frames
+    DebugHooks::SetFrame(static_cast<u32>(frame));
+    runPendingDebugActions();
 
     const auto configSnapshot = configurationSnapshot();
     const bool measuringVulkan =

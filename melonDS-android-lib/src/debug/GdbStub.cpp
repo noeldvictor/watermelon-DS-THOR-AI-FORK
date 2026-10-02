@@ -120,13 +120,15 @@ bool GdbStub::Init(int port)
 #endif
 
 	server->sin_family = AF_INET;
-	server->sin_addr.s_addr = htonl(INADDR_ANY);
+	// loopback only: the stub can read and write all emulated memory, so it must not listen on the network
+	// (on Android it is reached through `adb forward`)
+	server->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	server->sin_port = htons(Port);
 
 	r = bind(SockFd, (const sockaddr*)server, sizeof(*server));
 	if (r < 0)
 	{
-		Log(LogLevel::Error, "[GDB] err: can't bind to address <any> and port %d\n", Port);
+		Log(LogLevel::Error, "[GDB] err: can't bind to address <loopback> and port %d\n", Port);
 		goto err;
 	}
 

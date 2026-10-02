@@ -151,6 +151,33 @@ object MelonEmulator {
 
     external fun debugStepFrame(): Boolean
 
+    // Reverse-engineering tools (debug builds; DebugToolsJNI.cpp). cpu: 0 = ARM9, 1 = ARM7.
+    external fun debugIsGameRunning(): Boolean
+    external fun debugIsPaused(): Boolean
+    external fun debugGetFrame(): Int
+    /** I/O registers (0x04xxxxxx) read as 0: reading them has side effects. */
+    external fun debugReadMemory(cpu: Int, address: Int, length: Int): ByteArray?
+    /** 0 = no game, 1 = written (paused), 2 = queued for the next frame start. I/O is skipped. */
+    external fun debugWriteMemory(cpu: Int, address: Int, data: ByteArray): Int
+    /** R0-R14, next instruction, CPSR, flags (bit 0 JIT, 1 halted, 2 Thumb), ITCM size, DTCM base, DTCM mask, 1 if paused. */
+    external fun debugGetRegisters(cpu: Int): IntArray?
+    /** The interpreter instead of the JIT (watchpoints and call traces only see the interpreter). */
+    external fun debugSetInterpreter(enabled: Boolean): Boolean
+    external fun debugIsJitActive(): Boolean
+    external fun debugStartGdbStub(portArm9: Int, portArm7: Int): Boolean
+    external fun debugStopGdbStub(): Boolean
+    external fun debugReadRom(offset: Int, length: Int): ByteArray?
+    external fun debugWatchStart(start: Int, end: Int, reads: Boolean, writes: Boolean, arm7: Boolean, maxEvents: Int, matchValue: Boolean, value: Int): Boolean
+    external fun debugWatchStop()
+    /** [dropped, then per event: frame, pc, lr, address, value, size, write, cpu, thumb, r0, r1, r2, r3, sp] */
+    external fun debugWatchTake(): IntArray
+    external fun debugTraceStart(targetStart: Int, targetEnd: Int, arm7: Boolean, maxEvents: Int): Boolean
+    external fun debugTraceStop()
+    /** [dropped, then per call: frame, from, to, cpu] */
+    external fun debugTraceTakeEvents(): IntArray
+    /** per (call site, target): from, to, count; most frequent first */
+    external fun debugTraceTakeCounts(): IntArray
+
     external fun resetEmulation()
 
 	external fun stopEmulation()
