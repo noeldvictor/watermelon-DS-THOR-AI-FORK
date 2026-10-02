@@ -46,13 +46,28 @@ class StudioApp:
     def roms_found(self) -> dict[str, Any]:
         return {"roms": scan_rom_dirs(self.settings), "rom_dirs": self.settings.get("rom_dirs") or []}
 
-    def game(self, code: str) -> dict[str, Any]:
+    def _known_game(self, code: str) -> None:
         if not CODE.match(code or ""):
             raise NotFound(f"'{code}' is not a game code")
         if code not in self.library.codes():
             raise NotFound(f"No game {code} in the library")
+
+    def game(self, code: str) -> dict[str, Any]:
+        self._known_game(code)
         detail = self.library.detail(code)
         detail["jobs"] = [j.summary() for j in self.jobs.list(game=code)]
+        return detail
+
+    def models3d(self, code: str) -> dict[str, Any]:
+        """The game's extracted 3D models, built replacements and AI ledger (Game page, 3D models)."""
+        self._known_game(code)
+        return self.library.model_list(code)
+
+    def model3d(self, code: str, model_id: str) -> dict[str, Any]:
+        self._known_game(code)
+        detail = self.library.model_detail(code, model_id)
+        if detail is None:
+            raise NotFound(f"No extracted model '{model_id}' for {code}. Run Extract models, or reload the list.")
         return detail
 
     def _rom_from(self, rom_path: str) -> tuple[Path, dict[str, str]]:

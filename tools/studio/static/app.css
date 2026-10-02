@@ -307,6 +307,38 @@ input::placeholder, textarea::placeholder { color: var(--text3); }
 details.raw summary { cursor: pointer; color: var(--text2); font-weight: 600; padding: 4px 0; }
 details.raw pre { margin: 10px 0 0; max-height: 420px; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; color: var(--text2); }
 
+/* ---------------------------------------------------------------- game page: 3D models */
+.models-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
+@media (max-width: 1000px) { .models-steps { grid-template-columns: minmax(0, 1fr); } }
+.models-steps .step { background: var(--surface2); }
+.models-split { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 20px; align-items: start; }
+@media (max-width: 1000px) { .models-split { grid-template-columns: minmax(0, 1fr); } }
+.model-list { display: flex; flex-direction: column; gap: 6px; max-height: 640px; overflow: auto; }
+.model-row {
+  display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 12px; align-items: center;
+  padding: 8px 10px; border-radius: var(--radius-sm); background: var(--surface2);
+  border: 1px solid transparent; cursor: pointer; color: var(--text); text-align: left; font: inherit; width: 100%;
+}
+.model-row:hover { border-color: var(--border2); }
+.model-row.selected { border-color: rgba(244, 67, 54, .55); }
+.model-thumb { width: 128px; aspect-ratio: 4 / 1; background: #000; border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.model-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.model-thumb .none { font-size: 11px; color: var(--text3); }
+.model-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.model-info > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-info b { overflow-wrap: anywhere; }
+.badges { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
+.model-row .pill:not(.gold):not(.green) { background: var(--surface3); }
+.shapes-table td:not(:first-child) { white-space: nowrap; }
+.shapes-table td:first-child { min-width: 150px; overflow-wrap: anywhere; }
+.model-detail { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.model-pics { display: flex; flex-direction: column; gap: 10px; }
+.ref-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.tex-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.ref-grid .strip .cap, .tex-grid .strip .cap { padding: 4px 8px; font-size: 12px; overflow-wrap: anywhere; }
+.model-actions { display: flex; flex-direction: column; gap: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
+.model-actions .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
 /* ---------------------------------------------------------------- jobs + log */
 .job-list { display: flex; flex-direction: column; gap: 6px; }
 .job-row {

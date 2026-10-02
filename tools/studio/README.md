@@ -59,7 +59,53 @@ OpenRouter key is set for AI redraws (only yes/no: the key itself is never read 
 Output streams in live; **Cancel** stops a job (see below). The page also shows the ROM (with a
 one-click pick when a ROM with the right game code is in your ROM folders, and whether it is
 one the recipe was verified on), the job history, the recipe (read-only) and the pack and work
-folders.
+folders, and the 3D models section (next).
+
+### 3D models
+
+The Game page's **3D models** section wraps `hd_remaster.py models` (see
+[the pipeline's 3D models notes](../hd_remaster/README.md#3d-models-first-step-extraction-and-keys)):
+replacement meshes for a game's NSBMD models, drawn by the Vulkan renderer with the game's (or
+the pack's HD) textures and following its animation.
+
+| Button | Runs |
+| --- | --- |
+| Extract models | `hd_remaster.py models extract <rom> [--trace T.json] [--cpu-words W] [--previews]` |
+| Build models | `hd_remaster.py models build work\<CODE> [--smooth S] [--only=TEXT] [--seen]` |
+| Install models on Thor | `hd_remaster.py push packs\<CODE> --models-only --serial <serial>` |
+| Fit mesh... (per model) | `hd_remaster.py models fit work\<CODE> --model=<id> --mesh <file.glb\|.obj>` |
+| Smooth this model | `hd_remaster.py models build work\<CODE> --smooth S --only=<id>` |
+| AI dry run | `hd_remaster.py models ai work\<CODE> --model=<id> --provider P --polycount N --budget C --dry-run` |
+| AI generate... | the same without `--dry-run`: **spends money** (see below) |
+
+The list comes from `work\<CODE>\models\index.json`, most seen (by a `dl_trace`) first, with each
+model's `preview.png` as a thumbnail and badges for an `edited.obj`, AI reference pictures and AI
+meshes; a filter box and "Seen in a trace" narrow it (1285 models in Phantom Hourglass). Picking a
+model shows its shapes (key, material, texture size, lit, vertices, triangles, how often seen,
+whether a replacement is built in `models_built`), its pictures (original preview, the fitted
+mesh's `edited_preview.png`, the four AI reference views, its textures; click one to enlarge) and
+the per-model buttons. **Fit mesh...** takes the full path of a GLB or OBJ (or one of the model's
+own AI results) and asks before it writes over an existing `edited.obj`. Build models without a
+smooth strength builds the edited models; "Only" and "seen" pick which models to smooth (`--only`
+matches part of the id, name or source, so Smooth this model can also catch a model whose id
+contains this one's). Installing needs the replacements in `packs\<CODE>\models`: `models build`
+copies them there only when that pack exists, so build the texture pack first (a native test build
+is enough). It replaces just that folder on the Thor (no backup; the textures stay) through the
+Thor lane with the shared-device check, and the models load the next time the game starts.
+
+AI generate sends four rendered views of the model to Tripo (default) or Meshy and fits the
+returned mesh onto it as `edited.obj`. A call costs 20 credits (Tripo: $1 = 100 credits). The
+studio only starts one when all of these hold, checked on the server:
+
+- the provider's key is set: `TRIPO_API_KEY` or `MESHY_API_KEY` in `tools\hd_remaster\.env` (or
+  the environment). The studio only says yes or no (here and on the Library's setup card); it never
+  reads a key out, logs it or puts it on a command line. The tool reads it itself.
+- the game's ledger (`work\<CODE>\models\ai_ledger.jsonl`, shown as "AI ledger: N credits") plus
+  20 stays within the budget field (a cap over the whole ledger, default 100), and
+- the request carries `confirm_spend: true`, which the page only sends after its cost dialog
+  (provider, 20 credits per call, the ledger total) was confirmed.
+
+A dry run needs none of that: it renders the reference pictures and sends nothing.
 
 **Checks** - runs `frame_compare.py --cases <file>` on the Thor, optionally against a baseline
 run, with the internal resolution, renderers and "keep packs" options. Results from the studio's
@@ -88,15 +134,16 @@ and model, what is in front on the Thor, FPS while a game runs, a live view of b
 ## The Thor is shared
 
 Other sessions may be using the device. Every command that changes something on it (launch,
-states, packs, close, install, checks) first looks at what is in front. If it's anything other
+states, packs, close, install, install models, checks) first looks at what is in front. If it's anything other
 than Watermelon Thor or the home screen, the studio asks before it does anything. Status, FPS and
 screenshots only read. FPS and the pack setting are read only while the app already runs, so
 polling never starts it.
 
 ## Jobs, queues and cancelling
 
-Jobs run in two queues: pipeline steps (and setup) one at a time, and jobs that use the Thor
-(install, checks) one at a time; a second job waits for the first. Each Python job runs through
+Jobs run in two queues: pipeline steps (and setup, and the 3D model steps) one at a time, and
+jobs that use the Thor (install, install models, checks) one at a time; a second job waits for the
+first. Each Python job runs through
 `runner.py` in its own process group, so **Cancel** first asks it to stop (CTRL_BREAK, which the
 tool sees as Ctrl+C): `upscale` keeps what it finished and resumes next time, and `frame_compare`
 puts back the renderer, internal resolution, texture-pack and debug-tool settings it changed and
@@ -117,7 +164,7 @@ is gone after a restart.
 | `pipeline.py` | library, recipes, GAMES.md, ROM headers, hd_remaster command lines |
 | `checks.py` | frame_compare runs, reports and strips |
 | `config.py` | settings file and paths |
-| `static/` | the page: plain HTML, CSS and JavaScript modules, no build step, nothing from the internet |
+| `static/` | the page: plain HTML, CSS and JavaScript modules, no build step, nothing from the internet (`js/views/models3d.js`: the Game page's 3D models section) |
 | `test_studio.py` | smoke tests (fake adb, fake pipeline) |
 
 Tests: `tools\hd_remaster\.venv\Scripts\python.exe -m unittest tools\studio\test_studio.py -v`.
@@ -137,4 +184,7 @@ folder, so they never touch the device or your packs.
 - The device's ROM folder URI defaults to this Thor's SD card layout; change it in Settings for
   another device. Launching by file name needs it; the ROM list doesn't.
 - Install (`push`) copies the whole pack every time, as `hd_remaster.py push` does; large packs
-  take minutes.
+  take minutes. Install models copies only `models\`.
+- 3D models: the list shows 120 rows at a time ("Show more"); model pictures are only those the
+  tool wrote (PNGs in the model's folder and its `ai\` folder). Meshes to fit are typed as paths:
+  there is no upload.

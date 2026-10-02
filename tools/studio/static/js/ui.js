@@ -50,6 +50,38 @@ export function select(options, value) {
   return el;
 }
 
+/** A definition list from [label, value] pairs; empty values are left out. */
+export function kv(pairs) {
+  const dl = h('dl', { class: 'kv' });
+  for (const [k, v] of pairs) {
+    if (v === null || v === undefined || v === '') continue;
+    dl.append(h('dt', {}, k), h('dd', {}, v));
+  }
+  return dl;
+}
+
+/** A pipeline step card (Game page): title, text, state line, options behind a toggle, Run. */
+export function stepCard(num, title, text, options, openOptions = false) {
+  const state = h('div', { class: 'state' }, '');
+  const run = h('button', { class: 'btn primary', type: 'button' }, 'Run');
+  const optsEl = options ? h('div', { class: `options ${openOptions ? 'open' : ''}` }, options) : null;
+  const toggle = options && !openOptions ? h('button', { class: 'btn ghost', type: 'button', 'aria-expanded': 'false' }, 'Options') : null;
+  if (toggle) {
+    toggle.addEventListener('click', () => {
+      const open = !optsEl.classList.contains('open');
+      optsEl.classList.toggle('open', open);
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+  }
+  const el = h('div', { class: 'step' },
+    h('div', { class: 'row' }, num ? h('span', { class: 'step-num' }, num) : null, h('h3', {}, title)),
+    h('p', {}, text),
+    state,
+    optsEl,
+    h('div', { class: 'btn-row' }, run, toggle));
+  return { el, state, run };
+}
+
 // ------------------------------------------------------------------ feedback
 
 export function toast(message, kind = 'info', ms = 5500) {

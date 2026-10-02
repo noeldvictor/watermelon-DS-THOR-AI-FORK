@@ -5,6 +5,7 @@
     python hd_remaster.py upscale work/BSDE                # AI upscale (see upscale.py)
     python hd_remaster.py build   work/BSDE                # assemble packs/BSDE
     python hd_remaster.py push    packs/BSDE               # install on the device over adb
+    python hd_remaster.py push    packs/BSDE --models-only # only its 3D model replacements
     python hd_remaster.py all     ROM.nds                  # extract + upscale + build
 
 Work goes to tools/hd_remaster/work/<GAMECODE>/, packs to tools/hd_remaster/packs/<GAMECODE>/.
@@ -532,6 +533,9 @@ def cmd_models(args) -> None:
 def cmd_push(args) -> None:
     pack = Path(args.pack)
     code = pack.name
+    if args.models_only:
+        push_models(pack, code, args.serial)
+        return
     serial = find_device(args.serial)
     tmp = f"/data/local/tmp/hd_remaster_{code}"
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -547,6 +551,26 @@ def cmd_push(args) -> None:
     n = adb(serial, "shell", f"run-as {PACKAGE} sh -c '{script}'").strip()
     adb(serial, "shell", f"rm -rf {tmp}")
     log(f"installed files/texturepacks/{code} ({n} entries). The pack loads the next time the game starts.")
+
+
+def push_models(pack: Path, code: str, serial: str | None) -> None:
+    """Replace only the device pack's models/ (3D model replacements); its textures stay as they are.
+    No backup: models/ is rebuilt from work/<CODE>/models_built by models build at any time."""
+    src = pack / "models"
+    if not src.is_dir() or not any(src.glob("*.dl")):
+        raise SystemExit(f"{src} has no replacements: run models build (it copies them into packs/{code}) first")
+    serial = find_device(serial)
+    tmp = f"/data/local/tmp/hd_remaster_{code}_models"
+    log(f"pushing {src} to {serial}")
+    adb(serial, "shell", f"rm -rf {tmp}")
+    adb(serial, "push", str(src), tmp)
+    adb(serial, "shell", f"chmod -R a+rX {tmp}")
+    target = f"files/texturepacks/{code}/models"
+    script = (f"mkdir -p files/texturepacks/{code} && rm -rf {target} && "
+              f"cp -r {tmp} {target} && ls {target} | wc -l")
+    n = adb(serial, "shell", f"run-as {PACKAGE} sh -c '{script}'").strip()
+    adb(serial, "shell", f"rm -rf {tmp}")
+    log(f"installed {target} ({n} files). The models load the next time the game starts.")
 
 
 def cmd_all(args) -> None:
@@ -740,6 +764,8 @@ def main() -> None:
     p = sub.add_parser("push", help="install a pack on the device (adb, debuggable build)")
     p.add_argument("pack", help="packs/<GAMECODE>")
     p.add_argument("--serial", help="adb serial (default: the attached AYN Thor)")
+    p.add_argument("--models-only", action="store_true",
+                   help="replace only the pack's models/ (3D model replacements) on the device, no backup")
     p.set_defaults(fn=cmd_push)
 
     p = sub.add_parser("all", help="extract, upscale and build in one go")

@@ -256,6 +256,27 @@ def game_media(h: Handler, code: str, name: str, query: dict[str, str]) -> None:
     h.send_file(p, cache="max-age=3600")
 
 
+# ---------------------------------------------------------------------------- 3D models
+
+@route("GET", r"/api/games/([A-Za-z0-9]{4})/models3d")
+def game_models3d(h: Handler, code: str, query: dict[str, str]) -> None:
+    h.ok(h.app.models3d(code))
+
+
+@route("GET", r"/api/games/([A-Za-z0-9]{4})/models3d/([A-Za-z0-9._-]+)")
+def game_model3d(h: Handler, code: str, model_id: str, query: dict[str, str]) -> None:
+    h.ok(h.app.model3d(code, model_id))
+
+
+@route("GET", r"/api/games/([A-Za-z0-9]{4})/models3d/([A-Za-z0-9._-]+)/file/((?:ai/)?[A-Za-z0-9._-]+\.png)")
+def game_model3d_file(h: Handler, code: str, model_id: str, rel: str, query: dict[str, str]) -> None:
+    # only PNGs inside work/<CODE>/models/<id>/ and its ai/ folder (Library.model_file checks)
+    p = h.app.library.model_file(code, model_id, rel)
+    if p is None:
+        raise NotFound("no such image")
+    h.send_file(p)
+
+
 # ---------------------------------------------------------------------------- jobs
 
 @route("GET", r"/api/jobs")

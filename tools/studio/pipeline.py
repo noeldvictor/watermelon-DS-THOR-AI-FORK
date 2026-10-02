@@ -5,24 +5,42 @@ for hd_remaster.py's subcommands. The commands are the tool's own CLI, unchanged
 
     extract <rom>                       verify <work> --dumps D [--sprites S]
     upscale <work> [--model M] [--scale 2|4] [--force] [--only TEXT] [--redo-cutouts]
-    build <work> [--native]             push <pack> [--serial S]
+    build <work> [--native]             push <pack> [--serial S] [--models-only]
     all <rom> [upscale options]         misses <work> <rom> [--serial S] [--apply]
+
+and the 3D model steps (modelpack.py, ai3d.py):
+
+    models extract <rom> [--trace T] [--cpu-words W] [--previews]
+    models build <work> [--smooth S [--only TEXT] [--seen]] [--rom R]
+    models fit <work> --model ID --mesh M.glb|.obj
+    models ai <work> --model ID --provider P --polycount N --budget C [--dry-run]
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from config import RUNNER, Settings
 
 CODE = re.compile(r"^[A-Z0-9]{4}$")
 MEDIA_NAME = re.compile(r"^[\w.\-]+\.(jpg|jpeg|png|webp)$", re.I)
-STEPS = ("extract", "verify", "upscale", "build", "push", "all", "misses")
-DEVICE_STEPS = ("push",)
+STEPS = ("extract", "verify", "upscale", "build", "push", "all", "misses",
+         "models_extract", "models_build", "models_fit", "models_ai", "models_push")
+DEVICE_STEPS = ("push", "models_push")
+
+# 3D models: ids are modelpack.model_id() (source + name, other characters turned into '_'); the
+# pictures served are PNGs in a model's folder or its ai/ subfolder
+MODEL_ID = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
+MODEL_FILE = re.compile(r"^(?:ai/)?[A-Za-z0-9._-]+\.png$")
+SHAPE_KEY = re.compile(r"^mdl1_\d+_[0-9a-f]+$")
+AI_PROVIDERS = {"tripo": "TRIPO_API_KEY", "meshy": "MESHY_API_KEY"}
+AI_CREDITS_PER_CALL = 20        # ai3d.CREDITS_MULTI_IMAGE_MESH: both services, multiview geometry only
+AI_VIEWS = ("front", "right", "back", "left")
 
 
 class PipelineError(ValueError):
@@ -156,6 +174,18 @@ def _read_json(p: Path) -> Any:
         return None
 
 
+def _names(folder: Path) -> set[str]:
+    """The entry names in a folder (empty when it doesn't exist): one call instead of a stat per file."""
+    try:
+        return set(os.listdir(folder))
+    except OSError:
+        return set()
+
+
+def _count_files(folder: Path, suffix: str) -> int:
+    return sum(1 for name in _names(folder) if name.lower().endswith(suffix))
+
+
 class Library:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -273,6 +303,134 @@ class Library:
         p = self.hd / "games" / code / "media" / name
         return p if p.is_file() else None
 
+    # ------------------------------------------------------------------ 3D models
+
+    def model_folder(self, code: str, mid: str) -> Path | None:
+        """work/<CODE>/models/<id> when that is an extracted model (it has model.json), else None."""
+        if not CODE.match(code or "") or not MODEL_ID.match(mid or "") or not mid.strip("."):
+            return None
+        root = self.hd / "work" / code / "models"
+        folder = root / mid
+        try:
+            folder.resolve().relative_to(root.resolve())
+        except (ValueError, OSError):
+            return None
+        return folder if (folder / "model.json").is_file() else None
+
+    def models_rom(self, code: str) -> str | None:
+        """The ROM `models extract` read (models/rom.txt): fit, ai and build read their models from it."""
+        try:
+            return (self.hd / "work" / code / "models" / "rom.txt").read_text(encoding="utf-8").strip() or None
+        except OSError:
+            return None
+
+    def ai_status(self, code: str) -> dict[str, Any]:
+        """The game's AI ledger total and whether each provider's key is set (yes/no, never the key)."""
+        ledger = self.hd / "work" / code / "models" / "ai_ledger.jsonl"
+        credits, calls = ledger_total(ledger)
+        env = self.hd / ".env"
+        return {"ledger_credits": credits, "ledger_calls": calls, "ledger": str(ledger),
+                "credits_per_call": AI_CREDITS_PER_CALL,
+                "keys": {provider: api_key_set(env, name) for provider, name in AI_PROVIDERS.items()}}
+
+    def model_list(self, code: str) -> dict[str, Any]:
+        """The extracted 3D models (models/index.json, most seen first) and what each folder holds."""
+        if not CODE.match(code):
+            raise PipelineError("A game code is 4 letters or digits, like BSDE.")
+        work = self.hd / "work" / code
+        root = work / "models"
+        pack = self.hd / "packs" / code
+        index = _read_json(root / "index.json")
+        models = []
+        for entry in index if isinstance(index, list) else []:
+            mid = str(entry.get("id") or "") if isinstance(entry, dict) else ""
+            if not MODEL_ID.match(mid) or not mid.strip("."):
+                continue
+            names = _names(root / mid)
+            ai = _names(root / mid / "ai") if "ai" in names else set()
+            models.append({
+                "id": mid, "source": entry.get("source"), "name": entry.get("name"),
+                "shapes": entry.get("shapes"), "triangles": entry.get("triangles"), "seen": entry.get("seen") or 0,
+                "has_preview": "preview.png" in names, "has_edited": "edited.obj" in names,
+                "has_edited_preview": "edited_preview.png" in names,
+                "ai_refs": [v for v in AI_VIEWS if f"ref_{v}.png" in ai],
+                "ai_meshes": sum(1 for n in ai if n.lower().endswith(".glb")),
+            })
+        rom = self.models_rom(code)
+        return {
+            "code": code, "path": str(root), "extracted": _mtime(root / "index.json"),
+            "rom": rom, "rom_exists": bool(rom) and Path(rom).is_file(),
+            "models": models,
+            "counts": {"models": len(models), "seen": sum(1 for m in models if m["seen"]),
+                       "edited": sum(1 for m in models if m["has_edited"]),
+                       "previews": sum(1 for m in models if m["has_preview"])},
+            "built": {"path": str(work / "models_built"), "count": _count_files(work / "models_built", ".dl")},
+            "pack": {"path": str(pack / "models"), "pack_exists": pack.is_dir(),
+                     "count": _count_files(pack / "models", ".dl")},
+            "ai": self.ai_status(code),
+        }
+
+    def model_detail(self, code: str, mid: str) -> dict[str, Any] | None:
+        """One model: model.json, which shapes have a built replacement, and its pictures. None if unknown."""
+        folder = self.model_folder(code, mid)
+        if folder is None:
+            return None
+        info = _read_json(folder / "model.json")
+        if not isinstance(info, dict):
+            raise PipelineError(f"{folder / 'model.json'} can't be read. Run Extract models again.")
+        built = _names(self.hd / "work" / code / "models_built")
+        shapes = []
+        for s in info.get("shapes") or []:
+            if not isinstance(s, dict):
+                continue
+            key = str(s.get("key") or "")
+            shapes.append({**s, "built": bool(SHAPE_KEY.match(key)) and f"{key}.dl" in built})
+        names = _names(folder)
+        ai = _names(folder / "ai") if "ai" in names else set()
+
+        def url(rel: str) -> str | None:
+            # the stamp makes the page fetch a picture again after a fit or a dry run rewrote it
+            stamp = _mtime(folder / rel)
+            return f"/api/games/{code}/models3d/{mid}/file/{rel}?v={int(stamp)}" if stamp else None
+
+        hidden: list[str] = []
+        if "hidden.txt" in names:
+            try:
+                text = (folder / "hidden.txt").read_text(encoding="utf-8")
+                hidden = [line.strip() for line in text.splitlines() if line.strip()][:200]
+            except OSError:
+                pass
+        return {
+            "code": code, "id": mid, "source": info.get("source"), "name": info.get("name"),
+            "bbox": info.get("bbox"), "shapes": shapes, "folder": str(folder),
+            "triangles": sum(int(s.get("triangles") or 0) for s in shapes),
+            "seen": sum(int(s.get("seen") or 0) for s in shapes),
+            "edited": str(folder / "edited.obj") if "edited.obj" in names else None,
+            "hidden": hidden,
+            "images": {
+                "preview": url("preview.png") if "preview.png" in names else None,
+                "edited_preview": url("edited_preview.png") if "edited_preview.png" in names else None,
+                "ai_refs": [{"view": v, "url": url(f"ai/ref_{v}.png")} for v in AI_VIEWS if f"ref_{v}.png" in ai],
+                "textures": [{"name": n[4:-4], "url": url(n)} for n in sorted(names)
+                             if n.startswith("tex_") and MODEL_FILE.match(n)],
+            },
+            "ai_meshes": [str(folder / "ai" / n) for n in sorted(ai) if n.lower().endswith(".glb")],
+            "ai": self.ai_status(code),
+        }
+
+    def model_file(self, code: str, mid: str, rel: str) -> Path | None:
+        """A PNG in a model's folder or its ai/ subfolder; None for anything else."""
+        folder = self.model_folder(code, mid)
+        if folder is None or not MODEL_FILE.match(rel or ""):
+            return None
+        root = folder.resolve()
+        p = (folder / rel).resolve()
+        try:
+            p.relative_to(root)
+        except ValueError:
+            return None
+        return p if p.is_file() else None
+
     # ------------------------------------------------------------------ setup
 
     def setup_status(self) -> dict[str, Any]:
@@ -285,6 +443,7 @@ class Library:
             "python": self.settings.python(),
             "model_ready": (hd / "models" / "4x-UltraSharp.safetensors").exists(),
             "openrouter_key_set": openrouter_key_set(hd / ".env"),
+            "ai3d_keys": {provider: api_key_set(hd / ".env", name) for provider, name in AI_PROVIDERS.items()},
         }
 
     def setup_command(self) -> list[str]:
@@ -332,6 +491,11 @@ class Library:
                                     "Library page first (it installs PyTorch and the model).")
 
         args: list[str]
+        if step.startswith("models_"):
+            if step != "models_push":
+                need_venv()
+            title, args = self._models_args(code, step, options, need_rom)
+            return title, [self.settings.python(), str(RUNNER), str(tool)] + args
         if step == "extract":
             need_venv()
             args = ["extract", need_rom()]
@@ -395,6 +559,179 @@ class Library:
                 raise PipelineError("'Only' must be one line of text.")
             out += ["--only", only]
         return out
+
+    def _models_args(self, code: str, step: str, options: dict[str, Any],
+                     need_rom: Callable[[], str]) -> tuple[str, list[str]]:
+        """(title, hd_remaster.py arguments) for a 3D model step. Raises PipelineError with a fix-it message."""
+        work = self.hd / "work" / code
+        root = work / "models"
+        if step == "models_push":
+            pack = self.hd / "packs" / code
+            if not _count_files(pack / "models", ".dl"):
+                if not pack.is_dir() and _count_files(work / "models_built", ".dl"):
+                    raise PipelineError(f"packs\\{code} doesn't exist, so Build models left its replacements in "
+                                        f"work\\{code}\\models_built. Build the texture pack (a native test build "
+                                        "is enough): it copies them in. Then install the models.")
+                raise PipelineError(f"No built models in packs\\{code}\\models yet. Run Build models first.")
+            serial = self.settings.get("serial") or ""
+            return f"Install models {code}", ["push", str(pack), "--models-only"] + (["--serial", serial] if serial else [])
+        if step == "models_extract":
+            args = ["models", "extract", need_rom()]
+            args += _file_option(options, "trace", "--trace", "The dl_trace file", ".json")
+            args += _file_option(options, "cpu_words", "--cpu-words", "The CPU words file (gx_cpu_words.bin)")
+            if options.get("previews"):
+                args.append("--previews")
+            return f"Extract models {code}", args
+        if not (root / "index.json").exists():
+            raise PipelineError(f"No 3D models are extracted for {code} yet. Run Extract models first.")
+
+        if step == "models_build":
+            smooth = _smooth_option(options.get("smooth"))
+            only = str(options.get("only") or "").strip()
+            if any(ch in only for ch in "\r\n\0"):
+                raise PipelineError("'Only' must be one line of text.")
+            seen = bool(options.get("seen"))
+            if smooth is None and (only or seen):
+                raise PipelineError("'Only' and 'seen' pick the models to smooth: set a smooth strength too, or "
+                                    "clear them to build the edited models.")
+            if smooth is None and not any((root / name / "edited.obj").is_file() for name in _names(root)):
+                raise PipelineError("Nothing to build: no model has an edited.obj yet. Fit a mesh onto a model (or "
+                                    "save an edit of its model.obj as edited.obj), or set a smooth strength.")
+            args = ["models", "build", str(work)]
+            parts = []
+            if smooth is not None:
+                args += ["--smooth", f"{smooth:g}"]
+                parts.append(f"smooth {smooth:g}")
+            if only:
+                args.append(f"--only={only}")       # '=' form: a model id may start with '-'
+                parts.append(f"only '{only}'")
+            if seen:
+                args.append("--seen")
+                parts.append("seen")
+            rom = self.models_rom(code)
+            if not rom or not Path(rom).is_file():
+                args += ["--rom", need_rom()]   # extract's ROM moved: the game's own ROM file
+            return f"Build models {code}" + (f" ({', '.join(parts)})" if parts else ""), args
+
+        # fit and ai work on one model, which they read again from the ROM extract read
+        mid = str(options.get("model") or "").strip()
+        folder = self.model_folder(code, mid)
+        if folder is None:
+            raise PipelineError(f"There is no extracted model '{mid}' for {code}. Pick one from the 3D models list.")
+        rom = self.models_rom(code)
+        if not rom or not Path(rom).is_file():
+            raise PipelineError(f"This reads the ROM the models were extracted from, and {rom or 'models/rom.txt'} "
+                                "isn't there any more. Run Extract models again with the ROM's current location.")
+        label = str((_read_json(folder / "model.json") or {}).get("name") or mid)
+        if step == "models_fit":
+            raw = str(options.get("mesh") or "").strip()
+            if not raw:
+                raise PipelineError("Paste the full path of the mesh to fit (a .glb or .obj file).")
+            mesh = clean_path(raw)
+            if not mesh.is_absolute():
+                raise PipelineError("Use the full path of the mesh file, starting with the drive letter.")
+            if mesh.suffix.lower() not in (".glb", ".obj"):
+                raise PipelineError(f"{mesh.name} isn't a .glb or .obj file. Export the mesh as GLB or OBJ first.")
+            if not mesh.is_file():
+                raise PipelineError(f"There is no file at {mesh}.")
+            return (f"Fit {mesh.name} onto {label} ({code})",
+                    ["models", "fit", str(work), f"--model={mid}", "--mesh", str(mesh)])
+
+        # models_ai
+        provider = str(options.get("provider") or "tripo").strip().lower()
+        if provider not in AI_PROVIDERS:
+            raise PipelineError("Pick Tripo or Meshy as the AI provider.")
+        polycount = _int_option(options.get("polycount"), 6000, 100, 100000, "The polygon count")
+        budget = _int_option(options.get("budget"), 100, 0, 100000, "The budget")
+        args = ["models", "ai", str(work), f"--model={mid}", "--provider", provider,
+                "--polycount", str(polycount), "--budget", str(budget)]
+        if options.get("dry_run"):
+            return f"AI dry run: {label} ({code})", args + ["--dry-run"]
+        # a real call spends money: the key, the budget and an explicit confirmation, in that order
+        name = provider.capitalize()
+        key = AI_PROVIDERS[provider]
+        if not api_key_set(self.hd / ".env", key):
+            raise PipelineError(f"No {key} is set, so nothing can be sent to {name}. Add {key}=... to "
+                                f"{self.hd / '.env'} (it is never committed), or run a dry run, which needs no key.")
+        spent, _ = ledger_total(root / "ai_ledger.jsonl")
+        if spent + AI_CREDITS_PER_CALL > budget:
+            raise PipelineError(f"The {code} ledger already has {spent} credits and a call costs {AI_CREDITS_PER_CALL}, "
+                                f"which passes the budget of {budget}. Raise the budget to at least "
+                                f"{spent + AI_CREDITS_PER_CALL} to allow one more call.")
+        if options.get("confirm_spend") is not True:
+            raise PipelineError(f"Generating a model with {name} spends {AI_CREDITS_PER_CALL} credits. Confirm the "
+                                "cost first (AI generate asks), or run a dry run, which is free.")
+        return f"AI model: {label} ({code}, {name}, {AI_CREDITS_PER_CALL} credits)", args
+
+
+def _file_option(options: dict[str, Any], key: str, flag: str, label: str, suffix: str | None = None) -> list[str]:
+    """[flag, path] for an optional input file the user pasted, or [] when the field is empty."""
+    raw = str(options.get(key) or "").strip()
+    if not raw:
+        return []
+    p = clean_path(raw)
+    if not p.is_absolute():
+        raise PipelineError(f"{label}: use the full path, starting with the drive letter.")
+    if suffix and p.suffix.lower() != suffix:
+        raise PipelineError(f"{label} must be a {suffix} file.")
+    if not p.is_file():
+        raise PipelineError(f"{label} isn't there: no file at {p}.")
+    return [flag, str(p)]
+
+
+def _smooth_option(raw: Any) -> float | None:
+    if raw in (None, ""):
+        return None
+    try:
+        value = float(str(raw).strip())
+    except ValueError:
+        value = math.nan
+    if not 0 <= value <= 1:      # NaN fails this too
+        raise PipelineError("The smooth strength must be a number from 0 to 1, like 0.6 (or empty).")
+    return value
+
+
+def _int_option(raw: Any, default: int, low: int, high: int, label: str) -> int:
+    if raw in (None, ""):
+        return default
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        value = low - 1
+    if not low <= value <= high:
+        raise PipelineError(f"{label} must be a whole number from {low} to {high} (default {default}).")
+    return value
+
+
+def ledger_total(ledger: Path) -> tuple[int, int]:
+    """(credits, calls) in an AI ledger, one JSON object per line; unreadable lines count as nothing."""
+    try:
+        text = ledger.read_text(encoding="utf-8")
+    except OSError:
+        return 0, 0
+    credits = calls = 0
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            credits += int(json.loads(line).get("credits", 0))
+        except (ValueError, TypeError, AttributeError):
+            continue
+        calls += 1
+    return credits, calls
+
+
+def api_key_set(env_file: Path, name: str) -> bool:
+    """Whether ai3d would find the key `name`: its first line in .env, else the environment.
+    Only yes/no: the value itself is never returned."""
+    try:
+        lines = env_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        if line.startswith(name + "="):
+            return bool(line.split("=", 1)[1].strip())
+    return bool(os.environ.get(name))
 
 
 def openrouter_key_set(env_file: Path) -> bool:

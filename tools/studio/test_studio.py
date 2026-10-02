@@ -6,8 +6,12 @@ real pipeline.
 """
 from __future__ import annotations
 
+import contextlib
 import http.client
+import importlib.util
+import io
 import json
+import os
 import shutil
 import struct
 import sys
@@ -17,6 +21,7 @@ import time
 import unittest
 import zlib
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -29,6 +34,9 @@ from server import make_server  # noqa: E402
 
 SERIAL = "c3ca0370"
 LAUNCHER = "com.android.launcher3/.uioverrides.QuickstepLauncher"
+HERO = "Obj_hero.nsbmd__hero"
+TREE = "Obj_tree.nsbmd__tree"
+FAKE_KEY = "tsk-secret-777"
 FAKE_TOOL = r'''
 import sys, time
 args = sys.argv[1:]
@@ -132,7 +140,49 @@ def make_fixture(root: Path) -> dict[str, Path]:
         "rows": [{"frame": 3, "screen": "top", "share": 0.2, "flicker": 4, "flagged": True},
                  {"frame": 3, "screen": "bottom", "share": 0.01, "flicker": 0}]}), encoding="utf-8")
     (case / "Test_case_slot_1_frame0003_top.png").write_bytes(tiny_png())
-    return {"hd": hd, "rom": rom, "roms": roms, "runs": root / "runs"}
+
+    # 3D models as `models extract` leaves them: a seen and edited model with AI references, an
+    # unseen one, an index entry that tries to leave the folder, a ledger with 40 credits
+    models = hd / "work" / "TSTE" / "models"
+    for mid, name, seen, key in ((HERO, "hero", 12, "mdl1_64_00000000000000aa"), (TREE, "tree", 0, "mdl1_32_00000000000000bb")):
+        folder = models / mid
+        folder.mkdir(parents=True)
+        (folder / "model.json").write_text(json.dumps({
+            "source": f"Obj/{name}.nsbmd", "name": name, "id": mid, "bbox": [0, 0, 0, 1, 1, 1],
+            "shapes": [{"key": key, "name": "body", "material": "skin", "texture_size": [32, 32], "lit": True,
+                        "vertices": 30, "triangles": 10, "seen": seen}]}), encoding="utf-8")
+        (folder / "model.obj").write_text("g body\n", encoding="utf-8")
+        (folder / "tex_skin.png").write_bytes(tiny_png())
+    hero = models / HERO
+    (hero / "preview.png").write_bytes(tiny_png(16, 4))
+    (hero / "edited.obj").write_text("g body\n", encoding="utf-8")
+    (hero / "edited_preview.png").write_bytes(tiny_png(16, 4))
+    (hero / "hidden.txt").write_text("eyes\n", encoding="utf-8")
+    (hero / "ai").mkdir()
+    for view in ("front", "right", "back", "left"):
+        (hero / "ai" / f"ref_{view}.png").write_bytes(tiny_png())
+    (hero / "ai" / "task1.glb").write_bytes(b"glTF")
+    (hero / "ai" / "notes.txt").write_text("not a picture", encoding="utf-8")
+    (models / "index.json").write_text(json.dumps([
+        {"id": HERO, "source": "Obj/hero.nsbmd", "name": "hero", "shapes": 1, "triangles": 10, "seen": 12},
+        {"id": TREE, "source": "Obj/tree.nsbmd", "name": "tree", "shapes": 1, "triangles": 10, "seen": 0},
+        {"id": "../escape", "source": "x", "name": "bad", "shapes": 0, "triangles": 0, "seen": 0}]), encoding="utf-8")
+    (models / "rom.txt").write_text(str(rom), encoding="utf-8")
+    (models / "ai_ledger.jsonl").write_text('{"credits": 20, "provider": "tripo"}\n{"credits": 20}\nnot json\n\n',
+                                            encoding="utf-8")
+    (hd / "work" / "TSTE" / "secret.png").write_bytes(tiny_png())     # next to models/: never served
+    built = hd / "work" / "TSTE" / "models_built"
+    built.mkdir()
+    (built / "mdl1_64_00000000000000aa.dl").write_bytes(b"\0" * 8)
+    (built / "originals.txt").write_text("mdl1_64_00000000000000aa 00000000\n", encoding="utf-8")
+    (hd / "packs" / "TSTE" / "models").mkdir()
+    (hd / "packs" / "TSTE" / "models" / "mdl1_64_00000000000000aa.dl").write_bytes(b"\0" * 8)
+    inputs = root / "inputs"
+    inputs.mkdir()
+    for name in ("new.glb", "new.OBJ", "notes.txt", "gx_cpu_words.bin"):
+        (inputs / name).write_bytes(b"x")
+    (inputs / "dl_trace.json").write_text(json.dumps({"lists": []}), encoding="utf-8")
+    return {"hd": hd, "rom": rom, "roms": roms, "runs": root / "runs", "inputs": inputs}
 
 
 class StudioServerTest(unittest.TestCase):
@@ -250,7 +300,8 @@ class StudioServerTest(unittest.TestCase):
             if pack["size_bytes"] is not None:
                 break
             time.sleep(0.05)
-        self.assertEqual(pack["size_bytes"], 100 + len(json.dumps({"game": "TSTE", "scale": 4, "images": 3})))
+        # a texture, a model replacement and pack.json
+        self.assertEqual(pack["size_bytes"], 100 + 8 + len(json.dumps({"game": "TSTE", "scale": 4, "images": 3})))
 
     def test_setup_never_reveals_the_key(self) -> None:
         env = self.paths["hd"] / ".env"
@@ -303,6 +354,182 @@ class StudioServerTest(unittest.TestCase):
         lines, end = self.stream_job(job["id"], timeout=20)
         self.assertEqual(end["status"], "cancelled")
         self.assertLess(len([line for line in lines if line.startswith("working")]), 250)
+
+    # ------------------------------------------------------------------ 3D models
+
+    def run_step(self, step: str, options: dict, expect: int = 200) -> dict:
+        return self.post_json("/api/games/TSTE/run", {"step": step, "options": options}, expect=expect)
+
+    def test_models_list_detail_and_pictures(self) -> None:
+        res = self.get_json("/api/games/TSTE/models3d")
+        self.assertTrue(res["extracted"])
+        self.assertEqual([m["id"] for m in res["models"]], [HERO, TREE])   # the escaping entry is dropped
+        hero, tree = res["models"]
+        self.assertEqual((hero["has_preview"], hero["has_edited"], hero["has_edited_preview"]), (True, True, True))
+        self.assertEqual((hero["ai_refs"], hero["ai_meshes"], hero["seen"]), (["front", "right", "back", "left"], 1, 12))
+        self.assertEqual((tree["has_preview"], tree["has_edited"], tree["ai_refs"]), (False, False, []))
+        self.assertEqual(res["counts"], {"models": 2, "seen": 1, "edited": 1, "previews": 1})
+        self.assertEqual((res["built"]["count"], res["pack"]["count"]), (1, 1))
+        self.assertTrue(res["rom_exists"])
+        self.assertEqual((res["ai"]["ledger_credits"], res["ai"]["ledger_calls"], res["ai"]["credits_per_call"]), (40, 2, 20))
+        self.assertEqual(set(res["ai"]["keys"]), {"tripo", "meshy"})
+
+        d = self.get_json(f"/api/games/TSTE/models3d/{HERO}")
+        self.assertEqual((d["name"], d["triangles"], d["hidden"]), ("hero", 10, ["eyes"]))
+        self.assertTrue(d["shapes"][0]["built"])
+        self.assertFalse(self.get_json(f"/api/games/TSTE/models3d/{TREE}")["shapes"][0]["built"])
+        self.assertTrue(d["edited"].endswith("edited.obj"))
+        self.assertEqual(len(d["ai_meshes"]), 1)
+        self.assertEqual([t["name"] for t in d["images"]["textures"]], ["skin"])
+        urls = [d["images"]["preview"], d["images"]["edited_preview"], d["images"]["textures"][0]["url"]]
+        urls += [r["url"] for r in d["images"]["ai_refs"]]
+        self.assertEqual(len(urls), 7)
+        for url in urls:
+            status, headers, raw = self.request("GET", url)
+            self.assertEqual((status, headers["Content-Type"]), (200, "image/png"), url)
+            self.assertTrue(raw.startswith(b"\x89PNG"))
+        self.assertIn("error", self.get_json("/api/games/TSTE/models3d/nope", expect=404))
+        self.assertIn("error", self.get_json("/api/games/ZZZZ/models3d", expect=404))
+
+        # only PNGs inside the model's folder and its ai/ folder
+        base = f"/api/games/TSTE/models3d/{HERO}/file"
+        for path in (f"{base}/model.json", f"{base}/ai/notes.txt", f"{base}/missing.png", f"{base}/../secret.png",
+                     f"{base}/ai/../../secret.png", f"{base}/..%2Fsecret.png", "/api/games/TSTE/models3d/../file/secret.png",
+                     "/api/games/TSTE/models3d/./file/secret.png", f"/api/games/TSTE/models3d/{HERO}/file/sub/x.png"):
+            self.assertEqual(self.request("GET", path)[0], 404, path)
+        lib = self.app.library
+        self.assertIsNone(lib.model_file("TSTE", HERO, "../secret.png"))
+        self.assertIsNone(lib.model_file("TSTE", "..", "secret.png"))
+        self.assertIsNone(lib.model_file("TSTE", f"{HERO}/..", "preview.png"))
+        self.assertIsNone(lib.model_file("tste", HERO, "preview.png"))
+        self.assertIsNotNone(lib.model_file("TSTE", HERO, "ai/ref_front.png"))
+
+    def test_models_extract_and_build_commands(self) -> None:
+        rom, inp = str(self.paths["rom"]), self.paths["inputs"]
+        trace, words = inp / "dl_trace.json", inp / "gx_cpu_words.bin"
+        job = self.run_step("models_extract", {"rom_path": rom, "trace": f'"{trace}"', "cpu_words": str(words),
+                                               "previews": True})["job"]
+        self.assertIn(str(self.paths["hd"]), job["command"])      # the stand-in tool, never the real one
+        lines, end = self.stream_job(job["id"])
+        self.assertEqual((end["status"], end["title"], end["lane"]), ("done", "Extract models TSTE", "pipeline"), lines)
+        self.assertIn(f"fake hd_remaster: models extract {rom} --trace {trace} --cpu-words {words} --previews", lines)
+        err = self.run_step("models_extract", {"rom_path": rom, "trace": str(inp / "notes.txt")}, expect=400)
+        self.assertIn(".json", err["error"])
+        err = self.run_step("models_extract", {"rom_path": rom, "trace": str(inp / "gone.json")}, expect=400)
+        self.assertIn("no file", err["error"])
+        err = self.run_step("models_extract", {"rom_path": rom, "cpu_words": "gx_cpu_words.bin"}, expect=400)
+        self.assertIn("full path", err["error"])
+
+        job = self.run_step("models_build", {"smooth": "0.6", "only": "hero", "seen": True})["job"]
+        lines, end = self.stream_job(job["id"])
+        work = self.paths["hd"] / "work" / "TSTE"
+        self.assertIn(f"fake hd_remaster: models build {work} --smooth 0.6 --only=hero --seen", lines)
+        self.assertEqual(end["title"], "Build models TSTE (smooth 0.6, only 'hero', seen)")
+        # without a smooth strength: the edited models (the hero has an edited.obj)
+        job = self.run_step("models_build", {"smooth": "", "only": "", "seen": False})["job"]
+        lines, _ = self.stream_job(job["id"])
+        self.assertIn(f"fake hd_remaster: models build {work}", lines)
+        for options, text in (({"smooth": "1.5"}, "0 to 1"), ({"smooth": "nan"}, "0 to 1"), ({"smooth": "soft"}, "0 to 1"),
+                              ({"only": "hero"}, "smooth strength"), ({"seen": True}, "smooth strength")):
+            self.assertIn(text, self.run_step("models_build", options, expect=400)["error"])
+
+    def test_models_fit_commands(self) -> None:
+        inp = self.paths["inputs"]
+        job = self.run_step("models_fit", {"model": HERO, "mesh": str(inp / "new.glb")})["job"]
+        lines, end = self.stream_job(job["id"])
+        work = self.paths["hd"] / "work" / "TSTE"
+        self.assertIn(f"fake hd_remaster: models fit {work} --model={HERO} --mesh {inp / 'new.glb'}", lines)
+        self.assertEqual(end["title"], "Fit new.glb onto hero (TSTE)")
+        self.assertIn("--mesh", self.run_step("models_fit", {"model": TREE, "mesh": str(inp / "new.OBJ")})["job"]["command"])
+        for options, text in (({"model": HERO, "mesh": str(inp / "notes.txt")}, ".glb or .obj"),
+                              ({"model": HERO, "mesh": str(inp / "gone.glb")}, "no file"),
+                              ({"model": HERO, "mesh": "new.glb"}, "full path"),
+                              ({"model": HERO, "mesh": ""}, "Paste the full path"),
+                              ({"model": "nope", "mesh": str(inp / "new.glb")}, "no extracted model"),
+                              ({"model": "..", "mesh": str(inp / "new.glb")}, "no extracted model")):
+            self.assertIn(text, self.run_step("models_fit", options, expect=400)["error"])
+
+    def test_models_ai_dry_run_needs_no_key(self) -> None:
+        with mock.patch.dict(os.environ):
+            os.environ.pop("TRIPO_API_KEY", None)
+            os.environ.pop("MESHY_API_KEY", None)
+            job = self.run_step("models_ai", {"model": HERO, "dry_run": True})["job"]
+            lines, end = self.stream_job(job["id"])
+            work = self.paths["hd"] / "work" / "TSTE"
+            self.assertIn(f"fake hd_remaster: models ai {work} --model={HERO} --provider tripo --polycount 6000 "
+                          "--budget 100 --dry-run", lines)
+            self.assertEqual(end["title"], "AI dry run: hero (TSTE)")
+            job = self.run_step("models_ai", {"model": HERO, "dry_run": True, "provider": "meshy", "polycount": "3000",
+                                              "budget": 60})["job"]
+            self.assertIn("--provider meshy --polycount 3000 --budget 60 --dry-run", job["command"])
+            for options, text in (({"provider": "openai"}, "Tripo or Meshy"), ({"polycount": "lots"}, "polygon count"),
+                                  ({"polycount": 50}, "polygon count"), ({"budget": -1}, "budget")):
+                err = self.run_step("models_ai", {"model": HERO, "dry_run": True, **options}, expect=400)
+                self.assertIn(text, err["error"])
+
+    def test_models_ai_generate_needs_key_budget_and_confirmation(self) -> None:
+        env = self.paths["hd"] / ".env"
+        generate = {"model": HERO, "dry_run": False, "provider": "tripo"}
+        with mock.patch.dict(os.environ):
+            os.environ.pop("TRIPO_API_KEY", None)
+            os.environ.pop("MESHY_API_KEY", None)
+            before = len(self.app.jobs.list(kind="models_ai"))
+            err = self.run_step("models_ai", {**generate, "confirm_spend": True}, expect=400)
+            self.assertIn("No TRIPO_API_KEY is set", err["error"])
+            self.assertFalse(self.get_json("/api/games/TSTE/models3d")["ai"]["keys"]["tripo"])
+            env.write_text(f"OPENROUTER_API_KEY=\nTRIPO_API_KEY={FAKE_KEY}\n", encoding="utf-8")
+            try:
+                status, _, raw = self.request("GET", "/api/games/TSTE/models3d")
+                self.assertTrue(json.loads(raw)["ai"]["keys"]["tripo"])
+                self.assertFalse(json.loads(raw)["ai"]["keys"]["meshy"])
+                self.assertTrue(self.get_json("/api/setup")["ai3d_keys"]["tripo"])
+                err = self.run_step("models_ai", {**generate, "provider": "meshy", "confirm_spend": True}, expect=400)
+                self.assertIn("MESHY_API_KEY", err["error"])
+                # a key alone isn't enough: the client must confirm the cost explicitly
+                for confirm in (None, False, "yes", 1):
+                    err = self.run_step("models_ai", {**generate, "confirm_spend": confirm}, expect=400)
+                    self.assertIn("spends 20 credits", err["error"])
+                err = self.run_step("models_ai", {**generate, "confirm_spend": True, "budget": 50}, expect=400)
+                self.assertIn("Raise the budget to at least 60", err["error"])
+                self.assertEqual(len(self.app.jobs.list(kind="models_ai")), before, "no job for a refused call")
+
+                res = self.run_step("models_ai", {**generate, "confirm_spend": True})
+                job = res["job"]
+                self.assertIn(str(self.paths["hd"]), job["command"])   # the stand-in tool prints, never calls out
+                self.assertNotIn("--dry-run", job["command"])
+                self.assertEqual(job["title"], "AI model: hero (TSTE, Tripo, 20 credits)")
+                lines, end = self.stream_job(job["id"])
+                self.assertEqual(end["status"], "done", lines)
+                self.assertIn(f"fake hd_remaster: models ai {self.paths['hd'] / 'work' / 'TSTE'} --model={HERO} "
+                              "--provider tripo --polycount 6000 --budget 100", lines)
+                for path in ("/api/games/TSTE/models3d", f"/api/games/TSTE/models3d/{HERO}", "/api/setup", "/api/jobs",
+                             f"/api/jobs/{job['id']}?tail=50"):
+                    self.assertNotIn(FAKE_KEY.encode(), self.request("GET", path)[2], path)
+                self.assertNotIn(FAKE_KEY, json.dumps(res))
+            finally:
+                env.unlink()
+
+    def test_models_install_uses_the_device_guard(self) -> None:
+        self.adb.foreground = "org.vita3k.emulator/.Emulator"
+        try:
+            err = self.run_step("models_push", {}, expect=409)
+            self.assertTrue(err["needs_confirm"])
+            self.assertEqual(self.app.jobs.list(kind="models_push"), [])
+            job = self.post_json("/api/games/TSTE/run", {"step": "models_push", "options": {}, "confirm": True})["job"]
+        finally:
+            self.adb.foreground = LAUNCHER
+        self.assertEqual((job["lane"], job["title"]), ("device", "Install models TSTE"))
+        lines, end = self.stream_job(job["id"])
+        self.assertEqual(end["status"], "done", lines)
+        pack = self.paths["hd"] / "packs" / "TSTE"
+        self.assertIn(f"fake hd_remaster: push {pack} --models-only --serial {SERIAL}", lines)
+        models = pack / "models"
+        models.rename(pack / "models_off")
+        try:
+            err = self.run_step("models_push", {}, expect=400)
+            self.assertIn("Run Build models first", err["error"])
+        finally:
+            (pack / "models_off").rename(models)
 
     # ------------------------------------------------------------------ device
 
@@ -415,6 +642,76 @@ class RealLibraryReadOnlyTest(unittest.TestCase):
             self.assertTrue({"BSDE", "AZEE"} <= set(codes), codes)
             summary = lib.summary("BSDE")
             self.assertEqual(summary["title"], "Lufia: Curse of the Sinistrals")
+
+    def test_repo_models_extraction(self) -> None:
+        """A real `models extract` (work folders are local, never committed): index.json and
+        model.json still have the fields the studio reads."""
+        hd = REPO_DIR / "tools" / "hd_remaster"
+        codes = sorted(p.parent.parent.name for p in (hd / "work").glob("*/models/index.json"))
+        if not codes:
+            self.skipTest("no models extraction in tools/hd_remaster/work")
+        with tempfile.TemporaryDirectory() as tmp:
+            lib = Library(Settings(Path(tmp) / "s.json"))
+            listing = lib.model_list(codes[0])
+            self.assertTrue(listing["models"], codes[0])
+            first = listing["models"][0]
+            self.assertTrue({"id", "source", "name", "shapes", "triangles", "seen"} <= set(first))
+            detail = lib.model_detail(codes[0], first["id"])
+            self.assertIsNotNone(detail)
+            self.assertTrue(detail["shapes"][0]["key"].startswith("mdl1_"))
+            self.assertTrue({"name", "material", "texture_size", "lit", "vertices", "triangles", "seen"}
+                            <= set(detail["shapes"][0]))
+
+
+class PushModelsOnlyTest(unittest.TestCase):
+    """hd_remaster.py push --models-only with adb replaced: what it would run on the device."""
+
+    def test_models_only_replaces_just_the_models_folder(self) -> None:
+        hd_dir = REPO_DIR / "tools" / "hd_remaster"
+        try:
+            import numpy  # noqa: F401 - hd_remaster.py needs the pipeline's Python
+            import PIL  # noqa: F401
+        except ImportError:
+            self.skipTest("numpy and Pillow are needed to import hd_remaster.py (run with its .venv)")
+        saved_path = list(sys.path)
+        try:
+            spec = importlib.util.spec_from_file_location("hd_remaster_under_test", hd_dir / "hd_remaster.py")
+            tool = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(tool)
+        finally:
+            sys.path[:] = saved_path
+        calls: list[tuple[str | None, tuple[str, ...]]] = []
+
+        def fake_adb(serial: str | None, *args: str, check: bool = True) -> str:
+            calls.append((serial, args))
+            return "1\n" if args[0] == "shell" and "run-as" in args[1] else ""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pack = Path(tmp) / "TSTE"
+            (pack / "models").mkdir(parents=True)
+            (pack / "models" / "mdl1_8_00000000000000aa.dl").write_bytes(b"\0" * 4)
+            (pack / "textures").mkdir()
+            argv = ["hd_remaster.py", "push", str(pack), "--models-only", "--serial", "X1"]
+            out = io.StringIO()
+            with mock.patch.object(tool, "adb", fake_adb), mock.patch.object(sys, "argv", argv), \
+                    contextlib.redirect_stdout(out):
+                tool.main()
+            self.assertIn("installed files/texturepacks/TSTE/models (1 files)", out.getvalue())
+            self.assertEqual({serial for serial, _ in calls}, {"X1"})
+            pushes = [args for _, args in calls if args[0] == "push"]
+            self.assertEqual(pushes, [("push", str(pack / "models"), "/data/local/tmp/hd_remaster_TSTE_models")])
+            script = next(args[1] for _, args in calls if args[0] == "shell" and "run-as" in args[1])
+            self.assertIn("rm -rf files/texturepacks/TSTE/models && "
+                          "cp -r /data/local/tmp/hd_remaster_TSTE_models files/texturepacks/TSTE/models", script)
+            self.assertNotIn(".bak", script)       # no backup, and the rest of the pack is left alone
+
+            # nothing built: refused before adb is touched
+            calls.clear()
+            empty = Path(tmp) / "EMPT"
+            empty.mkdir()
+            with mock.patch.object(tool, "adb", fake_adb), self.assertRaises(SystemExit):
+                tool.push_models(empty, "EMPT", "X1")
+            self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

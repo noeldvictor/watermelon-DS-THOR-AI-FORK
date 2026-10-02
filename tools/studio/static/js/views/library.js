@@ -130,6 +130,7 @@ export function render(root) {
 
   function renderSetup(s) {
     const ready = s.tool_found && s.venv_ready && s.model_ready;
+    const keys3d = s.ai3d_keys || {};
     const run = h('button', { class: `btn ${ready ? '' : 'primary'}`, type: 'button' }, ready ? 'Run setup again' : 'Run setup');
     run.addEventListener('click', () => busy(run, async () => {
       const res = await post('/api/setup/run');
@@ -148,7 +149,10 @@ export function render(root) {
         setupItem(s.venv_ready, 'Python environment', s.venv_ready ? 'tools/hd_remaster/.venv' : 'Not set up yet: run setup'),
         setupItem(s.model_ready, 'Upscale model', s.model_ready ? '4x-UltraSharp downloaded' : 'Downloads during setup'),
         setupItem(s.adb_found, 'adb', s.adb_found ? 'Found: installing on the Thor works' : 'Not on PATH: install Android platform-tools'),
-        setupItem(s.openrouter_key_set, 'AI redraw key', s.openrouter_key_set ? 'OpenRouter key is set (.env)' : 'Optional: only for AI portrait redraws', true)));
+        setupItem(s.openrouter_key_set, 'AI redraw key', s.openrouter_key_set ? 'OpenRouter key is set (.env)' : 'Optional: only for AI portrait redraws', true),
+        setupItem(keys3d.tripo || keys3d.meshy, 'AI 3D model keys', keys3d.tripo || keys3d.meshy
+          ? `Tripo: ${keys3d.tripo ? 'set' : 'not set'} · Meshy: ${keys3d.meshy ? 'set' : 'not set'} (.env)`
+          : 'Optional: only for AI 3D models (TRIPO_API_KEY or MESHY_API_KEY)', true)));
     // once everything is installed the card is reference material: it moves below the games
     if (ready && !s.job) inner.append(setupCard);
     else inner.insertBefore(setupCard, grid);

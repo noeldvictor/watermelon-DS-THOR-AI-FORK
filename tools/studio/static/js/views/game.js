@@ -1,40 +1,15 @@
-// Game page: ROM, the pipeline steps as buttons, live output, job history, recipe and pack info.
+// Game page: ROM, the pipeline steps as buttons, live output, job history, recipe and pack info,
+// and the 3D models section (models3d.js).
 import { get, guardedPost, post } from '../api.js';
 import { LogView } from '../logview.js';
 import {
   busy, checkbox, clear, emptyState, field, formatBytes, formatCount, formatDuration, formatTime,
-  h, notice, select, statusPill, timeAgo, toast,
+  h, kv, notice, select, statusPill, stepCard, timeAgo, toast,
 } from '../ui.js';
+import { ModelsSection } from './models3d.js';
 
-function kv(pairs) {
-  const dl = h('dl', { class: 'kv' });
-  for (const [k, v] of pairs) {
-    if (v === null || v === undefined || v === '') continue;
-    dl.append(h('dt', {}, k), h('dd', {}, v));
-  }
-  return dl;
-}
-
-function stepCard(num, title, text, options, openOptions = false) {
-  const state = h('div', { class: 'state' }, '');
-  const run = h('button', { class: 'btn primary', type: 'button' }, 'Run');
-  const optsEl = options ? h('div', { class: `options ${openOptions ? 'open' : ''}` }, options) : null;
-  const toggle = options && !openOptions ? h('button', { class: 'btn ghost', type: 'button', 'aria-expanded': 'false' }, 'Options') : null;
-  if (toggle) {
-    toggle.addEventListener('click', () => {
-      const open = !optsEl.classList.contains('open');
-      optsEl.classList.toggle('open', open);
-      toggle.setAttribute('aria-expanded', String(open));
-    });
-  }
-  const el = h('div', { class: 'step' },
-    h('div', { class: 'row' }, num ? h('span', { class: 'step-num' }, num) : null, h('h3', {}, title)),
-    h('p', {}, text),
-    state,
-    optsEl,
-    h('div', { class: 'btn-row' }, run, toggle));
-  return { el, state, run };
-}
+// steps that change something on the Thor: the server may ask first (shared device)
+const DEVICE_STEPS = ['push', 'models_push'];
 
 export function render(root, params) {
   const code = (params[0] || '').toUpperCase();
@@ -49,6 +24,7 @@ export function render(root, params) {
     onEnd: (job) => {
       toast(`${job.title}: ${job.status === 'done' ? 'finished' : job.status}.`, job.status === 'done' ? 'ok' : job.status === 'failed' ? 'error' : 'warn');
       refresh();
+      if ((job.kind || '').startsWith('models_')) models.refresh();
     },
   });
 
@@ -111,14 +87,17 @@ export function render(root, params) {
   steps.push.run.textContent = 'Install';
 
   async function runStep(step, options) {
-    const send = step === 'push' ? guardedPost : post;
+    const send = DEVICE_STEPS.includes(step) ? guardedPost : post;
     const res = await send(`/api/games/${code}/run`, { step, options });
-    if (!res) return;
+    if (!res) return null;
     log.show(res.job);
     toast(`${res.job.title} ${res.job.status === 'queued' ? 'queued' : 'started'}.`, 'ok', 2500);
     log.el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     refresh();
+    return res.job;
   }
+
+  const models = new ModelsSection(code, { runStep });
 
   // ------------------------------------------------------------ jobs, recipe, pack
   const jobList = h('div', { class: 'job-list' });
@@ -132,6 +111,7 @@ export function render(root, params) {
     romCard,
     h('div', {}, h('div', { class: 'section-title' }, 'Pipeline'), h('div', { class: 'steps' }, steps.extract.el, steps.upscale.el, steps.build.el, steps.push.el)),
     h('div', { class: 'extra-steps' }, extra.all.el, extra.verify.el, extra.misses.el),
+    models.el,
     log.el,
     h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('div', {}, h('h2', {}, 'Job history'), h('p', {}, 'This session only: the list starts empty when the studio restarts.'))), jobList),
     h('div', { class: 'split' }, recipeCard, packCard));
@@ -216,6 +196,7 @@ export function render(root, params) {
 
     renderRecipe(d);
     renderPack(d);
+    models.setGame(d);
   }
 
   function renderRecipe(d) {
@@ -298,9 +279,11 @@ export function render(root, params) {
   }
 
   refresh();
+  models.refresh();
   return () => {
     alive = false;
     clearTimeout(timer);
     log.destroy();
+    models.destroy();
   };
 }
