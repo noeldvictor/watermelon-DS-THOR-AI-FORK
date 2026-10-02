@@ -21,6 +21,16 @@ bool IsIoAddress(u32 addr)
     return (addr >> 24) == 0x04;
 }
 
+// I/O registers that only hold state: the 2D engines' display, BG, window and blend
+// registers, VRAMCNT and POWCNT. Reading them has no side effect (unlike FIFOs and IRQ flags).
+bool IsReadableIo(u32 addr)
+{
+    return (addr >= 0x04000000 && addr < 0x04000070)
+        || (addr >= 0x04001000 && addr < 0x04001070)
+        || (addr >= 0x04000240 && addr < 0x0400024A)
+        || (addr >= 0x04000304 && addr < 0x04000308);
+}
+
 bool IsHalfwordOnlyRegion(u32 addr)
 {
     // palette, VRAM and OAM drop byte writes
@@ -34,10 +44,10 @@ void MelonInstance::readMemoryForDebug(int cpu, u32 address, u32 length, u8* out
     for (u32 i = 0; i < length; i++)
     {
         const u32 addr = address + i;
-        // I/O reads have side effects (FIFOs, IRQ flags): reported as 0
+        // I/O reads have side effects (FIFOs, IRQ flags): reported as 0, except plain state
         if (IsIoAddress(addr))
         {
-            out[i] = 0;
+            out[i] = (cpu == 0 && IsReadableIo(addr)) ? nds->ARM9Read8(addr) : 0;
             continue;
         }
 

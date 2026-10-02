@@ -96,7 +96,8 @@ internal class DevTools(private val context: Context) {
      * writes apply at once.
      */
     private fun reverseEngineeringTools(): List<Tool> = listOf(
-        Tool("mem_read", "Read emulated memory as the CPU sees it (TCMs included; I/O registers read as 0). " +
+        Tool("mem_read", "Read emulated memory as the CPU sees it (TCMs included; I/O reads as 0 except the " +
+            "side-effect-free 2D display/BG/blend registers 0x04000000/0x04001000-0x6F, VRAMCNT and POWCNT). " +
             "`format` hex (default), u8/u16/u32 or ascii; `length` up to 65536.",
             schema(
                 "address" to prop("string", "e.g. \"0x02000000\""),
