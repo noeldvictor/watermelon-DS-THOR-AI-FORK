@@ -516,7 +516,7 @@ def find_device(serial: str | None) -> str:
 
 def cmd_models(args) -> None:
     if args.action == "extract":
-        modelpack.extract(args.target, Path(args.out or WORK), args.trace, args.previews)
+        modelpack.extract(args.target, Path(args.out or WORK), args.trace, args.previews, args.cpu_words)
     elif args.action == "build":
         modelpack.build(Path(args.target), Path(args.packs or PACKS), args.smooth, args.only, args.seen, args.rom)
     elif args.action == "fit":
@@ -729,6 +729,7 @@ def main() -> None:
     p.add_argument("--out", help=f"extract: work root (default {WORK})")
     p.add_argument("--trace", help="extract: a dl_trace json (tools/re) marking the shapes a scene uses")
     p.add_argument("--previews", action="store_true", help="extract: a preview for every model, not only seen ones")
+    p.add_argument("--cpu-words", help="extract: dl_trace's gx_cpu_words.bin (short lists the CPU writes)")
     p.add_argument("--rom", help="build: the ROM (default: the one extract read)")
     p.add_argument("--smooth", type=float, help="build: PN-smooth original shapes with this strength (0-1)")
     p.add_argument("--only", help="build: only models whose source or name contains this text")

@@ -162,6 +162,8 @@ display lists sent in 6 seconds (7351 transfers: Link, the island, palm trees, b
 sea) are shapes extracted from the ROM; 1285 models, 4844 distinct shapes in the ROM. Short
 lists don't show up there: NitroSystem writes them with the CPU (PH: the first word by itself,
 then `MI_CpuSend32` for the rest), e.g. Link's eyes and eyebrows and 13 more on that beach.
+`dl_trace` also records every word the CPU writes to the FIFO (`files/re/gx_cpu_words.bin`);
+`models extract --cpu-words` finds the ROM's shapes in it, so the CPU-sent ones count as seen.
 
 **Runtime replacement** (Vulkan renderer): a pack's `models/mdl1_<size>_<hash>.dl` is a display
 list that replaces the shape with that key. When the shape's DMA into the GX FIFO starts, its

@@ -125,7 +125,32 @@ def _preview(meshes, model, textures: dict[int, np.ndarray], tex_sizes) -> np.nd
     return np.concatenate([render3d.render(parts, 256, yaw=y, pitch=10) for y in (0, 40, 90, 180)], 1)
 
 
-def extract(rom_path: str, work_root: Path, trace: str | None, previews: bool) -> Path:
+def cpu_list_counts(words_path: Path, shapes: dict[str, bytes]) -> dict[str, int]:
+    """How often each shape's display list occurs in the words the CPU wrote to the GX FIFO
+    (dl_trace's gx_cpu_words.bin): short lists NitroSystem writes itself, which the DMA trace
+    can't see. Indexed by their first four words, then compared in full."""
+    import struct as _struct
+    raw = words_path.read_bytes()
+    stream = np.frombuffer(raw[:len(raw) // 4 * 4], dtype="<u4")
+    if len(stream) < 4:
+        return {}
+    index: dict[tuple, list[int]] = {}
+    for i in range(len(stream) - 3):
+        index.setdefault((int(stream[i]), int(stream[i + 1]), int(stream[i + 2]), int(stream[i + 3])), []).append(i)
+    counts: dict[str, int] = {}
+    for key, dl in shapes.items():
+        n = len(dl) // 4
+        if n < 4:
+            continue
+        words = np.frombuffer(dl[:n * 4], dtype="<u4")
+        for i in index.get(tuple(int(w) for w in words[:4]), []):
+            if i + n <= len(stream) and np.array_equal(stream[i:i + n], words):
+                counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def extract(rom_path: str, work_root: Path, trace: str | None, previews: bool,
+            cpu_words: str | None = None) -> Path:
     rom = Path(rom_path).read_bytes()
     code = nitro.game_code(rom)
     out = work_root / code / "models"
@@ -135,6 +160,12 @@ def extract(rom_path: str, work_root: Path, trace: str | None, previews: bool) -
         for entry in json.loads(Path(trace).read_text(encoding="utf-8")).get("lists", []):
             seen[entry["key"]] = seen.get(entry["key"], 0) + int(entry.get("count", 1))
     blobs = nitro.blobs(rom)
+    if cpu_words:
+        shapes = {s.key: s.dl for blob in blobs for m in models3d.models_in(blob) for s in m.shapes}
+        cpu = cpu_list_counts(Path(cpu_words), shapes)
+        for key, n in cpu.items():
+            seen[key] = seen.get(key, 0) + n
+        log(f"{len(cpu)} shapes found in the CPU's GX FIFO words ({sum(cpu.values())} times)")
     tex_of, pal_of = _texture_lookup(blobs)
     index = []
     count = 0

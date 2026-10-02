@@ -25,6 +25,7 @@
 #include "GPU3D_Soft.h"
 #include "Platform.h"
 #include "GPU3D.h"
+#include "DebugHooks.h"
 
 namespace melonDS
 {
@@ -2653,6 +2654,9 @@ bool GPU3D::IsRendererAccelerated() const noexcept
 
 void GPU3D::WriteToGXFIFO(u32 val) noexcept
 {
+    if (!HDWritingFromDma)
+        DebugHooks::OnGxCpuWord(val);
+
     // words of a display list an HD model replaces (see OnDisplayListDMA); display lists the
     // CPU writes are recognised by content as they arrive (HDSpeculate)
     u16 tag = 0;

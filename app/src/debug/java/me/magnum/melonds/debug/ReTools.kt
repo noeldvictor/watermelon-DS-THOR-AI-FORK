@@ -381,8 +381,22 @@ internal class ReTools(private val context: Context) {
             }
             i += 7
         }
+        // the CPU's own GX FIFO words go to a file: short display lists are in there, among
+        // matrix and material commands, and are found by content on the PC
+        val cpu = MelonEmulator.debugDisplayListTraceTakeCpuWords()
+        val cpuWords = (cpu.size - 1).coerceAtLeast(0)
+        val file = File(reDir(), "gx_cpu_words.bin")
+        file.outputStream().buffered().use { out ->
+            for (k in 1 until cpu.size) {
+                val w = cpu[k]
+                out.write(w and 0xFF); out.write((w shr 8) and 0xFF); out.write((w shr 16) and 0xFF); out.write((w shr 24) and 0xFF)
+            }
+        }
         return JSONObject().put("distinct", raw.size / 7).put("transfers", transfers).put("lists", lists)
-            .put("note", "counts reset on every read; keys match tools/hd_remaster/models3d.py shape keys")
+            .put("cpuWords", cpuWords).put("cpuWordsDropped", cpu.firstOrNull() ?: 0)
+            .put("cpuWordsFile", file.absolutePath).put("pull", pullCommand(file))
+            .put("note", "counts reset on every read; keys match tools/hd_remaster/models3d.py shape keys; " +
+                "cpuWordsFile: the words the CPU wrote to the GX FIFO (models extract --cpu-words)")
     }
 
     fun gdb(args: JSONObject): JSONObject {

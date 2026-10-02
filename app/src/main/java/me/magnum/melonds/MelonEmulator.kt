@@ -181,6 +181,8 @@ object MelonEmulator {
     external fun debugDisplayListTraceStop()
     /** Per display list: hash low, hash high, size, count, last source, first frame, last frame. */
     external fun debugDisplayListTraceTake(): IntArray
+    /** [dropped, then every word the CPU wrote to the GX FIFO since the last call]. */
+    external fun debugDisplayListTraceTakeCpuWords(): IntArray
 
     external fun resetEmulation()
 

@@ -88,6 +88,12 @@ void StartDisplayListTrace();
 void StopDisplayListTrace();
 /** Display lists sent since the last call, most frequent first. */
 std::vector<DisplayListStat> TakeDisplayListStats();
+/**
+ * The words the CPU wrote to the GX FIFO since the last call (the newest 1M while tracing):
+ * short display lists NitroSystem writes itself, among matrix and material commands. Model
+ * shapes are found in it by content (tools/hd_remaster/modelpack.py).
+ */
+std::vector<u32> TakeGxCpuWords(u32* dropped = nullptr);
 
 /** The frame number stamped on events (the frontend's frame counter). */
 void SetFrame(u32 frame);
@@ -95,6 +101,7 @@ void SetFrame(u32 frame);
 void RecordAccess(const ARM& cpu, u32 addr, u32 value, u8 size, bool write);
 void RecordCall(const ARM& cpu, u32 from, u32 to);
 void RecordDisplayList(const u8* ram, u32 ramMask, u32 src, u32 size);
+void RecordGxCpuWord(u32 word);
 
 inline void OnAccess(const ARM& cpu, u32 addr, u32 value, u8 size, bool write)
 {
@@ -112,6 +119,12 @@ inline void OnDisplayList(const u8* ram, u32 ramMask, u32 src, u32 size)
 {
     if (DisplayListTraceActive.load(std::memory_order_relaxed)) [[unlikely]]
         RecordDisplayList(ram, ramMask, src, size);
+}
+
+inline void OnGxCpuWord(u32 word)
+{
+    if (DisplayListTraceActive.load(std::memory_order_relaxed)) [[unlikely]]
+        RecordGxCpuWord(word);
 }
 
 /** Reports a CPU read once it has its value, on every return path of the read function. */

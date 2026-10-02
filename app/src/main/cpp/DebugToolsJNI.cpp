@@ -320,4 +320,17 @@ Java_me_magnum_melonds_MelonEmulator_debugDisplayListTraceTake(JNIEnv* env, jobj
 }
 
 
+JNIEXPORT jintArray JNICALL
+Java_me_magnum_melonds_MelonEmulator_debugDisplayListTraceTakeCpuWords(JNIEnv* env, jobject)
+{
+    u32 dropped = 0;
+    const auto words = melonDS::DebugHooks::TakeGxCpuWords(&dropped);
+    std::vector<jint> values;
+    values.reserve(words.size() + 1);
+    values.push_back(static_cast<jint>(dropped));
+    for (u32 w : words)
+        values.push_back(static_cast<jint>(w));
+    return ToIntArray(env, values);
+}
+
 }

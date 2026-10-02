@@ -48,6 +48,10 @@ u32 CallDropped = 0;
 std::unordered_map<u64, DisplayListStat> DisplayLists;
 constexpr size_t MaxDisplayLists = 20000;
 std::vector<u8> DisplayListCopy;
+// the CPU's GX FIFO words, the newest MaxGxCpuWords kept
+std::deque<u32> GxCpuWords;
+u32 GxCpuDropped = 0;
+constexpr size_t MaxGxCpuWords = 1u << 20;
 
 u32 InstructionAddress(const ARM& cpu)
 {
@@ -127,6 +131,8 @@ void StartDisplayListTrace()
 {
     std::lock_guard guard(Lock);
     DisplayLists.clear();
+    GxCpuWords.clear();
+    GxCpuDropped = 0;
     DisplayListTraceActive.store(true, std::memory_order_relaxed);
 }
 
@@ -145,6 +151,29 @@ std::vector<DisplayListStat> TakeDisplayListStats()
     DisplayLists.clear();
     std::sort(stats.begin(), stats.end(), [](const DisplayListStat& a, const DisplayListStat& b) { return a.count > b.count; });
     return stats;
+}
+
+std::vector<u32> TakeGxCpuWords(u32* dropped)
+{
+    std::lock_guard guard(Lock);
+    std::vector<u32> words(GxCpuWords.begin(), GxCpuWords.end());
+    GxCpuWords.clear();
+    if (dropped) *dropped = GxCpuDropped;
+    GxCpuDropped = 0;
+    return words;
+}
+
+void RecordGxCpuWord(u32 word)
+{
+    std::lock_guard guard(Lock);
+    if (!DisplayListTraceActive.load(std::memory_order_relaxed))
+        return;
+    if (GxCpuWords.size() >= MaxGxCpuWords)
+    {
+        GxCpuWords.pop_front();
+        GxCpuDropped++;
+    }
+    GxCpuWords.push_back(word);
 }
 
 void RecordDisplayList(const u8* ram, u32 ramMask, u32 src, u32 size)

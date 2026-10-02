@@ -38,7 +38,9 @@ HLE patches. The skill `.claude/skills/ghidra/SKILL.md` is the short how-to; thi
   D2 blocks and all - before it goes into `code_fixes.txt`. The list is swapped in between frames.
 - **dl_trace** lists the display lists the game DMAs into the geometry FIFO (hooked where an ARM9
   DMA from main RAM to 0x04000400 starts, so it works with the JIT), keyed `mdl1_<size>_<xxh64>`
-  like the model shapes `tools/hd_remaster/models3d.py` extracts. Lists the CPU writes are not seen.
+  like the model shapes `tools/hd_remaster/models3d.py` extracts. Lists the CPU writes have no
+  DMA: every word the CPU writes to the FIFO goes to `files/re/gx_cpu_words.bin` while tracing,
+  and `hd_remaster.py models extract --cpu-words` finds the ROM's shapes in it (PH Mercay: 19).
 - **GDB stub**: melonDS's own (`src/debug/Gdb*`), compiled into debug builds only (`ENABLE_GDBSTUB`
   follows `MELONDS_ANDROID_DEBUG_BUILD`; the core exports `GDBSTUB_ENABLED` because it changes the ARM
   class layout). It listens on 127.0.0.1 only (patched from INADDR_ANY: it can read and write all
