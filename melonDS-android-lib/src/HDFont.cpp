@@ -18,6 +18,7 @@
 */
 
 #include "HDFont.h"
+#include "HDPackSource.h"
 #include "HDTexPack.h"
 #include "Platform.h"
 
@@ -80,34 +81,57 @@ u32 Lerp8(u32 a, u32 b, float t)
 
 }
 
-void HDFontSet::Load(const std::string& dir, u32 packScale)
+void HDFontSet::Load(const HDPackSource& source, const std::string& prefix, u32 packScale)
 {
-    std::error_code ec;
-    if (!fs::is_directory(fs::u8path(dir), ec))
-        return;
-    for (auto it = fs::directory_iterator(fs::u8path(dir), ec); it != fs::directory_iterator(); it.increment(ec))
+    for (const std::string& name : source.List(prefix))
     {
-        if (ec) break;
-        const fs::path& p = it->path();
-        if (p.extension() != ".nftr") continue;
-        fs::path png = p; png.replace_extension(".png");
-        if (!fs::exists(png, ec)) continue;
-        if (!LoadFont(p.u8string(), png.u8string(), packScale))
-            Platform::Log(Platform::LogLevel::Warn, "HDFont: skipping %s\n", p.u8string().c_str());
+        const size_t dot = name.rfind('.');
+        if (dot == std::string::npos || name.compare(dot, std::string::npos, ".nftr") != 0)
+            continue;
+        const std::string stem = name.substr(0, dot);
+        const std::string fontName = stem.substr(stem.rfind('/') + 1);
+        std::vector<u8> nftr, atlas, grey;
+        int w = 0, h = 0;
+        if (!source.Read(name, nftr))
+            continue;
+        // the glyph atlas: ASTC in a standard pack (grey stored in all three channels), PNG
+        // in a folder pack
+        if (source.Read(stem + ".astc", atlas))
+        {
+            std::vector<u32> rgba;
+            u32 aw = 0, ah = 0;
+            if (DecodeAstc(atlas, rgba, aw, ah))
+            {
+                w = (int)aw; h = (int)ah;
+                grey.resize(rgba.size());
+                for (size_t i = 0; i < rgba.size(); i++)
+                    grey[i] = (u8)(rgba[i] & 0xFF);
+            }
+        }
+        else if (source.Read(stem + ".png", atlas))
+        {
+            int c = 0;
+            if (stbi_uc* px = stbi_load_from_memory(atlas.data(), (int)atlas.size(), &w, &h, &c, 1))
+            {
+                grey.assign(px, px + (size_t)w * h);
+                stbi_image_free(px);
+            }
+        }
+        if (grey.empty() || !LoadFont(fontName, nftr, std::move(grey), w, h, packScale))
+            Platform::Log(Platform::LogLevel::Warn, "HDFont: skipping %s\n", name.c_str());
     }
     if (!Fonts.empty())
     {
         size_t glyphs = 0;
         for (const Font& f : Fonts) glyphs += f.Glyphs.size();
-        Platform::Log(Platform::LogLevel::Warn, "HDFont: %zu fonts, %zu glyphs from %s\n",
-                      Fonts.size(), glyphs, dir.c_str());
+        Platform::Log(Platform::LogLevel::Warn, "HDFont: %zu fonts, %zu glyphs from %s%s\n",
+                      Fonts.size(), glyphs, source.Location().c_str(), source.IsZip() ? "" : "/fonts");
     }
 }
 
-bool HDFontSet::LoadFont(const std::string& nftrPath, const std::string& pngPath, u32 packScale)
+bool HDFontSet::LoadFont(const std::string& name, const std::vector<u8>& b, std::vector<u8> grey,
+                         int w, int h, u32 packScale)
 {
-    std::ifstream in(fs::u8path(nftrPath), std::ios::binary);
-    std::vector<u8> b((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     if (b.size() < 0x30 || memcmp(b.data(), "RTFN", 4) || memcmp(&b[0x10], "FNIF", 4))
         return false;
 
@@ -117,7 +141,7 @@ bool HDFontSet::LoadFont(const std::string& nftrPath, const std::string& pngPath
         return false;
 
     Font f;
-    f.Name = fs::u8path(nftrPath).stem().u8string();
+    f.Name = name;
     f.CellW = b[pGlyph];
     f.CellH = b[pGlyph + 1];
     const u32 cellSize = Rd16(b, pGlyph + 2);
@@ -164,25 +188,19 @@ bool HDFontSet::LoadFont(const std::string& nftrPath, const std::string& pngPath
     }
     (void)pWidth;   // placement comes from the pixels; advances aren't needed
 
-    int w = 0, h = 0, c = 0;
-    stbi_uc* grey = stbi_load(pngPath.c_str(), &w, &h, &c, 1);
-    if (!grey)
-        return false;
     const int slotW = f.CellW + 2 * kAtlasPad, slotH = f.CellH + 2 * kAtlasPad;
     const int rows = (int)((count + kAtlasColumns - 1) / kAtlasColumns);
     const bool fits = w > 0 && w % (kAtlasColumns * slotW) == 0 && rows > 0
         && h == (w / (kAtlasColumns * slotW)) * rows * slotH;
     if (!fits)
     {
-        stbi_image_free(grey);
         Platform::Log(Platform::LogLevel::Warn, "HDFont: %s atlas is %dx%d, not a %d-column grid of %dx%d slots\n",
-                      pngPath.c_str(), w, h, kAtlasColumns, slotW, slotH);
+                      name.c_str(), w, h, kAtlasColumns, slotW, slotH);
         return false;
     }
     f.Scale = (u32)(w / (kAtlasColumns * slotW));
     f.AtlasW = (u32)w; f.AtlasH = (u32)h;
-    f.Atlas.assign(grey, grey + (size_t)w * h);
-    stbi_image_free(grey);
+    f.Atlas = std::move(grey);
     if (f.Scale != packScale && packScale > 1)
         Platform::Log(Platform::LogLevel::Warn, "HDFont: %s is %ux, pack is %ux\n",
                       f.Name.c_str(), f.Scale, packScale);

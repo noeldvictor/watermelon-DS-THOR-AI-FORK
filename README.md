@@ -215,8 +215,9 @@ smoothed with PN triangles, compared on the same emulated frame:
   the near-lossless setting, so text and sprite edges keep their shape. PNGs are only an
   intermediate of the PC tool (`work/<CODE>/upscaled`); packs carry ASTC only. All of 2D,
   fonts, 3D textures and model textures use it, and existing packs are converted, their
-  folders removed. *In progress: the emulator still reads the PNG folders described below
-  until the ASTC reader lands.*
+  folders removed. The emulator reads the zip with miniz and decodes ASTC with ARM's astcenc;
+  a folder pack (PNG or ASTC) still loads, for work in progress. *Next: the GPU samples the
+  ASTC directly (today each image is decoded to pixels when it is first used).*
 * **3D texture dump & replace**: content-hash keyed (texture hash + palette hash), compatible
   with the desktop melonDS HD pack format, so packs can be authored and verified on PC and used
   on device unchanged.
@@ -354,6 +355,10 @@ Shader binaries are checked in. After editing any `.comp`/`.frag`/`.vert`, regen
   and [#12](https://github.com/rafaelvcaetano/melonDS-android-lib/pull/12); the save-safety issue
   was also identified in Umberto-DEV's fork, and the audio volume bug by jojodogm-ctrl.
 * HD pack format inspired by the texture replacement systems of Dolphin and DuckStation
+* Packs are read with [miniz](https://github.com/richgel999/miniz) (MIT) and their ASTC images
+  decoded with ARM's [astc-encoder](https://github.com/ARM-software/astc-encoder) (Apache 2.0),
+  both in `melonDS-android-lib/src/`; the PC tool encodes with
+  [astc-encoder-py](https://pypi.org/project/astc-encoder-py/)
 * HD remastering: the upscaler and its seam, alpha and tiling handling come from the ARMSX2
   Thor fork's disc-texture tooling; models load through
   [spandrel](https://github.com/chaiNNer-org/spandrel); the default model is

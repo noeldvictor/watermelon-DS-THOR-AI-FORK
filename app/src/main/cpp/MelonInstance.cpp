@@ -29,6 +29,7 @@
 #include "HDTexPack.h"
 #include "MelonDS.h"
 #include "MelonInstance.h"
+#include "HDPackSource.h"
 #include "NDS.h"
 #include "NDSCart.h"
 #include "DebugHooks.h"
@@ -5666,7 +5667,11 @@ void MelonInstance::applyCameraProfile(const EmulatorConfiguration& config)
         std::string gameCode(cart->GetHeader().GameCode, 4);
         for (char& ch : gameCode)
             if (ch < 0x21 || ch > 0x7E || ch == '/' || ch == '\\' || ch == ':') ch = '_';
-        std::ifstream file(std::string(MelonDSAndroid::internalFilesDir) + "/texturepacks/" + gameCode + "/camera.txt");
+        // from the pack: texturepacks/<CODE>.zip (the standard) or the folder
+        std::vector<u8> bytes;
+        melonDS::HDPackSource::Open(std::string(MelonDSAndroid::internalFilesDir) + "/texturepacks/" + gameCode)
+            ->Read("camera.txt", bytes);
+        std::istringstream file(std::string(bytes.begin(), bytes.end()));
         std::string line;
         while (std::getline(file, line))
         {

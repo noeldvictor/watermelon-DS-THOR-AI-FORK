@@ -140,23 +140,34 @@ HDTexPack::HDTexPack(const std::string& packDir, const std::string& dumpDir,
     InstanceId = nextId.fetch_add(1);
     if (LoadEnabled)
     {
-        LoadDir(PackDir + "/textures", "tex1");
-        LoadDir(PackDir + "/sprites", "obj1");
-        LoadDir(PackDir + "/bgtiles", "bg1");
-        FontSet.Load(PackDir + "/fonts", PackScale);
-        LoadModels(PackDir + "/models");
+        Source = HDPackSource::Open(PackDir);
+        std::vector<u8> info;
+        if (Source->IsZip() && Source->Read("pack.txt", info))
+        {
+            unsigned scale = 0;
+            const std::string text(info.begin(), info.end());
+            const size_t at = text.find("scale ");
+            if (at != std::string::npos && sscanf(text.c_str() + at, "scale %u", &scale) == 1
+                && scale >= 1 && scale <= 8)
+                ZipScale = scale;
+        }
+        LoadDir("textures/", "tex1");
+        LoadDir("sprites/", "obj1");
+        LoadDir("bgtiles/", "bg1");
+        FontSet.Load(*Source, "fonts/", PackScale);
+        LoadModels("models/");
         // a model replacement's own textures (an AI model's atlas in the slot of the texture its
         // part used); loaded last, so they win over the pack's upscale of the same key. They keep
         // their own scale: a whole character's atlas in one small texture slot needs more texels
         // than the pack's scale gives (the Vulkan texcache stores each scale in its own arrays)
-        LoadDir(PackDir + "/models/textures", "tex1", true);
+        LoadDir("models/textures/", "tex1", true);
         // Warn so it shows in release builds: once per game start, and the only way to tell
         // from a log whether a pack was found at all
         if (EntryCount > 0)
             Platform::Log(Platform::LogLevel::Warn,
                           "HDTexPack: indexed %u entries from %s (textures %zu, sprites %zu + %zu by colour, "
                           "bg tiles %zu, scale %ux), images load on first use\n",
-                          EntryCount, PackDir.c_str(), TexIndex.size() + TexWildIndex.size(),
+                          EntryCount, Source->Location().c_str(), TexIndex.size() + TexWildIndex.size(),
                           SpriteIndex.size() + SpriteWildIndex.size(), SpriteColorIndex.size(),
                           BGIndex.size() + BGWildIndex.size(), PackScale);
     }
@@ -171,21 +182,19 @@ HDTexPack::HDTexPack(const std::string& packDir, const std::string& dumpDir,
     }
 }
 
-void HDTexPack::LoadModels(const std::string& dir)
+bool HDTexPack::ReadPackFile(const std::string& name, std::vector<u8>& out) const
 {
-    std::error_code ec;
-    if (!fs::is_directory(fs::u8path(dir), ec))
-        return;
+    return Source && Source->Read(name, out);
+}
 
-    for (auto it = fs::recursive_directory_iterator(fs::u8path(dir), ec);
-         it != fs::recursive_directory_iterator(); it.increment(ec))
+void HDTexPack::LoadModels(const std::string& prefix)
+{
+    for (const std::string& file : Source->List(prefix))
     {
-        if (ec) break;
-        if (!it->is_regular_file(ec)) continue;
-        const fs::path& p = it->path();
-        if (p.extension() != ".dl") continue;
+        if (file.size() < 3 || file.compare(file.size() - 3, 3, ".dl") != 0) continue;
         // mdl1_<size>_<hash16>.dl
-        const std::string name = p.stem().u8string();
+        const size_t slash = file.rfind('/');
+        const std::string name = file.substr(slash + 1, file.size() - 3 - (slash + 1));
         auto parts = SplitStem(name);
         if (parts.size() != 3 || parts[0] != "mdl1" || parts[2].size() != 16)
             continue;
@@ -197,27 +206,31 @@ void HDTexPack::LoadModels(const std::string& dir)
         if (!end || *end != '\0')
             continue;
 
-        std::FILE* file = std::fopen(p.u8string().c_str(), "rb");
-        if (!file)
+        std::vector<u8> bytes;
+        if (!Source->Read(file, bytes))
             continue;
-        std::vector<u32> words;
-        u32 word;
-        while (std::fread(&word, 4, 1, file) == 1)
-            words.push_back(word);
-        std::fclose(file);
+        std::vector<u32> words(bytes.size() / 4);
+        if (!words.empty())
+            memcpy(words.data(), bytes.data(), words.size() * 4);
         if (words.empty())
             continue;
         Models[hash] = ModelEntry{static_cast<u32>(size), std::move(words)};
     }
     // the first words of the replaced display lists, for those the game writes with the CPU
-    if (std::FILE* index = std::fopen((dir + "/originals.txt").c_str(), "r"))
+    std::vector<u8> originals;
+    if (Source->Read(prefix + "originals.txt", originals))
     {
         char key[64];
         unsigned int w[4];
-        char line[256];
-        while (std::fgets(line, sizeof(line), index))
+        const std::string text(originals.begin(), originals.end());
+        size_t pos = 0;
+        while (pos < text.size())
         {
-            int n = std::sscanf(line, "%63s %x %x %x %x", key, &w[0], &w[1], &w[2], &w[3]);
+            size_t end = text.find('\n', pos);
+            if (end == std::string::npos) end = text.size();
+            const std::string line = text.substr(pos, end - pos);
+            pos = end + 1;
+            int n = std::sscanf(line.c_str(), "%63s %x %x %x %x", key, &w[0], &w[1], &w[2], &w[3]);
             if (n < 2)
                 continue;
             auto parts = SplitStem(key);
@@ -232,11 +245,10 @@ void HDTexPack::LoadModels(const std::string& dir)
             if (Models.count(o.Hash) && o.Size % 4 == 0 && o.Size >= 4)
                 ModelOriginals[o.Prefix[0]].push_back(o);
         }
-        std::fclose(index);
     }
     if (!Models.empty())
         Platform::Log(Platform::LogLevel::Warn, "HDTexPack: %zu HD models from %s (%zu first words for CPU-sent lists)\n",
-                      Models.size(), dir.c_str(), ModelOriginals.size());
+                      Models.size(), (Source->Location() + "/" + prefix).c_str(), ModelOriginals.size());
 }
 
 const std::vector<HDModelSource::Original>* HDTexPack::OriginalsStartingWith(u32 word) const
@@ -257,22 +269,21 @@ const std::vector<u32>* HDTexPack::LookupModel(u64 hash, u32 size) const
     return &it->second.Words;
 }
 
-void HDTexPack::LoadDir(const std::string& dir, const char* kind, bool ownScale)
+void HDTexPack::LoadDir(const std::string& prefix, const char* kind, bool ownScale)
 {
-    std::error_code ec;
-    if (!fs::is_directory(fs::u8path(dir), ec))
-        return;
-
-    for (auto it = fs::recursive_directory_iterator(fs::u8path(dir), ec);
-         it != fs::recursive_directory_iterator(); it.increment(ec))
+    if (!Source)
+        Source = HDPackSource::Open(PackDir);
+    for (const std::string& file : Source->List(prefix))
     {
-        if (ec) break;
-        if (!it->is_regular_file(ec)) continue;
-        const fs::path& p = it->path();
-        if (p.extension() != ".png" && p.extension() != ".PNG") continue;
-        std::string name = p.stem().u8string();
+        const size_t dot = file.rfind('.');
+        if (dot == std::string::npos) continue;
+        const std::string ext = file.substr(dot);
+        if (ext != ".astc" && ext != ".png" && ext != ".PNG") continue;
+        const size_t slash = file.rfind('/');
+        std::string name = file.substr(slash == std::string::npos ? 0 : slash + 1,
+                                       dot - (slash == std::string::npos ? 0 : slash + 1));
         if (name.rfind(kind, 0) != 0) continue;
-        if (!AddEntry(p.u8string(), name, kind, ownScale))
+        if (!AddEntry(file, name, kind, ownScale))
             Platform::Log(Platform::LogLevel::Warn,
                           "HDTexPack: skipping %s (bad name or size)\n", name.c_str());
     }
@@ -327,9 +338,25 @@ bool HDTexPack::AddEntry(const std::string& path, const std::string& name, const
         else return false;
     }
 
-    // only the header is read here; pixels are decoded on first lookup (see Load)
-    int pw = 0, ph = 0, pc = 0;
-    if (!stbi_info(path.c_str(), &pw, &ph, &pc)) return false;
+    // only the header is read here (in a zip with pack.txt not even that: the size follows
+    // from the key); pixels are decoded on first lookup (see Load)
+    int pw = 0, ph = 0;
+    const bool astc = path.size() > 5 && path.compare(path.size() - 5, 5, ".astc") == 0;
+    if (astc && ZipScale && !ownScale)
+    {
+        pw = (int)(w * ZipScale);
+        ph = (int)(h * ZipScale);
+    }
+    else
+    {
+        std::vector<u8> head;
+        u32 hw = 0, hh = 0;
+        if (!Source->ReadHead(path, astc ? 16 : 24, head)
+            || !(astc ? AstcImageSize(head, hw, hh) : PngImageSize(head, hw, hh)))
+            return false;
+        pw = (int)hw;
+        ph = (int)hh;
+    }
 
     // scale must be a positive integer and identical on both axes
     if (pw <= 0 || ph <= 0 || pw % (int)w || ph % (int)h || pw / (int)w != ph / (int)h)
@@ -385,23 +412,38 @@ const HDTexPackImage* HDTexPack::Load(const Index& index, Cache& cache, u64 key)
     if (ref == index.end() || FailedLoads.count(&ref->second))
         return nullptr;
 
-    int pw = 0, ph = 0, pc = 0;
-    stbi_uc* pixels = stbi_load(ref->second.Path.c_str(), &pw, &ph, &pc, 4);
-    if (!pixels || (u32)pw != ref->second.Width || (u32)ph != ref->second.Height)
+    // ASTC (the standard) decodes with astcenc, PNG (folder packs) with stb
+    const std::string& path = ref->second.Path;
+    std::vector<u8> file;
+    std::vector<u32> rgba;
+    u32 pw = 0, ph = 0;
+    bool ok = Source && Source->Read(path, file);
+    if (ok && path.size() > 5 && path.compare(path.size() - 5, 5, ".astc") == 0)
+        ok = DecodeAstc(file, rgba, pw, ph);
+    else if (ok)
+    {
+        int iw = 0, ih = 0, ic = 0;
+        stbi_uc* pixels = stbi_load_from_memory(file.data(), (int)file.size(), &iw, &ih, &ic, 4);
+        ok = pixels != nullptr;
+        if (ok)
+        {
+            pw = (u32)iw; ph = (u32)ih;
+            rgba.resize((size_t)pw * ph);
+            memcpy(rgba.data(), pixels, (size_t)pw * ph * 4);
+            stbi_image_free(pixels);
+        }
+    }
+    if (!ok || pw != ref->second.Width || ph != ref->second.Height)
     {
         // missing, unreadable or replaced with a different size since startup; don't retry
-        if (pixels) stbi_image_free(pixels);
         FailedLoads.insert(&ref->second);
-        Platform::Log(Platform::LogLevel::Warn, "HDTexPack: could not load %s\n",
-                      ref->second.Path.c_str());
+        Platform::Log(Platform::LogLevel::Warn, "HDTexPack: could not load %s\n", path.c_str());
         return nullptr;
     }
 
     HDTexPackImage& img = cache[key];
     img.Width = pw; img.Height = ph; img.Scale = ref->second.Scale;
-    img.RGBA.resize((size_t)pw * ph);
-    memcpy(img.RGBA.data(), pixels, (size_t)pw * ph * 4);
-    stbi_image_free(pixels);
+    img.RGBA = std::move(rgba);
 
     if ((++LoadedCount & 0xFF) == 1)
         Platform::Log(Platform::LogLevel::Warn, "HDTexPack: %u of %u images loaded (latest %s)\n",

@@ -64,8 +64,19 @@ What `build` and `push` produce, and what the emulator reads:
 - PNGs stay an intermediate of this tool (`work/<CODE>/native`, `work/<CODE>/upscaled`); packs
   carry ASTC only. 2D, fonts, 3D textures and model textures all use it; the packs already on
   the Thor are rebuilt this way and their folders removed.
-- *In progress.* Until the encoder step and the emulator's zip/ASTC reader land, `build` still
-  writes a PNG folder (`packs/<CODE>/`) and `push` copies it to `files/texturepacks/<CODE>/`.
+- `build` assembles the PNG staging folder `packs/<CODE>/` as before, then encodes it to
+  `packs/<CODE>.zip` ([astcpack.py](astcpack.py): images share 2048-wide sheets so the encoder
+  runs once per sheet, ~1800 images/s; results cached by content in `work/<CODE>/astc_cache`).
+  Quality: median 46 dB, worst seen 33 dB (busy art); thin text and outlines keep their shape.
+- `push packs/<CODE>` installs the zip and deletes the game's folder pack (and its backups) on
+  the device. `convert <CODE>` turns a folder pack already on the device into the zip: it pulls
+  exactly what is installed (art pushed outside a full build included), encodes, checks a
+  sample's PSNR, installs and removes the folder.
+- `build --native` (the 1x check pack) stays a PNG folder: it must render exactly like no pack,
+  and ASTC is lossy.
+- On the device: `HDTexPack: indexed N entries from .../texturepacks/<CODE>.zip`. Image sizes
+  come from the key names and pack.txt's scale, so indexing never opens an image. *Next: the
+  GPU samples ASTC directly; today each image is decoded to pixels on first use.*
 
 ## How it works
 

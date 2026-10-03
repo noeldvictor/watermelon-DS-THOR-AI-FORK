@@ -3,12 +3,12 @@
     python hd_remaster.py extract ROM.nds                  # every texture, native size, named by key
     python hd_remaster.py verify  work/BSDE --dumps DIR    # check keys and pixels against real dumps
     python hd_remaster.py upscale work/BSDE                # AI upscale (see upscale.py)
-    python hd_remaster.py build   work/BSDE                # assemble packs/BSDE
-    python hd_remaster.py push    packs/BSDE               # install on the device over adb
-    python hd_remaster.py push    packs/BSDE --models-only # only its 3D model replacements
+    python hd_remaster.py build   work/BSDE                # packs/BSDE.zip (ASTC 4x4, the standard)
+    python hd_remaster.py push    packs/BSDE               # install packs/BSDE.zip over adb
     python hd_remaster.py all     ROM.nds                  # extract + upscale + build
 
-Work goes to tools/hd_remaster/work/<GAMECODE>/, packs to tools/hd_remaster/packs/<GAMECODE>/.
+Work goes to tools/hd_remaster/work/<GAMECODE>/. A pack is tools/hd_remaster/packs/<GAMECODE>.zip
+(every image ASTC 4x4; see astcpack.py); packs/<GAMECODE>/ is its PNG staging folder.
 """
 from __future__ import annotations
 
@@ -532,6 +532,10 @@ def cmd_build(args) -> Path:
     log(f"pack {out}: {copied} images at {info['scale']}x" + (f", {absent} not upscaled yet" if absent else "")
         + (f", {redrawn} sources redrawn" if redrawn else ""))
     modelpack.install(work, Path(args.out or PACKS))   # replacements from models build
+    # the standard pack (2026-10-03): the staging folder as ASTC 4x4 in one zip
+    if not args.native:
+        import astcpack
+        astcpack.build_zip(out, out.parent / f"{code}.zip", cache_dir=work / "astc_cache", log=log)
     return out
 
 
@@ -589,12 +593,82 @@ def cmd_models(args) -> None:
                            [k for k in (args.keep or "").split(",") if k], args.refs)
 
 
+def push_zip(zip_path: Path, serial: str | None) -> None:
+    """Install packs/<CODE>.zip as files/texturepacks/<CODE>.zip; the game's old folder pack (and
+    its backups) are removed: the zip is the standard, and the PC keeps everything it's built from."""
+    code = zip_path.stem
+    serial = find_device(serial)
+    tmp = f"/data/local/tmp/hd_remaster_{code}.zip"
+    log(f"pushing {zip_path} ({zip_path.stat().st_size / 1e6:.0f} MB) to {serial}")
+    adb(serial, "push", str(zip_path), tmp)
+    adb(serial, "shell", f"chmod a+r {tmp}")
+    script = (f"mkdir -p files/texturepacks && cp {tmp} files/texturepacks/{code}.zip.part && "
+              f"mv -f files/texturepacks/{code}.zip.part files/texturepacks/{code}.zip && "
+              f"rm -rf files/texturepacks/{code} files/texturepacks/{code}.bak-* && "
+              f"ls -l files/texturepacks/{code}.zip")
+    out = adb(serial, "shell", f"run-as {PACKAGE} sh -c '{script}'").strip()
+    adb(serial, "shell", f"rm -f {tmp}")
+    log(f"installed files/texturepacks/{code}.zip ({out.split()[4] if len(out.split()) > 4 else '?'} bytes); "
+        f"the old folder is gone. The pack loads the next time the game starts.")
+
+
+def cmd_convert(args) -> None:
+    """Convert a folder pack installed on the device to the standard zip: pull exactly what is
+    installed (it can hold art no work folder has, e.g. redraws pushed on their own), encode it to
+    ASTC 4x4, check a sample, install the zip and remove the folder."""
+    import astcpack
+    import tarfile
+    code = args.code
+    serial = find_device(args.serial)
+    dest = WORK / code / "device_pack"
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    log(f"pulling files/texturepacks/{code} from {serial}")
+    cmd = ["adb", "-s", serial, "exec-out", "run-as", PACKAGE, "tar", "cf", "-", "-C", "files/texturepacks", code]
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE) as proc:
+        with tarfile.open(fileobj=proc.stdout, mode="r|") as tar:
+            tar.extractall(dest)
+    folder = dest / code
+    if not folder.is_dir() or not any(folder.rglob("*")):
+        raise SystemExit(f"the device has no folder pack files/texturepacks/{code}")
+    n = sum(1 for f in folder.rglob("*") if f.is_file())
+    # the staging folder's pack.json gives the scale: rebuild it from the images when missing
+    if not (folder / "pack.json").exists():
+        # from the first image outside models/ (model textures keep their own scale)
+        from PIL import Image
+        scale = 1
+        for f in folder.rglob("*.png"):
+            if "models" in f.relative_to(folder).parts:
+                continue
+            try:
+                scale = Image.open(f).width // int(f.stem.split("_")[1].split("x")[0])
+                break
+            except (ValueError, IndexError):
+                continue
+        (folder / "pack.json").write_text(json.dumps({"game": code, "scale": scale}))
+    log(f"pulled {n} files")
+    zip_path = PACKS / f"{code}.zip"
+    astcpack.build_zip(folder, zip_path, cache_dir=WORK / code / "astc_cache", log=log)
+    worst = astcpack.verify_zip(folder, zip_path, log=log)
+    if worst < 25:
+        raise SystemExit(f"{zip_path}: lowest PSNR {worst:.1f} dB is too low; not installing")
+    push_zip(zip_path, serial)
+
+
 def cmd_push(args) -> None:
     pack = Path(args.pack)
-    code = pack.name
+    code = pack.stem if pack.suffix == ".zip" else pack.name
+    zip_path = pack if pack.suffix == ".zip" else pack.parent / f"{code}.zip"
+    if zip_path.exists():
+        if args.models_only:
+            log("packs are zips now: the models are inside it, pushing the whole pack")
+        push_zip(zip_path, args.serial)
+        return
     if args.models_only:
         push_models(pack, code, args.serial)
         return
+    log(f"note: {zip_path} doesn't exist, pushing the PNG folder (build makes the zip, the standard)")
     serial = find_device(args.serial)
     tmp = f"/data/local/tmp/hd_remaster_{code}"
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -832,6 +906,11 @@ def main() -> None:
     p.add_argument("--seen", action="store_true", help="build: only models the extract's trace saw")
     p.add_argument("--packs", help=f"build: packs root (default {PACKS})")
     p.set_defaults(fn=cmd_models)
+
+    p = sub.add_parser("convert", help="turn a folder pack on the device into the standard ASTC zip")
+    p.add_argument("code", help="game code, e.g. BSDE")
+    p.add_argument("--serial")
+    p.set_defaults(fn=cmd_convert)
 
     p = sub.add_parser("push", help="install a pack on the device (adb, debuggable build)")
     p.add_argument("pack", help="packs/<GAMECODE>")

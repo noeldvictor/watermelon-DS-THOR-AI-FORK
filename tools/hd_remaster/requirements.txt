@@ -5,3 +5,5 @@ xxhash
 
 # upscale: install torch from the CUDA index first (see README.md), then these
 spandrel
+# ASTC 4x4 encoding of packs (astcpack.py): ARM's astcenc
+astc-encoder-py==0.1.12

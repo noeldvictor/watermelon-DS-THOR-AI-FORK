@@ -20,6 +20,7 @@
 #ifndef HDTEXPACK_H
 #define HDTEXPACK_H
 
+#include "HDPackSource.h"
 #include "types.h"
 #include "HDFont.h"
 #include "HDModelSource.h"
@@ -57,6 +58,8 @@ public:
     HDTexPack(const std::string& packDir, const std::string& dumpDir,
               bool loadEnabled, bool dumpEnabled);
 
+    // a file of the pack (camera.txt): from the zip or the folder
+    bool ReadPackFile(const std::string& name, std::vector<u8>& out) const;
     bool LoadActive() const { return LoadEnabled && (EntryCount > 0 || !FontSet.Empty() || !Models.empty()); }
     // unique per pack object, for callers that cache image pointers across frames (a new pack
     // can be allocated at the old one's address)
@@ -136,12 +139,12 @@ public:
 
 private:
     // ownScale: entries keep their own scale instead of having to match the pack's (model textures)
-    void LoadDir(const std::string& dir, const char* kind, bool ownScale = false);
+    void LoadDir(const std::string& prefix, const char* kind, bool ownScale = false);
     bool AddEntry(const std::string& path, const std::string& name, const char* kind, bool ownScale);
     struct Ref
     {
-        std::string Path;
-        u32 Width = 0, Height = 0, Scale = 1;   // from the PNG header, checked again on decode
+        std::string Path;                       // in the pack (HDPackSource)
+        u32 Width = 0, Height = 0, Scale = 1;   // from the image header, checked again on decode
     };
     using Index = std::unordered_map<u64, Ref>;
     using Cache = std::unordered_map<u64, HDTexPackImage>;
@@ -154,6 +157,10 @@ private:
     void AppendManifest(const char* subdir, const std::string& line);
 
     std::string PackDir, DumpDir;
+    // the pack's files: texturepacks/<CODE>.zip (the standard, ASTC images) or the folder
+    std::unique_ptr<HDPackSource> Source;
+    // a zip's pack.txt "scale <N>": the size of its images follows from their key names
+    u32 ZipScale = 0;
     u64 InstanceId = 0;
     bool LoadEnabled = false, DumpEnabled = false;
     u32 PackScale = 1;
@@ -167,7 +174,7 @@ private:
     std::unordered_map<u64, ModelEntry> Models;
     // models/originals.txt: "<key> <first words>" of each replaced display list, by first word
     std::unordered_map<u32, std::vector<Original>> ModelOriginals;
-    void LoadModels(const std::string& dir);
+    void LoadModels(const std::string& prefix);
 
     // Keyed by XXH64 over the canonical key fields; wildcard maps ignore the palette hash.
     // The index (key -> PNG path) is built at startup from file names and headers only. An

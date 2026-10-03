@@ -39,11 +39,17 @@ class RomFeaturesProvider(
             .filter { EnhancementCheats.isEnhancement(it.name) }
             .mapTo(HashSet()) { userGameKey(it.gameCode, it.gameChecksum) }
 
-        // texturepacks/<GAMECODE>, as MelonInstance::applyTexturePack looks it up; a folder with
-        // nothing in it is no pack
+        // texturepacks/<GAMECODE>.zip (the standard pack) or a texturepacks/<GAMECODE> folder, as
+        // HDPackSource looks them up; a folder with nothing in it is no pack
         val packDirectories = File(context.filesDir, "texturepacks").listFiles()
-            ?.filter { it.isDirectory && !it.list().isNullOrEmpty() }
-            ?.mapTo(HashSet()) { it.name }
+            ?.mapNotNull {
+                when {
+                    it.isFile && it.name.endsWith(".zip") && it.length() > 0 -> it.name.removeSuffix(".zip")
+                    it.isDirectory && !it.list().isNullOrEmpty() -> it.name
+                    else -> null
+                }
+            }
+            ?.toHashSet()
             .orEmpty()
 
         roms.associate { rom ->

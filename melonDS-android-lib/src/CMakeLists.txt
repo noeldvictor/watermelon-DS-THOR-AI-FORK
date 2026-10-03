@@ -52,6 +52,8 @@ add_library(core STATIC
     GPU2D_HDPack.h
     HDFont.cpp
     HDFont.h
+    HDPackSource.cpp
+    HDPackSource.h
     HDTexPack.cpp
     HDTexPack.h
     HDTextureFilter.cpp
@@ -92,6 +94,24 @@ add_library(core STATIC
     xxhash/xxhash.c
 
     blip-buf/blip_buf.c)
+
+# HD packs are zips of ASTC textures (see HDTexPack): miniz reads the zip, ARM's astcenc
+# (decompressor only) decodes ASTC where an image is needed as pixels
+file(GLOB HDPACK_ASTCENC_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/astcenc/astcenc_*.cpp)
+target_sources(core PRIVATE
+    miniz/miniz.c
+    miniz/miniz_tdef.c
+    miniz/miniz_tinfl.c
+    miniz/miniz_zip.c
+    ${HDPACK_ASTCENC_SOURCES})
+target_include_directories(core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/miniz ${CMAKE_CURRENT_SOURCE_DIR}/astcenc)
+if (ANDROID_ABI STREQUAL "arm64-v8a" OR CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+    set(HDPACK_ASTCENC_SIMD ASTCENC_NEON=1 ASTCENC_SVE=0 ASTCENC_SSE=0 ASTCENC_AVX=0)
+else()
+    set(HDPACK_ASTCENC_SIMD ASTCENC_NEON=0 ASTCENC_SVE=0 ASTCENC_SSE=0 ASTCENC_AVX=0)
+endif()
+set_source_files_properties(${HDPACK_ASTCENC_SOURCES} PROPERTIES COMPILE_DEFINITIONS
+    "ASTCENC_DECOMPRESS_ONLY;ASTCENC_POPCNT=0;ASTCENC_F16C=0;${HDPACK_ASTCENC_SIMD}")
 
 if (ENABLE_GDBSTUB)
     message(NOTICE "Enabling GDB stub")

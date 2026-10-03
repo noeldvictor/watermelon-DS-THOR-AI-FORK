@@ -67,17 +67,24 @@ native image at full resolution (thumbnails hide the difference).
 
 - **The pack standard (2026-10-03, the user's decision): one zip per game, every image ASTC
   4x4, deflate-compressed** (`packs/<CODE>.zip` -> `files/texturepacks/<CODE>.zip`; layout in
-  tools/hd_remaster/README.md, "Pack format"). PNGs are only the tool's intermediate files;
-  never ship PNG folders once the ASTC build lands, and convert old folder packs when touching
-  them. Until it lands, `build` still writes `packs/<CODE>/` (PNG) - check the README's
-  "In progress" note before assuming either.
-- `hd_remaster.py build work/<CODE>` then `hd_remaster.py push packs/<CODE>`.
+  tools/hd_remaster/README.md, "Pack format"). PNGs are only the tool's intermediate files
+  (`packs/<CODE>/` is the staging folder); never push a PNG folder pack.
+- `hd_remaster.py build work/<CODE>` (writes the staging folder, then `packs/<CODE>.zip`) then
+  `hd_remaster.py push packs/<CODE>` (installs the zip, removes the device's folder pack).
+- A game still installed as a folder: `hd_remaster.py convert <CODE>` (pulls what is installed,
+  encodes, checks, installs the zip, removes the folder). Needs `astc-encoder-py` (setup.ps1).
 - `build --native` gives a 1x pack: on the device it must render exactly like no pack at all.
   That is the end-to-end check that keys and pixels are right.
 - `push` needs the debuggable (`.dev`) build; it copies via /data/local/tmp and run-as, and moves
   an existing pack for the game aside as `<CODE>.bak-<timestamp>`, never deleting it.
 
 ## 5. Test on the Thor
+
+**Every game README (`games/<CODE>/README.md`) shows the HD pack in game, as PNG** (the user's
+standard, 2026-10-03): screenshots taken on the Thor with the installed pack (the zip), both
+screens, PNG so the HD detail isn't lost to JPEG. Put them in `games/<CODE>/media/` and keep
+them current when the pack changes (a new pack format, a rebuild). The JPEG before/after crops
+can stay as well.
 
 - Use the `thor` MCP tools (tools/thor_mcp) when they're loaded: `status` first, then
   `settings_set` (filters off: video_hd_texture_filter / video_obj_sprite_filter /
@@ -89,7 +96,7 @@ native image at full resolution (thumbnails hide the difference).
   first and never fight another session for it. Pass `-s <serial>` (find it with
   `adb devices -l`, model:AYN_Thor).
 - Launch the game, then check logcat (Warn level; release builds drop Info) for
-  `HDTexPack: indexed N entries ... (scale 4x)` and the once-a-second
+  `HDTexPack: indexed N entries from .../<CODE>.zip ... (scale 4x)` and the once-a-second
   `HDTexPack[Stats]: textures h/l sprites h/l bg h/l (hits/lookups) 2dInstances=N`. Pair it
   with `VulkanOutput[Stats]`: `overlays` must follow `2dInstances` (x frames), or 2D
   replacements are being dropped between the latch and the compositor. Capture BOTH displays

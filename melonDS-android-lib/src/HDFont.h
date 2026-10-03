@@ -30,6 +30,8 @@
 namespace melonDS
 {
 
+class HDPackSource;
+
 struct HDTexPackImage;
 
 // HD text for games that draw it at runtime from Nitro (NFTR) fonts.
@@ -56,9 +58,9 @@ public:
         u16 Base;      // canvas value = Base + shade for every ink pixel
     };
 
-    // every <name>.nftr with a matching <name>.png atlas; the atlas scale may differ from the
-    // pack's (the presenter resamples), which is only logged
-    void Load(const std::string& dir, u32 packScale);
+    // every <prefix><name>.nftr with a matching <name>.astc or <name>.png atlas; the atlas scale
+    // may differ from the pack's (the presenter resamples), which is only logged
+    void Load(const HDPackSource& source, const std::string& prefix, u32 packScale);
     bool Empty() const { return Fonts.empty(); }
     size_t Count() const { return Fonts.size(); }
 
@@ -109,7 +111,8 @@ private:
         u32 AtlasW = 0, AtlasH = 0, Scale = 1;
     };
 
-    bool LoadFont(const std::string& nftrPath, const std::string& pngPath, u32 packScale);
+    bool LoadFont(const std::string& name, const std::vector<u8>& b, std::vector<u8> grey,
+                  int w, int h, u32 packScale);
     bool Verify(const Font& f, const Glyph& g, const u16* canvas, int w, int h,
                 int ox, int oy, int base, u16 bg) const;
 
