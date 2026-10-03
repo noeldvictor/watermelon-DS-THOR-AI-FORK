@@ -13,8 +13,8 @@ powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 "Rosario
 
 ## What the pack covers
 
-- **Backgrounds, event CGs, title and menu screens**: 197 pictures, 88,955 BG tile keys,
-  4x-UltraSharp.
+- **Backgrounds, event CGs, title and menu screens**: 197 pictures, 93,525 BG tile keys,
+  4x-UltraSharp, with the palette-animation frames of the battle and minigame backgrounds.
 - **Character portraits**: 2,796 sprite pieces (upper body, lower body, eye and mouth frames of
   every character, in both palettes each character has), Real-ESRGAN x4plus_anime_6B.
 - **Menus, the text window, name plates and buttons**: 11,800 16-colour sprite pieces (the title
@@ -41,9 +41,13 @@ the pixel as it is.
 No standard Nitro graphics files. Everything sits in `.bb` archives (`BB` + count + offset/size
 pairs) and NARCs:
 
-- **BBG** pictures ([bbg.py](../../bbg.py)): a header with the bit depth and size in tiles, then
-  three sections, each LZ10 or stored: tiles, a DS screen map, a 256-colour palette. The game
-  shows them as 256-colour text BGs with extended palettes, which is what the BG keys hash.
+- **BBG** pictures ([bbg.py](../../bbg.py)): a header with the bit depth, size in tiles and, for
+  16-colour pictures, the palette row the palette is uploaded to (the map counts rows from
+  there), then three sections, each LZ10 or stored: tiles, a DS screen map, a palette. The game
+  shows most as 256-colour text BGs with extended palettes, which is what the BG keys hash.
+- **#BPA** palette animations ([bbg.py](../../bbg.py)): frames of colours the game cycles through
+  part of a picture's palette (the battle's bottom screen). Each frame is another palette the
+  tiles are keyed with; a section pairs with the picture whose own colours are one of its frames.
 - **BAC** sprite animations ([bac.py](../../bac.py)): records naming a frame and, per piece, a
   pixel chunk; frames as OAM attributes with a corner relative to the character's anchor; two
   256-colour palettes (menu, window and button BACs: 16-colour palettes in 36-byte blocks); chunks
@@ -62,6 +66,14 @@ the first 1000 BG tiles of the title screens and all 41 256-colour sprites of a 
 the scene's BG lookups 92,160 of 138,240 hit (the rest are the text window), the portrait is HD,
 eyes and mouth join the face without a seam, and the HD text recognises all 26 glyphs of "Good
 morning, Kotori-sempai." (and the next lines, and the name in the name plate).
+
+2026-10-03, played into the first battle (minigame): two tool bugs found and fixed. 23
+16-colour pictures (the battle foreground and floor, prompts, gauges, menu backgrounds) were
+keyed with the wrong palette rows (the upload base was ignored), and the battle's bottom screen
+cycles its palette (#BPA): both layers now hit every tile in a battle snapshot. Story scenes,
+the school map (morning, evening) and the sepia flashbacks hit every non-blank tile. Left
+native: see-through menu items and choices (a real alpha blend the renderer composes on the
+CPU), runtime-built 3D textures in a few transitions.
 
 2026-10-03, booted from the start: the Capcom and Dimps logos, the opening pictures and the title
 are HD; the title screen's sprites hit 420 of 420; 51 of the 53 16-colour sprite misses logged
