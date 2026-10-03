@@ -83,8 +83,11 @@ class Device:
         self.adb("shell", "am", "force-stop", PACKAGE)
 
     def foreground(self):
+        """The top resumed activity of display 0 (the Thor's top screen). dumpsys lists one per
+        display, in focus order: after a tap on the bottom screen its launcher comes first."""
         out = self.adb("shell", "dumpsys", "activity", "activities", check=False)
-        match = re.search(r"topResumedActivity=\S+ \S+ (\S+)", out)
+        block = re.search(r"Display #0 .*?(?=\nDisplay #|\Z)", out, re.S)
+        match = re.search(r"topResumedActivity=\S+ \S+ (\S+)", block.group(0) if block else out)
         return match.group(1) if match else ""
 
     def fps(self):

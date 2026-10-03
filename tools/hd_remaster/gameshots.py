@@ -39,6 +39,8 @@ def main() -> None:
     ap.add_argument("state")
     ap.add_argument("out")
     ap.add_argument("--seconds", type=float, default=3.0)
+    ap.add_argument("--settle", type=float, default=2.0,
+                    help="seconds to wait after the game runs before loading the state (big 7z ROMs: 10+)")
     ap.add_argument("--serial", default=None)
     args = ap.parse_args()
 
@@ -48,16 +50,22 @@ def main() -> None:
         raise SystemExit(f"the Thor is in use ({front}); try again later")
     # loading the state writes its save memory into the game's .sav: SaveGuard puts the user's back
     with fc.SaveGuard(device, args.rom):
-        fc.launch(device, args.rom, settle_s=2)
+        fc.launch(device, args.rom, settle_s=args.settle)
         if args.state.startswith("slot:"):
             extras = ["--ei", "slot", args.state[5:]]
         else:
             extras = ["--es", "path", f"/data/user/0/{fc.PACKAGE}/files/{args.state}"]
-        code, data = device.broadcast("LOAD_STATE", *extras)
-        if code != 1 or "success=1" not in data:
-            raise SystemExit(f"LOAD_STATE {args.state}: {data}")
+        # twice: right after a big 7z ROM boots a load can report success and still be lost
+        # (Chrono Trigger came back on its intro movie)
+        for _ in range(2):
+            code, data = device.broadcast("LOAD_STATE", *extras)
+            if code != 1 or "success=1" not in data:
+                raise SystemExit(f"LOAD_STATE {args.state}: {data}")
+            time.sleep(1.5)
         time.sleep(args.seconds)
-        # the Thor's own overlay panel can cover the bottom screen after a launch
+        # the Thor's own overlay panel can cover the bottom screen after a launch; a tap below the
+        # DS screen closes it (and ends the burn-in refresh). Not BACK: with no panel open, BACK
+        # closes the emulator's bottom-screen presentation and the Thor's launcher shows there
         device.adb("shell", "input", "-d", "4", "tap", "620", "1060", check=False)
         time.sleep(0.5)
         if "EmulatorActivity" not in device.foreground():

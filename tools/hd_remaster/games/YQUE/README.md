@@ -4,8 +4,44 @@
 powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 "Chrono Trigger.nds" -Push
 ```
 
-Sprites only: 22,670 sprite images (85% of them the character sheets under `Chara/`), cut into
-54,754 pack files at 4x: a 142 MB ASTC zip installed (412 MB as PNG). The upscale took about 45 minutes on an RTX 3060. The game has
+Sprites only: 26,368 sprite images (most of them the character sheets under `Chara/`), cut into
+103,503 pack keys at 4x (48,671 of them colour keys, see below): a 260 MB ASTC zip installed.
+
+## In game
+
+![Crono's room on the Thor: Crono drawn from the 3D model, the room native](media/ingame_crono_room.png)
+
+New game, Crono's room, live on the AYN Thor (PNG; top screen only: the Thor's dual-screen
+assistant panel covered the bottom one during the capture). Crono is the 3D test below; the room
+is a field background, which the pack doesn't cover yet.
+
+## Character sprites in the field
+
+Two things kept the field sprites native until 2026-10-03, found by playing a new game:
+
+- **Party palettes carry extra colours.** In the field the game fills the unused slots 13-15 of
+  Crono's palette (ObjPlt_0000) with other colours. A 16-colour key hashes all 16, so it never
+  matched. The recipe now gives the `Chara/` sheets colour keys (the colours the sprite shows),
+  which the emulator looks up when the byte key misses.
+- **NPCs share palettes.** Sheets are paired with the palette of the same number, but the game
+  picks an NPC's palette itself, like the SNES original: sheets 20, 44 and 47 are drawn with
+  ObjPlt_0009, 66, 182 and 183 with 0161, 127 and 157 with 0136. No table in the ROM holds this
+  (ARM9, overlays and `PS_BIN` searched); the location scripts (`PS_BIN/Atel/*.dat`) most likely
+  name it per NPC. The pairs seen in play are in the recipe (`pairs`); the rest of the NPCs stay
+  native until the scripts are read or more pairs are collected in play.
+
+## 3D Crono (test)
+
+![Crono in his room: the game's sprite (left) and the frame rendered from the 3D model (right)](media/crono_3d.png)
+
+A test of [HD sprites from a 3D model](../../README.md#hd-sprites-from-a-3d-model-animated-characters)
+(`chara3d.py`): a Toriyama-style turnaround of Crono drawn by Gemini from his sprite and the
+official art, a Tripo model rigged with idle, walk and run clips, rendered cel-shaded in Blender.
+26 of the 28 standing, walking and running cells use it ($0.14 + 95 Tripo credits).
+Left to do: the dash frames (cells 11 and 14; the run clip doesn't fit the game's long stride),
+a few walk frames that mix a 3D body with an upscaled head (the game builds frames from pieces
+some cells share), battle and story poses, and the scale (the render is about 15% shorter than
+the sprite). The upscale took about 45 minutes on an RTX 3060. The game has
 no 3D textures and no NFTR fonts.
 
 ## Before / after
