@@ -327,6 +327,7 @@ public:
     bool FreeCamAwaitCamera = false;          // a projection was set: the next position load is the camera
     void FreeCamCaptureCamera() noexcept;
     void FreeCamMeasurePivot() noexcept;
+    void FreeCamTakePivot(std::vector<float>& ws) noexcept;
     void FreeCamBuildMatrix() noexcept;
 
     u32 Viewport[6] {};

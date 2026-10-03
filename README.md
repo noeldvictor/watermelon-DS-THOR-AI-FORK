@@ -148,8 +148,11 @@ right orbit about the game camera's own up direction, so the ground stays level;
 Hold R3 and push up or down to zoom, tap R3 to go back to the game's view. While the view is
 turned, the D-pad turns with it (to the nearest of 8 directions), so up walks away from the new
 view. It is done in the emulator, no game patch: only what gets drawn goes through the turned
-camera; the game's own visibility tests keep its camera, so scenery it leaves out of its own view
-stays missing at wide angles. Menus drawn with an orthographic projection stay put. With the
+camera. A game that asks the hardware whether a model is on screen (BOX_TEST) gets "yes" for what
+the turned view shows; a game that culls in its own code keeps culling for its own camera, so
+that scenery stays missing at wide angles until a per-game patch exists (Mario Kart DS: the near
+track section when turned 60 degrees; Phantom Hourglass' Mercay draws its whole island, so
+nothing is missing there). Menus drawn with an orthographic projection stay put. With the
 setting on, the right stick and R3 belong to the camera (a right-stick binding such as fast
 forward is suspended). The switch is saved; the view starts from the game's own each launch.
 
@@ -165,7 +168,9 @@ walks straight while the view swings round behind him, and a new direction is re
 view; walking towards the camera leaves the view alone. The right stick still turns, tilts and
 zooms on top of it, and R3 goes back to the profile's tilt and distance. 60 fps on the Thor. As a
 game camera that was never made for it: a tree between the camera and Link can hide him, and
-looking flat over a ledge can show sky where the game drew nothing.
+past the end of the sea the background colour shows (it happens to look like sky). The orbit
+centre is the nearer side of what is at the screen centre, eased over a few frames, so the view
+holds steady when Link jumps off a ledge or falls in the sea.
 
 ```
 free_camera on      # on for this game

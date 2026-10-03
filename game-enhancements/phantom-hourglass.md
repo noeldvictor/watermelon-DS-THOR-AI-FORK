@@ -14,8 +14,9 @@ AZEE, USA, with the D-pad patch (Link walks with the D-pad instead of the stylus
 
 Not yet: the AI head is a little smaller than the original's and its bangs hide the top of the
 eyes from the game's high camera; the battle-mode Links (`link_model_blue`, `_red`) share the
-face parts. With the camera low, trees can hide Link, and looking flat over a ledge can show sky
-where the game draws nothing.
+face parts. With the camera low, trees can hide Link, and past the end of the sea the background
+colour shows. No scenery is culled on Mercay: the island is one model drawn whole every frame (the
+game makes no hardware box tests), so the turned camera misses nothing there.
 
 ![Storybook, pack off and on](../tools/hd_remaster/games/AZEE/media/storybook.jpg)
 

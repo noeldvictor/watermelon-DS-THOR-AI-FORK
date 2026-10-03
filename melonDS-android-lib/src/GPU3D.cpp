@@ -795,12 +795,7 @@ void GPU3D::FreeCamMeasurePivot() noexcept
                           FreeCamBoxTests, FreeCamBoxHidden, FreeCamBoxShown, FreeCamPivotW);
             FreeCamStatFrames = FreeCamBoxTests = FreeCamBoxHidden = FreeCamBoxShown = 0;
         }
-        if (FreeCamSamples.size() >= 3)
-        {
-            std::nth_element(FreeCamSamples.begin(), FreeCamSamples.begin() + FreeCamSamples.size() / 2,
-                             FreeCamSamples.end());
-            FreeCamPivotW = FreeCamSamples[FreeCamSamples.size() / 2];
-        }
+        FreeCamTakePivot(FreeCamSamples);
         FreeCamSamples.clear();
         return;
     }
@@ -820,10 +815,20 @@ void GPU3D::FreeCamMeasurePivot() noexcept
                 ws.push_back(v->Position[3] / 4096.0f);
         }
     }
+    FreeCamTakePivot(ws);
+}
+
+void GPU3D::FreeCamTakePivot(std::vector<float>& ws) noexcept
+{
+    // the nearer side of what is at the centre (the player in front of the ground behind him),
+    // eased over a few frames: when he leaves the centre for a moment (a jump off a ledge), the
+    // far sea there must not swing the orbit out
     if (ws.size() < 3)
         return;
-    std::nth_element(ws.begin(), ws.begin() + ws.size() / 2, ws.end());
-    FreeCamPivotW = ws[ws.size() / 2];
+    const size_t k = ws.size() * 3 / 10;
+    std::nth_element(ws.begin(), ws.begin() + k, ws.end());
+    const float w = ws[k];
+    FreeCamPivotW = FreeCamPivotW > 0.0f ? FreeCamPivotW + (w - FreeCamPivotW) * 0.2f : w;
 }
 
 void GPU3D::FreeCamBuildMatrix() noexcept
@@ -1537,7 +1542,7 @@ void GPU3D::SubmitVertex() noexcept
 
     UpdateClipMatrix();
     const s32* clip = RenderClipMatrix;
-    if (FreeCamOn && FreeCamSamples.size() < 4096)
+    if (FreeCamOn && FreeCamSamples.size() < 4096 && ProjMatrix[11] != 0)
     {
         // the free camera's orbit centre, as the game's camera sees it (see FreeCamMeasurePivot)
         const s64 w = (vertex[0]*ClipMatrix[3] + vertex[1]*ClipMatrix[7] + vertex[2]*ClipMatrix[11] + vertex[3]*ClipMatrix[15]) >> 12;
