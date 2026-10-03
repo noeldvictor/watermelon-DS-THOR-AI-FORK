@@ -12,13 +12,17 @@ Layout (little endian; each section starts with its own u32 size):
                character's anchor (and the anchor's offset in the frame), then per piece OAM
                attributes 0 and 1 (y, shape, 256-colour flag / x, size) and two u16 the game
                fills in at runtime; piece x/y count from the frame's left/top
-    section 3  u32 size, u16, u16 palette count, then 256-colour palettes (512 bytes each)
+    section 3  u32 size, u16, u16 palette count, then 256-colour palettes (512 bytes each); in
+               16-colour BACs (menus, name plates, the text window) the count is 0 and blocks
+               of a u16 0x2000, a u16 and 16 colours (36 bytes) follow the size instead
     section 4  u32 size, then pixel chunks: a Nintendo compression header (type 0 = stored,
                0x10/0x11 = LZ) and the piece's tiles as they go to OBJ VRAM (1D mapping)
 A piece's VRAM bytes are exactly its chunk, so the runtime's sprite key (its tiles' XXH64 chained
-tile by tile, XXH64 of the 256-colour extended palette it uses) comes straight from the file. Checked
-on the Thor: Kotori's portrait pieces in OBJ VRAM equal her up.bac chunks byte for byte, and
-the frame layout equals her OAM shifted by her position.
+tile by tile, XXH64 of the 256-colour extended palette or 16-colour palette row it uses) comes
+straight from the file. Checked on the Thor: Kotori's portrait pieces in OBJ VRAM equal her up.bac
+chunks byte for byte, and the frame layout equals her OAM shifted by her position; 51 of 53
+logged 16-colour sprite misses (text window, name plates, buttons) are a piece with one of its
+file's 16-colour palettes.
 """
 from __future__ import annotations
 
@@ -76,8 +80,12 @@ def frames(b: bytes):
     that names a frame is tried, and kept when every piece's chunk has that piece's size."""
     offs = list(struct.unpack_from("<5I", b, 4))
     s0, s1, s2, s3, s4 = [b[offs[i]:offs[i + 1]] for i in range(4)] + [b[offs[4]:]]
-    n_pal = _u16(s3, 6)
-    palettes = [s3[8 + 512 * k:8 + 512 * (k + 1)] for k in range(n_pal) if 8 + 512 * (k + 1) <= len(s3)]
+    n_pal = _u16(s3, 6) if len(s3) >= 8 else 0
+    if n_pal:
+        palettes = [s3[8 + 512 * k:8 + 512 * (k + 1)] for k in range(n_pal) if 8 + 512 * (k + 1) <= len(s3)]
+    else:
+        # 16-colour palettes: 36-byte blocks, the colours 4 bytes in
+        palettes = [s3[8 + 36 * k:8 + 36 * k + 32] for k in range((len(s3) - 4) // 36)]
     layouts = {}
     for f_off in _frame_offsets(s2):
         n = _u32(s2, f_off)
@@ -150,17 +158,17 @@ def _render(frame: Frame, rgb) -> tuple[np.ndarray, int, int, list]:
     canvas = np.zeros((y1 - y0, x1 - x0, 4), np.uint8)
     drawn = []
     for x, y, w, h, bpp8, data in frame.pieces:
-        if not bpp8:
-            continue                    # the portraits are 256-colour; 16-colour needs a palette row
-        idx = _tile_pixels(data, w, h, True)
+        if bpp8 != (len(rgb) > 16):
+            continue                    # a piece is drawn with the palettes of its own depth
+        idx = _tile_pixels(data, w, h, bpp8)
         rgba = np.zeros((h, w, 4), np.uint8)
-        rgba[..., :3] = rgb[idx]
+        rgba[..., :3] = rgb[np.minimum(idx, len(rgb) - 1)]
         rgba[..., 3] = np.where(idx == 0, 0, 255)
         if not rgba[..., 3].any():
             continue
         sub = canvas[y - y0:y - y0 + h, x - x0:x - x0 + w]
         sub[rgba[..., 3] > 0] = rgba[rgba[..., 3] > 0]
-        drawn.append((x - x0, y - y0, w, h, data, rgba))
+        drawn.append((x - x0, y - y0, w, h, bpp8, data, rgba))
     return canvas, x0, y0, drawn
 
 
@@ -197,10 +205,11 @@ def build_cells(files: dict[str, bytes], want_rgba: bool = False):
                     canvas, bx, by, _ = _render(frame, rgb)
                 _, fx, fy, drawn = _render(frame, rgb)
                 entries, rgbas = {}, {}
-                for x, y, w, h, data, rgba in drawn:
+                for x, y, w, h, bpp8, data, rgba in drawn:
                     # the runtime chains the hash tile by tile (twod.chain_hash), in 1D order
-                    tiles = [data[k:k + 64] for k in range(0, w * h, 64)]
-                    key = twod.obj_key(w, h, twod.chain_hash(tiles), ph, True)
+                    tb = 64 if bpp8 else 32
+                    tiles = [data[k:k + tb] for k in range(0, len(data), tb)]
+                    key = twod.obj_key(w, h, twod.chain_hash(tiles), ph, bpp8)
                     if key not in entries:
                         entries[key] = dict(key=key, x=x + fx - bx, y=y + fy - by, w=w, h=h, hflip=False,
                                             vflip=False, pal_guess=False, opaque=True, rotscale=False,

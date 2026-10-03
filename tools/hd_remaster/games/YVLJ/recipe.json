@@ -13,9 +13,9 @@
   "sprites": "4x-UltraSharp",
   "backgrounds": "4x-UltraSharp"
  },
- "baseline": {"textures": 0, "sprites": 2796, "backgrounds": 88955, "fonts": 1},
- "verified": "Backgrounds and character art read from the game's own formats (bbg.py, bac.py): on the Thor, 994 of the first 1000 BG tiles the title screens draw and all 41 256-colour character sprites of a dialogue scene (Kotori: body, eyes, mouth) are keys the extraction made.",
- "notes": "No standard Nitro graphics: BB archives of BBG pictures (tiled 256-colour BGs, extended palettes) and BAC sprite animations (character parts as 256-colour OBJ chunks). The dialogue text is drawn from a custom #FNT font, converted to NFTR for the HD text (fnt.py); the text window and name plate frames are 16-colour sprites, not covered yet.",
+ "baseline": {"textures": 0, "sprites": 14596, "backgrounds": 88955, "fonts": 1},
+ "verified": "Backgrounds and character art read from the game's own formats (bbg.py, bac.py): on the Thor, 994 of the first 1000 BG tiles the title screens draw and all 41 256-colour character sprites of a dialogue scene (Kotori: body, eyes, mouth) are keys the extraction made. 2026-10-03: logos, opening and title HD after the emulator fix for full-strength blends and zero fades; the title's sprites hit 420/420; 51 of 53 logged 16-colour sprite misses are extracted pieces.",
+ "notes": "No standard Nitro graphics: BB archives of BBG pictures (tiled 256-colour BGs, extended palettes) and BAC sprite animations (character parts as 256-colour OBJ chunks). The dialogue text is drawn from a custom #FNT font, converted to NFTR for the HD text (fnt.py); the menus, text window, name plates and buttons are 16-colour BAC sprites with their palettes in 36-byte blocks (bac.py).",
  "overrides": [
   {
    "match": "adv_char.bb",

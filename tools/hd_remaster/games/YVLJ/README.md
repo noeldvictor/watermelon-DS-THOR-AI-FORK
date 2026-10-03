@@ -17,6 +17,8 @@ powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 "Rosario
   4x-UltraSharp.
 - **Character portraits**: 2,796 sprite pieces (upper body, lower body, eye and mouth frames of
   every character, in both palettes each character has), Real-ESRGAN x4plus_anime_6B.
+- **Menus, the text window, name plates and buttons**: 11,800 16-colour sprite pieces (the title
+  screen's prompt, menus, minigames), 4x-UltraSharp.
 - **Dialogue text and names**: the game's `#FNT` font (3,387 glyphs) converted to NFTR, so the
   emulator's HD text recognises the glyphs it draws into sprites and redraws them. It is a
   1-pixel pixel font (fill shade 1, accent pixels shade 2): its HD glyphs are drawn from the fill
@@ -25,8 +27,14 @@ powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 "Rosario
 
 ![Dialogue text, pack off (top) and on (bottom)](media/text.jpg)
 
-Not covered: the text window frame and the name plate frames (16-colour sprites: their palette
-row is chosen at runtime), 16-colour menu sprites.
+Not covered: one 16-colour piece (`fix_up.bac`) the game draws with a palette that isn't in its
+file.
+
+The logos, the opening pictures and the title came out native until an emulator fix
+(2026-10-03): the game leaves an alpha blend at full strength (EVA 16, EVB 0) on every picture and
+a brightness fade at 0 after its logos fade in. Neither changes a pixel, but the 2D renderer
+marked those pixels as blended, which HD replacement leaves alone. Now such a blend or fade keeps
+the pixel as it is.
 
 ## How the game stores its graphics
 
@@ -38,7 +46,8 @@ pairs) and NARCs:
   shows them as 256-colour text BGs with extended palettes, which is what the BG keys hash.
 - **BAC** sprite animations ([bac.py](../../bac.py)): records naming a frame and, per piece, a
   pixel chunk; frames as OAM attributes with a corner relative to the character's anchor; two
-  256-colour palettes; chunks that go to OBJ VRAM unchanged (1D mapping). A character is four
+  256-colour palettes (menu, window and button BACs: 16-colour palettes in 36-byte blocks); chunks
+  that go to OBJ VRAM unchanged (1D mapping). A character is four
   BACs in one archive entry: `up`, `down`, `eye`, `mouth`. Every frame is upscaled drawn over
   the whole body (first upper- and lower-body frames, placed by the anchor), so eyes, mouth and
   waist join without a seam.
@@ -53,3 +62,8 @@ the first 1000 BG tiles of the title screens and all 41 256-colour sprites of a 
 the scene's BG lookups 92,160 of 138,240 hit (the rest are the text window), the portrait is HD,
 eyes and mouth join the face without a seam, and the HD text recognises all 26 glyphs of "Good
 morning, Kotori-sempai." (and the next lines, and the name in the name plate).
+
+2026-10-03, booted from the start: the Capcom and Dimps logos, the opening pictures and the title
+are HD; the title screen's sprites hit 420 of 420; 51 of the 53 16-colour sprite misses logged
+in play (text window, name plates, buttons) are pieces the extraction now makes. The dialogue
+scene's text window frame, name plate and scroll button are HD.
