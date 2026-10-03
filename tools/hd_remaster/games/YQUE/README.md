@@ -40,8 +40,8 @@ official art, a Tripo model rigged with idle, walk and run clips, rendered cel-s
 26 of the 28 standing, walking and running cells use it ($0.14 + 95 Tripo credits).
 Left to do: the dash frames (cells 11 and 14; the run clip doesn't fit the game's long stride),
 a few walk frames that mix a 3D body with an upscaled head (the game builds frames from pieces
-some cells share), battle and story poses, and the scale (the render is about 15% shorter than
-the sprite). The upscale took about 45 minutes on an RTX 3060. The game has
+some cells share), and battle and story poses. The size matches: in the pack frames the render is
+35-36 native pixels tall, the sprite 33-35. The upscale took about 45 minutes on an RTX 3060. The game has
 no 3D textures and no NFTR fonts.
 
 ## Before / after
