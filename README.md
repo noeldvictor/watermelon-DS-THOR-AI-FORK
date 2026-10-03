@@ -59,7 +59,8 @@ This repository is self-contained: the emulator core (`melonDS-android-lib/`, de
 ## Game enhancements
 
 Some of what this fork does is for particular games: HD packs built from the ROM (Lufia, Phantom
-Hourglass, Spirit Tracks, Nostalgia, Chrono Trigger), AI-redrawn portraits (Lufia), an HD 3D Link
+Hourglass, Spirit Tracks, Nostalgia, Chrono Trigger, Rosario + Vampire, whose own picture,
+sprite and font formats the tool reads), AI-redrawn portraits (Lufia), an HD 3D Link
 and a camera behind him (Phantom Hourglass), working widescreen codes where the bundled ones were
 broken or missing (Star Fox Command, the European Mario Kart DS, New Super Mario Bros., Sonic &
 SEGA All-Stars Racing and Burnout Legends), and renderer fixes first seen on one game (Hotel Dusk,

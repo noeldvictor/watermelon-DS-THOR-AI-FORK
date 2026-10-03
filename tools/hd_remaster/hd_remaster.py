@@ -157,7 +157,12 @@ def extract_2d(files: dict[str, bytes], out: Path, mf, rules: dict,
                         for en in entries],
         }) + "\n")
 
-    for gen in (twod.build_cells(lib, profile, want_rgba=True), twod.build_screens(lib, profile, want_rgba=True)):
+    import bac
+    import bbg
+    # standard Nitro files, then formats of particular games (Rosario + Vampire's BBG pictures
+    # and BAC sprite animations)
+    for gen in (twod.build_cells(lib, profile, want_rgba=True), twod.build_screens(lib, profile, want_rgba=True),
+                bbg.build_screens(files, want_rgba=True), bac.build_cells(files, want_rgba=True)):
         for asset in gen:
             keep = []
             for en in asset["entries"]:
@@ -196,7 +201,14 @@ def extract_fonts(files: dict[str, bytes], out: Path, mf) -> int:
     fdir.mkdir(parents=True, exist_ok=True)
     names: set[str] = set()
     n = 0
+    import fnt
     for path, data in sorted(files.items()):
+        single_ink = False
+        if data[:4] == fnt.MAGIC:
+            data = fnt.to_nftr(data)            # Rosario + Vampire's #FNT, as NFTR
+            if data is None:
+                continue
+            single_ink = True
         if not fonts.is_nftr(data):
             continue
         name = Path(path.split("~")[0]).stem
@@ -205,14 +217,27 @@ def extract_fonts(files: dict[str, bytes], out: Path, mf) -> int:
         names.add(name)
         font = fonts.parse(data, name)
         grey = fonts.atlas(font)
+        ink_level = None
+        if single_ink:
+            # a 1-pixel pixel font whose shades are fill (1) and accent pixels (2), not
+            # anti-aliasing: the atlas is the fill as white on black (a grey atlas came back
+            # from the upscaler as hollow letters), and build draws the HD glyphs from it at the
+            # first shade's grey, so the HD text is the fill colour with soft edges
+            # the fill alone: shade 2 marks breaks the eye reads as gaps (between the dot of an
+            # i and its stem), so it isn't ink
+            ink_level = 255 // ((1 << font.bpp) - 1)
+            grey = np.where(grey == ink_level, 255, 0).astype(np.uint8)
         rgba = np.dstack([grey, grey, grey, np.full_like(grey, 255)])
         write_native(out, "fonts", name, rgba)
         (fdir / f"{name}.nftr").write_bytes(data)
-        mf.write(json.dumps({
+        entry = {
             "kind": "font", "category": "fonts", "key": name, "w": int(grey.shape[1]),
             "h": int(grey.shape[0]), "source": path, "glyphs": len(font.glyphs),
             "cell": [font.cell_w, font.cell_h], "bpp": font.bpp,
-        }) + "\n")
+        }
+        if ink_level is not None:
+            entry["ink_level"] = ink_level
+        mf.write(json.dumps(entry) + "\n")
         n += 1
     if n:
         log(f"fonts: {n} ({', '.join(sorted(names))})")
@@ -455,8 +480,21 @@ def cmd_build(args) -> Path:
         if m["kind"] == "font":
             # the font file itself plus its atlas, stored grey (see fonts.atlas)
             with Image.open(src) as im:
-                scales.add(im.width // m["w"])
-                im.convert("L").save(out / "fonts" / src.name)
+                scale = im.width // m["w"]
+                scales.add(scale)
+                grey = im.convert("L")
+            if m.get("ink_level"):
+                # a pixel font (see extract_fonts): the upscaler closes 1-pixel gaps (the dot of
+                # an i joined its stem), so the HD glyphs come from the ink mask itself, sampled
+                # smoothly at the pack's scale with soft edges, at the first shade's grey
+                mask = np.asarray(Image.open(work / "native" / "fonts" / f"{m['key']}.png").convert("L"),
+                                  np.float32) / 255.0
+                smooth = np.asarray(Image.fromarray(mask).resize((m["w"] * scale, m["h"] * scale),
+                                                                 Image.BILINEAR), np.float32)
+                ink = np.clip((smooth - 0.3) / 0.4, 0.0, 1.0)
+                ink = ink * ink * (3 - 2 * ink)
+                grey = Image.fromarray(np.rint(ink * m["ink_level"]).astype(np.uint8))
+            grey.save(out / "fonts" / src.name)
             shutil.copyfile(work / "native" / "fonts" / f"{m['key']}.nftr", out / "fonts" / f"{m['key']}.nftr")
             copied += 1
             continue

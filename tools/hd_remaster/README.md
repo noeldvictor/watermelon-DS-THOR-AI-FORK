@@ -82,6 +82,11 @@ those bytes, so the key of every texture can be computed from the ROM.
   itself plus an upscaled atlas of its glyphs (grey shade levels; `fonts.py`). On the device,
   sprites the pack has no image for are searched for glyphs by exact pixel match, and each glyph
   is redrawn from the atlas in the palette colours the game drew it with.
+- **Games' own formats.** Some games use none of the standard files. The tool reads a few such
+  formats too: Rosario + Vampire's BB archives, BBG pictures ([bbg.py](bbg.py)), BAC sprite
+  animations ([bac.py](bac.py), each character frame upscaled over the whole body so eyes and
+  mouth join without a seam) and `#FNT` font ([fnt.py](fnt.py), converted to NFTR for the HD
+  text). See [games/YVLJ](games/YVLJ/README.md).
 - **On the device**, pack images are indexed at game start and decoded the first time the game
   shows them, so a whole-game pack costs memory only for what is on screen.
 

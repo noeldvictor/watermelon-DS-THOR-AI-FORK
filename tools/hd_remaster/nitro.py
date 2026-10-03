@@ -305,6 +305,26 @@ def table_container(b: bytes) -> list[bytes] | None:
     return out or None
 
 
+def bb_archive(b: bytes) -> list[bytes] | None:
+    """Rosario + Vampire's .bb: 'BB' and two zero bytes, u32 count, then count (offset, size) pairs from the
+    start of the archive. Entries are BBG pictures, BAC character art and the like, stored or
+    LZ-compressed."""
+    if b[:4] != b"BB\0\0" or len(b) < 8:
+        return None
+    n = u32(b, 4)
+    if not 0 < n <= 4096 or 8 + 8 * n > len(b):
+        return None
+    out = []
+    for i in range(n):
+        off, size = u32(b, 8 + 8 * i), u32(b, 12 + 8 * i)
+        if not size:
+            continue
+        if off + size > len(b):
+            return None
+        out.append(b[off:off + size])
+    return out or None
+
+
 def nmdp_payload(b: bytes) -> bytes | None:
     """Nostalgia's 'NMDP' wrapper around a standard Nitro file: size at +0x18, offset at +0x1C."""
     if b[:4] != b"NMDP" or len(b) < 0x30:
@@ -337,6 +357,12 @@ def files(rom: bytes) -> dict[str, bytes]:
             if subs is not None:
                 for nm, s in subs:
                     add(f"{name}/{nm}", s, depth + 1)
+                return
+        if b[:4] == b"BB\0\0":
+            parts = bb_archive(b)
+            if parts is not None:
+                for i, s in enumerate(parts):
+                    add(f"{name}#{i}", s, depth + 1)
                 return
         if b[:4] == b"NMDP":
             payload = nmdp_payload(b)

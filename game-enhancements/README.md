@@ -28,6 +28,7 @@ on the AYN Thor. Kinds of enhancement:
 | [The Legend of Zelda: Spirit Tracks](spirit-tracks.md) | BKIE | yes | | | | | message text, state loads |
 | [Nostalgia](nostalgia.md) | CJKE | yes | | | | | |
 | [Chrono Trigger](chrono-trigger.md) | YQUE | sprites | | | | | |
+| [Rosario + Vampire](rosario-vampire.md) | YVLJ | yes | | | | | |
 | [Star Fox Command](star-fox-command.md) | ASFE | | | | | fixed code | title fade, boot screen |
 | [Mario Kart DS (Europe)](mario-kart-ds.md) | AMCP | | | | | added | |
 | [New Super Mario Bros. (Europe)](new-super-mario-bros.md) | A2DP | | | | | added | |
@@ -43,7 +44,7 @@ on the AYN Thor. Kinds of enhancement:
 ## Wishlist
 
 Games wanted for an HD pack next, not started. All run at 60 fps on the Thor (45 s intro
-recordings of both screens, 2026-09-24): Lost Magic, Rosario + Vampire, Rummikub, Pokemon Black
+recordings of both screens, 2026-09-24): Lost Magic, Rummikub, Pokemon Black
 Version 2 (its bottom screen stays black through intro and title, as on the software renderer),
 Professor Layton and the Last Specter, Metroid Prime Hunters, Mario Slam Basketball, Mega Man ZX,
 Lunar Knights.

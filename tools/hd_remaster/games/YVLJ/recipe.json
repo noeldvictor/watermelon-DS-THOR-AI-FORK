@@ -1,0 +1,27 @@
+{
+ "game": "YVLJ",
+ "title": "Rosario to Vampire: Tanabata no Miss Youkai Gakuen",
+ "roms": [
+  {
+   "sha256": "67aa2d447c4844cf6997cd6d02ce093eccf3da4277c8fde11d5da1e0a79c3280",
+   "name": "Japan, English translation patch v1.0 by jjjewel (as tested)"
+  }
+ ],
+ "scale": 4,
+ "models": {
+  "textures": "4x-UltraSharp",
+  "sprites": "4x-UltraSharp",
+  "backgrounds": "4x-UltraSharp"
+ },
+ "baseline": {"textures": 0, "sprites": 2796, "backgrounds": 88955, "fonts": 1},
+ "verified": "Backgrounds and character art read from the game's own formats (bbg.py, bac.py): on the Thor, 994 of the first 1000 BG tiles the title screens draw and all 41 256-colour character sprites of a dialogue scene (Kotori: body, eyes, mouth) are keys the extraction made.",
+ "notes": "No standard Nitro graphics: BB archives of BBG pictures (tiled 256-colour BGs, extended palettes) and BAC sprite animations (character parts as 256-colour OBJ chunks). The dialogue text is drawn from a custom #FNT font, converted to NFTR for the HD text (fnt.py); the text window and name plate frames are 16-colour sprites, not covered yet.",
+ "overrides": [
+  {
+   "match": "adv_char.bb",
+   "model": "RealESRGAN_x4plus_anime_6B",
+   "cutout": "model",
+   "why": "Character art is anime illustration, as Lufia's portraits: the anime model draws eyes and hair edges cleanly where 4x-UltraSharp sharpens the pixel steps."
+  }
+ ]
+}
