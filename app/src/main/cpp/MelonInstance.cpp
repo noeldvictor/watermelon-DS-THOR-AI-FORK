@@ -5650,7 +5650,7 @@ void MelonInstance::setRetroAchievementsSubmissionTransportSuspended(bool suspen
         retroAchievementsManager->SetSubmissionTransportSuspended(suspended);
 }
 
-void MelonInstance::applyCameraProfile()
+void MelonInstance::applyCameraProfile(const EmulatorConfiguration& config)
 {
     // texturepacks/<GAMECODE>/camera.txt: one setting per line, '#' comments
     //   free_camera on         the free camera is on for this game (right stick, R3)
@@ -5658,9 +5658,10 @@ void MelonInstance::applyCameraProfile()
     //   pitch -30              degrees of tilt (negative = flatter, from behind)
     //   zoom -0.25             fraction of the distance to the screen centre (negative = closer)
     //   follow_speed 1.2       radians per second at most
+    // It is part of the pack: "Load texture packs" switches it off with the rest.
     CameraProfile profile;
     auto cart = nds->NDSCartSlot.GetCart();
-    if (cart)
+    if (cart && config.loadTexturePacks)
     {
         std::string gameCode(cart->GetHeader().GameCode, 4);
         for (char& ch : gameCode)
@@ -5956,7 +5957,7 @@ void MelonInstance::updateRenderer()
     }
 
     applyTexturePack(*config);
-    applyCameraProfile();
+    applyCameraProfile(*config);
 
     switch (newRenderer)
     {

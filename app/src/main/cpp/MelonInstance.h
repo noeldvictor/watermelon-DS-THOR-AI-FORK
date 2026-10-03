@@ -414,7 +414,7 @@ private:
     CameraProfile camProfile;
     // stick offsets on top of the profile's pitch and zoom
     float freeCamPitchOffset = 0.0f, freeCamZoomOffset = 0.0f;
-    void applyCameraProfile();
+    void applyCameraProfile(const EmulatorConfiguration& config);
 
     // written by the configuration thread, read by the emulation and
     // presentation threads; take a snapshot copy per use via
