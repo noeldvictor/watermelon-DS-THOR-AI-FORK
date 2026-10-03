@@ -146,8 +146,10 @@ HDTexPack::HDTexPack(const std::string& packDir, const std::string& dumpDir,
         FontSet.Load(PackDir + "/fonts", PackScale);
         LoadModels(PackDir + "/models");
         // a model replacement's own textures (an AI model's atlas in the slot of the texture its
-        // part used); loaded last, so they win over the pack's upscale of the same key
-        LoadDir(PackDir + "/models/textures", "tex1");
+        // part used); loaded last, so they win over the pack's upscale of the same key. They keep
+        // their own scale: a whole character's atlas in one small texture slot needs more texels
+        // than the pack's scale gives (the Vulkan texcache stores each scale in its own arrays)
+        LoadDir(PackDir + "/models/textures", "tex1", true);
         // Warn so it shows in release builds: once per game start, and the only way to tell
         // from a log whether a pack was found at all
         if (EntryCount > 0)
@@ -255,7 +257,7 @@ const std::vector<u32>* HDTexPack::LookupModel(u64 hash, u32 size) const
     return &it->second.Words;
 }
 
-void HDTexPack::LoadDir(const std::string& dir, const char* kind)
+void HDTexPack::LoadDir(const std::string& dir, const char* kind, bool ownScale)
 {
     std::error_code ec;
     if (!fs::is_directory(fs::u8path(dir), ec))
@@ -270,13 +272,14 @@ void HDTexPack::LoadDir(const std::string& dir, const char* kind)
         if (p.extension() != ".png" && p.extension() != ".PNG") continue;
         std::string name = p.stem().u8string();
         if (name.rfind(kind, 0) != 0) continue;
-        if (!AddEntry(p.u8string(), name, kind))
+        if (!AddEntry(p.u8string(), name, kind, ownScale))
             Platform::Log(Platform::LogLevel::Warn,
                           "HDTexPack: skipping %s (bad name or size)\n", name.c_str());
     }
 }
 
-bool HDTexPack::AddEntry(const std::string& path, const std::string& name, const char* kind)
+bool HDTexPack::AddEntry(const std::string& path, const std::string& name, const char* kind,
+                         bool ownScale)
 {
     // <kind>_<W>x<H>_<hash16>_<palhash16|none|$>_<disc>, and for textures optionally _rows<N>:
     // hash16 then covers only the first N rows (see PartialRows)
@@ -344,14 +347,15 @@ bool HDTexPack::AddEntry(const std::string& path, const std::string& name, const
         return false;
     }
 
-    if (EntryCount > 0 && scale != PackScale)
+    if (!ownScale && EntryCount > 0 && scale != PackScale)
     {
         Platform::Log(Platform::LogLevel::Warn,
                       "HDTexPack: %s has scale %ux, pack is %ux — skipped\n",
                       name.c_str(), scale, PackScale);
         return false;
     }
-    PackScale = scale;
+    if (!ownScale)
+        PackScale = scale;
 
     bool hasPal = !nonePal;
     if (rows)

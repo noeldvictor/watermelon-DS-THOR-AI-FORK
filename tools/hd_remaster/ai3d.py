@@ -522,6 +522,45 @@ def write_edited_obj(path: Path, model: models3d.Model, fitted: dict, meshes, te
 
 # ---------------------------------------------------------------------------- textured models
 
+def uv_coverage(uv: np.ndarray, tris: np.ndarray, width: int, height: int) -> np.ndarray:
+    """Which texels of a width x height texture the triangles' UVs (v down, 0..1) cover."""
+    from PIL import ImageDraw
+    img = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(img)
+    px = uv * np.array([width, height])
+    for t in tris:
+        draw.polygon([tuple(px[i]) for i in t], fill=255, outline=255)
+    return np.array(img) > 0
+
+
+def fill_atlas_gaps(atlas: np.ndarray, uv: np.ndarray, tris: np.ndarray) -> np.ndarray:
+    """The atlas, fully opaque, with every texel no triangle covers filled from the nearest covered
+    colours (push-pull). AI atlases are many small islands on transparent ground; scaled down to a
+    DS texture slot, island borders would otherwise blend with that ground (torn edges)."""
+    h, w = atlas.shape[:2]
+    covered = uv_coverage(uv, tris, w, h) & (atlas[..., 3] > 0)
+    # push: sums of colour and coverage per 2x2 block, down to one texel
+    levels = [(atlas[..., :3].astype(np.float32) * covered[..., None], covered.astype(np.float32))]
+    while max(levels[-1][1].shape) > 1:
+        c, m = levels[-1]
+        ph, pw = m.shape[0] % 2, m.shape[1] % 2
+        c = np.pad(c, ((0, ph), (0, pw), (0, 0)))
+        m = np.pad(m, ((0, ph), (0, pw)))
+        y, x = m.shape[0] // 2, m.shape[1] // 2
+        levels.append((c.reshape(y, 2, x, 2, 3).sum((1, 3)), m.reshape(y, 2, x, 2).sum((1, 3))))
+    # pull: each level keeps its own average where it has coverage, the coarser fill elsewhere
+    c, m = levels[-1]
+    filled = c / np.maximum(m, 1e-6)[..., None]
+    for c, m in reversed(levels[:-1]):
+        up = np.repeat(np.repeat(filled, 2, 0), 2, 1)[:m.shape[0], :m.shape[1]]
+        weight = np.minimum(m, 1.0)[..., None]
+        filled = c / np.maximum(m, 1e-6)[..., None] * weight + up * (1 - weight)
+    out = np.empty((h, w, 4), np.uint8)
+    out[..., :3] = np.clip(np.rint(filled), 0, 255)
+    out[..., 3] = 255
+    return out
+
+
 def read_glb_textured(path: Path):
     """positions (n,3), triangles (m,3), uvs (n,2, v down) and the base-colour texture (RGBA array)
     of a GLB. Primitives with different textures are packed side by side into one atlas."""
@@ -638,42 +677,158 @@ def read_glb_textured(path: Path):
     return np.concatenate(positions), np.concatenate(triangles), np.concatenate(uvs), np.array(atlas)
 
 
+def part_names(model: models3d.Model, draw) -> set[str]:
+    """A draw's shape name and its material's name (either names a part on the command line)."""
+    mat = model.materials[draw.material] if draw.material is not None and draw.material < len(model.materials) else None
+    return {model.shapes[draw.shape].name} | ({mat.name} if mat else set())
+
+
+def _first_hits(origins: np.ndarray, direction: np.ndarray, tri_pts: np.ndarray, max_t: float):
+    """Where rays from `origins` along one `direction` first meet the triangles (Moller-Trumbore):
+    (t, triangle index, barycentric u, v); t = inf where a ray meets nothing before max_t."""
+    a, e1, e2 = tri_pts[:, 0], tri_pts[:, 1] - tri_pts[:, 0], tri_pts[:, 2] - tri_pts[:, 0]
+    p = np.cross(direction[None], e2)                      # (m,3)
+    det = (e1 * p).sum(1)
+    ok_tri = np.abs(det) > 1e-12
+    inv = np.where(ok_tri, 1.0 / np.where(ok_tri, det, 1.0), 0.0)
+    best = np.full(len(origins), np.inf)
+    best_tri = np.zeros(len(origins), np.int64)
+    best_uv = np.zeros((len(origins), 2))
+    for s in range(0, len(origins), 64):
+        o = origins[s:s + 64]
+        tv = o[:, None, :] - a[None]                       # (k,m,3)
+        u = (tv * p[None]).sum(-1) * inv[None]
+        q = np.cross(tv, e1[None])
+        v = (q * direction[None, None]).sum(-1) * inv[None]
+        t = (q * e2[None]).sum(-1) * inv[None]
+        hit = ok_tri[None] & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 0) & (t < max_t)
+        t = np.where(hit, t, np.inf)
+        idx = t.argmin(1)
+        rows = np.arange(len(o))
+        best[s:s + 64] = t[rows, idx]
+        best_tri[s:s + 64] = idx
+        best_uv[s:s + 64] = np.stack([u[rows, idx], v[rows, idx]], 1)
+    return best, best_tri, best_uv
+
+
+def conform(decal: models3d.Mesh, surface: models3d.Mesh, gap: float, center: np.ndarray,
+            reach: float) -> models3d.Mesh:
+    """A decal part (eye, mouth or brow patch) laid onto a new surface: subdivided, then each
+    vertex moved along the patch's facing to the FRONTMOST point of the surface there (hair
+    included: eyes and brows sit on top of bangs, as Wind Waker and Phantom Hourglass draw them),
+    plus `gap`, and lit with that surface's normal. The game keeps drawing the part, so its
+    animation stays. Where nothing is hit within `reach`, the nearest surface point is used."""
+    fine = models3d.subdivide_linear(decal, 2)
+    normals = surface.normals
+    if (normals * (surface.positions - surface.positions.mean(0))).sum() < 0:
+        normals = -normals                         # outward, whatever the mesh's winding
+    tri_pts = surface.positions[surface.triangles]
+    # the patch's facing: its area-weighted normal, pointing away from the model's centre
+    pp = decal.positions[decal.triangles]
+    facing = np.cross(pp[:, 1] - pp[:, 0], pp[:, 2] - pp[:, 0])
+    facing = np.where(((facing * (pp.mean(1) - center)).sum(1) < 0)[:, None], -facing, facing).sum(0)
+    facing /= max(np.linalg.norm(facing), 1e-12)
+    t, hit_tri, uv = _first_hits(fine.positions + facing * reach, -facing, tri_pts, 2 * reach)
+    bary = np.stack([1 - uv[:, 0] - uv[:, 1], uv[:, 0], uv[:, 1]], 1)
+    missed = ~np.isfinite(t)
+    if missed.any():
+        near_tri, near_bary = _closest_on_triangles(fine.positions[missed], tri_pts)
+        hit_tri[missed], bary[missed] = near_tri, near_bary
+    q = (bary[:, :, None] * tri_pts[hit_tri]).sum(1)
+    n = (bary[:, :, None] * normals[surface.triangles[hit_tri]]).sum(1)
+    n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+    return models3d.Mesh(q + facing * gap, n, fine.texcoords, fine.colors, fine.slots, fine.triangles)
+
+
+def clear_skin(img: np.ndarray) -> np.ndarray:
+    """A face patch's texture as a decal: transparent except its dark features (mouth line,
+    brows, eye lines), the parts the HD turnaround painted out."""
+    luma = img[..., :3].astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
+    out = img.copy()
+    out[..., 3] = np.minimum(img[..., 3], np.clip((150 - luma) / 50, 0, 1) * 255).astype(np.uint8)
+    return out
+
+
+def _bone_key(matrix) -> bytes:
+    """A bone's identity across draws: its bind-pose matrix (the same node loaded into a stack slot
+    holds the same matrix in every draw; slot NUMBERS are reused between draws)."""
+    return np.round(np.asarray(matrix, np.float64), 4).tobytes()
+
+
 def fit_textured(new_pos: np.ndarray, new_tris: np.ndarray, new_uv: np.ndarray, model: models3d.Model,
-                 target_shape: str, texture_size: tuple[int, int]):
-    """The new mesh placed on the original (as in fit) and drawn whole in place of one part,
-    `target_shape`, keeping its own texture coordinates (into the AI texture, which takes that
-    part's texture slot). Every vertex takes the bone of the nearest point on the original's
-    surface. The target part must be drawn after every bone it needs is set (the last-drawn part
-    is safe). Returns the mesh, the target draw and every draw."""
+                 hosts: list[str], texture_size: tuple[int, int], ignore: set[str] = frozenset()):
+    """The new mesh placed on the original (as in fit), keeping its own texture coordinates (into
+    the AI texture, which takes the hosts' texture slot), split over the `hosts`: parts (shape
+    names) drawn with that texture, whose display lists it replaces. Every vertex takes the bone of
+    the nearest point on the original's surface. A part can only use the bones its draw has loaded
+    into the matrix stack (the game reloads slots between draws: Link's head and hat bones are
+    loaded for the cap, not for the body), so each triangle goes to the host that has its bones,
+    and a vertex whose bone that host lacks takes the nearest original vertex's bone among the ones
+    it has. Parts in `ignore` (shape or material names: ones the new mesh leaves out, like a sword
+    the game keeps drawing) play no part in placing it or in its bones. Returns the whole mesh
+    (bind pose, for previews and decals), [(host draw, its mesh)] and every draw."""
     meshes = models3d.model_meshes(model)
-    target = next((d for d, _ in meshes if model.shapes[d.shape].name == target_shape), None)
-    if target is None:
-        raise SystemExit(f"{model.name} has no part named {target_shape}")
-    placed = _place(new_pos, meshes)
-    tri_pts, owner = [], []
+    host_ids = [di for di, (d, _) in enumerate(meshes) if model.shapes[d.shape].name in hosts]
+    if not host_ids:
+        raise SystemExit(f"{model.name} has none of the parts {hosts}")
+    used = [(d, m) for d, m in meshes if not part_names(model, d) & ignore]
+    placed = _place(new_pos, used)
+    # every original vertex's bone
+    bones: dict[bytes, int] = {}
+    tri_pts, tri_bones, vert_pts, vert_bones = [], [], [], []
     for di, (d, mesh) in enumerate(meshes):
+        if part_names(model, d) & ignore:
+            continue
+        keys = [bones.setdefault(_bone_key(d.current if s < 0 else d.stack[s]), len(bones)) for s in mesh.slots]
+        vert_pts.append(mesh.positions)
+        vert_bones += keys
         for tr in mesh.triangles:
-            tri_pts.append(mesh.positions[tr]); owner.append((di, tr))
+            tri_pts.append(mesh.positions[tr])
+            tri_bones.append([keys[i] for i in tr])
+    vert_pts = np.concatenate(vert_pts)
+    vert_bones = np.array(vert_bones)
     tri_idx, bary = _closest_on_triangles(placed, np.array(tri_pts))
-    # slot -1 means "the matrix current when THAT part is drawn" (the eyes are drawn on the head's
-    # matrix); drawn as part of the target it would mean the target's matrix and drag the face to
-    # the body. Each part's current matrix goes to the stack slot that holds the same one.
-    current_slot = {}
-    for di, (d, _) in enumerate(meshes):
-        current_slot[di] = next((k for k, m in enumerate(d.stack) if np.allclose(m, d.current, atol=1e-6)), None)
-    slots = np.zeros(len(placed), np.int32)
-    unresolved = 0
-    for vi in range(len(placed)):
-        di, corners = owner[tri_idx[vi]]
-        slot = int(meshes[di][1].slots[corners[int(np.argmax(bary[vi]))]])
-        if slot < 0 and meshes[di][0] is not target:
-            slot = current_slot[di] if current_slot[di] is not None else -1
-            unresolved += slot < 0
-        slots[vi] = slot
-    if unresolved:
-        log(f"{unresolved} vertices sit on a part whose matrix no stack slot holds; they follow {target_shape}'s")
+    vbone = np.array([tri_bones[t][int(np.argmax(b))] for t, b in zip(tri_idx, bary)])
+    # the bones each host's draw can reach: stack slots first, the current matrix if no slot holds it
+    tables = []
+    for di in host_ids:
+        d = meshes[di][0]
+        table: dict[int, int] = {}
+        for k, mat in enumerate(d.stack):
+            if mat is not None and _bone_key(mat) in bones:
+                table.setdefault(bones[_bone_key(mat)], k)
+        if _bone_key(d.current) in bones:
+            table.setdefault(bones[_bone_key(d.current)], -1)
+        tables.append(table)
+    # each triangle to the host holding most of its bones (ties: the first host drawn)
+    tri_host = np.array([max(range(len(host_ids)), key=lambda h: (sum(int(b) in tables[h] for b in vbone[t]), -h))
+                         for t in new_tris])
     w, h = texture_size
-    mesh = models3d.Mesh(placed, np.zeros_like(placed), new_uv * np.array([w, h]),
-                         np.full((len(placed), 3), 31.0), slots, new_tris.astype(np.int32))
-    mesh.normals = models3d.smooth_normals(mesh)
-    return mesh, target, meshes
+    whole = models3d.Mesh(placed, np.zeros_like(placed), new_uv * np.array([w, h]),
+                          np.full((len(placed), 3), 31.0), np.zeros(len(placed), np.int32),
+                          new_tris.astype(np.int32))
+    whole.normals = models3d.smooth_normals(whole)
+    out, remapped = [], 0
+    for hi, di in enumerate(host_ids):
+        tris = new_tris[tri_host == hi]
+        if not len(tris):
+            continue
+        verts, inverse = np.unique(tris.ravel(), return_inverse=True)
+        table = tables[hi]
+        slots = np.zeros(len(verts), np.int32)
+        reachable = np.isin(vert_bones, list(table))
+        for j, v in enumerate(verts):
+            b = int(vbone[v])
+            if b not in table:
+                remapped += 1
+                cand = np.flatnonzero(reachable)
+                b = int(vert_bones[cand[((vert_pts[cand] - placed[v]) ** 2).sum(1).argmin()]])
+            slots[j] = table[b]
+        sub = models3d.Mesh(placed[verts], whole.normals[verts], whole.texcoords[verts],
+                            whole.colors[verts], slots, inverse.reshape(-1, 3).astype(np.int32))
+        out.append((meshes[di][0], sub))
+    log(f"{len(bones)} bones; triangles per host: " + ", ".join(
+        f"{model.shapes[d.shape].name} {len(m.triangles)}" for d, m in out)
+        + (f"; {remapped} vertices took the nearest bone their host has" if remapped else ""))
+    whole.slots = np.zeros(len(placed), np.int32)
+    return whole, out, meshes

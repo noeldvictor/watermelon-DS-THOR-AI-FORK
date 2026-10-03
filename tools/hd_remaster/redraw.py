@@ -69,10 +69,11 @@ def data_url(img: Image.Image) -> str:
 
 
 def generate(model: str, prompt: str, images: list[Image.Image],
-             aspect: str | None = None) -> tuple[Image.Image | None, float, str]:
+             aspect: str | None = None, size: str | None = None) -> tuple[Image.Image | None, float, str]:
     """One chat call asking for an image back. Returns (image or None, cost in USD, text).
     aspect ('4:5'...) pins the output shape where the model supports it (Gemini); left to
-    itself Gemini sometimes answers in a reference image's shape instead of the first image's."""
+    itself Gemini sometimes answers in a reference image's shape instead of the first image's.
+    size ('1K', '2K', '4K') asks Gemini for a larger picture."""
     content = [{"type": "text", "text": prompt}]
     content += [{"type": "image_url", "image_url": {"url": data_url(im)}} for im in images]
     body = {
@@ -81,8 +82,12 @@ def generate(model: str, prompt: str, images: list[Image.Image],
         "modalities": ["image", "text"],
         "usage": {"include": True},
     }
-    if aspect and model.startswith("google/"):
-        body["image_config"] = {"aspect_ratio": aspect}
+    if model.startswith("google/"):
+        config = {"aspect_ratio": aspect} if aspect else {}
+        if size:
+            config["image_size"] = size
+        if config:
+            body["image_config"] = config
     r = call("POST", "/chat/completions", body)
     cost = float((r.get("usage") or {}).get("cost") or 0.0)
     msg = (r.get("choices") or [{}])[0].get("message") or {}

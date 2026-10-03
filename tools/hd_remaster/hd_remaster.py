@@ -524,16 +524,27 @@ def cmd_models(args) -> None:
         if not args.model or not args.mesh:
             raise SystemExit("models fit work/<CODE> --model <id> --mesh <file.glb|obj>")
         if args.textured:
+            ai_dir = Path(args.target) / "models" / args.model / "ai"
             modelpack.fit_textured_mesh(Path(args.target), args.model, Path(args.mesh), Path(args.packs or PACKS),
-                                        args.part, [k for k in (args.keep or "").split(",") if k])
+                                        args.part, *modelpack.textured_parts_from(
+                                            ai_dir, [k for k in (args.keep or "").split(",") if k], args.refs))
         else:
             modelpack.fit_mesh(Path(args.target), args.model, Path(args.mesh))
+    elif args.action == "turnaround":
+        import turnaround
+        if not args.model or not args.art:
+            raise SystemExit("models turnaround work/<CODE> --model <id> --art a.jpg,b.jpg")
+        turnaround.make(Path(args.target), args.model, [Path(a) for a in args.art.split(",")],
+                        [w for w in (args.without or "").split(",") if w], args.character or "",
+                        args.usd, Path(args.packs or PACKS), dry_run=args.dry_run,
+                        blank=[b for b in (args.blank or "").split(",") if b],
+                        decals=[r for r in (args.decals or "").split(",") if r])
     else:
         if not args.model:
             raise SystemExit("models ai work/<CODE> --model <id> [--dry-run]")
         modelpack.ai_model(Path(args.target), args.model, args.polycount, args.budget, args.dry_run, args.provider,
                            args.textured, Path(args.packs or PACKS), args.part,
-                           [k for k in (args.keep or "").split(",") if k])
+                           [k for k in (args.keep or "").split(",") if k], args.refs)
 
 
 def cmd_push(args) -> None:
@@ -747,19 +758,28 @@ def main() -> None:
     p.set_defaults(fn=cmd_build)
 
     p = sub.add_parser("models", help="3D models: export for editing, build replacements (see modelpack.py)")
-    p.add_argument("action", choices=("extract", "build", "fit", "ai"))
+    p.add_argument("action", choices=("extract", "build", "fit", "ai", "turnaround"))
     p.add_argument("target", help="extract: the ROM; build, fit, ai: work/<GAMECODE>")
     p.add_argument("--model", help="fit, ai: the model id (models/index.json)")
     p.add_argument("--mesh", help="fit: a GLB or OBJ to fit onto the model")
     p.add_argument("--polycount", type=int, default=6000, help="ai: triangles Meshy remeshes to")
     p.add_argument("--budget", type=int, default=100, help="ai: credit cap over the ledger (a call: 20)")
-    p.add_argument("--dry-run", action="store_true", help="ai: write the reference pictures only")
+    p.add_argument("--dry-run", action="store_true", help="ai, turnaround: write the reference pictures only")
     p.add_argument("--provider", choices=("tripo", "meshy"), default="tripo",
                    help="ai: tripo (TRIPO_API_KEY) or meshy (MESHY_API_KEY)")
     p.add_argument("--textured", action="store_true",
                    help="ai, fit: the mesh's own texture (Tripo, about 50 credits) drawn in place of one part")
     p.add_argument("--part", help="ai/fit --textured: the part to draw it in place of (default: the last drawn)")
     p.add_argument("--keep", help="ai/fit --textured: parts to keep drawing, comma-separated (e.g. the eyes)")
+    p.add_argument("--refs", choices=("game", "hd"), default="game",
+                   help="ai: send the game model's renders, or the HD turnaround (models turnaround)")
+    p.add_argument("--art", help="turnaround: official artwork of the character, comma-separated files")
+    p.add_argument("--without", help="turnaround: parts (shape or material names) left out of the views")
+    p.add_argument("--blank", help="turnaround: parts drawn with their features painted out (face patches)")
+    p.add_argument("--decals", help="turnaround: parts left out (--without) that the fit wraps onto the "
+                   "new head as decals, besides --blank (e.g. the eyes)")
+    p.add_argument("--character", help="turnaround: who it is, e.g. 'Link (Toon Link) from Phantom Hourglass'")
+    p.add_argument("--usd", type=float, default=2.0, help="turnaround: USD cap per model (OpenRouter)")
     p.add_argument("--out", help=f"extract: work root (default {WORK})")
     p.add_argument("--trace", help="extract: a dl_trace json (tools/re) marking the shapes a scene uses")
     p.add_argument("--previews", action="store_true", help="extract: a preview for every model, not only seen ones")

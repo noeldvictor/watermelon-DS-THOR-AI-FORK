@@ -257,25 +257,56 @@ place; the Tripo client against a local fake of its v3 API (uploads, request bod
 download, ledger, budget).
 
 **Textured AI models** (`models ai --textured`, `models fit --textured`): the model brings its
-own texture instead of wearing the game's. The reference views are flat colour (the DS lights
-the result itself, so painted light would be lit twice) on a transparent background, with the
-pack's HD textures; Tripo is asked for a textured mesh (texture model v3.5, detailed quality, no
-de-lighting since the views are flat; about 40-50 credits). The whole mesh is drawn in place of
-one part, by default the last-drawn one because every bone is set by then (`--part`), every
-other part is hidden unless kept (`--keep eyeL,eyeR` keeps parts that animate), and its texture
-goes into that part's texture slot at the pack's scale as `models/textures/<key>.png`, which the
-emulator loads after the pack's own textures so it wins. Vertices take the bone of the nearest
-point on the original; a part drawn on "the current matrix" (Link's eyes and mouth ride on his
-head bone) is translated to the stack slot that holds the same matrix. `push --models-only`
-installs the models folder with its textures.
+own texture instead of wearing the game's. Tripo is asked for a textured mesh (texture model
+v3.5, detailed quality, no de-lighting since the views are flat; 40 credits). Its texture goes
+into the texture slot of `--part` (default the last-drawn part) as `models/textures/<key>.png` at
+8x, its own scale whatever the pack's (the renderers keep model textures at their own scale, up
+to 8x; Link's 64x64 body texture becomes 512x512), after the AI atlas's gaps are filled from the
+nearest island colours and made opaque (scaled down, island borders blended into transparent
+ground: torn edges). The emulator loads `models/textures` after the pack's textures, so it wins.
 
-First result, Phantom Hourglass' Link: 5,522 triangles, 40 credits, 60 fps in-game with ~2,900
-replacement polygons a frame; head and face follow the game's animation. Limits seen: the
-texture slot (Link's largest texture is 64x64, so 256x256 at the pack's 4x) caps the AI texture's
-resolution; the face is the AI's (no blinking) unless the eye parts are kept; and the generator
-copies the low-poly references closely, so the gain is a cleaner model rather than new detail.
-Fixed on the way: ICP could shrink a wrongly turned mesh into the original and win the facing
-search; facings are now scored by distance both ways and ICP's scale is limited to +-15%.
+The mesh is drawn by every part that uses that texture, split by bone. A part's display list can
+only reach the bones its draw loaded into the matrix stack, and the SDK reloads stack slots
+between draws (slot numbers are reused: Link's slot 9 is a hat bone in the cap's draw and a leg
+bone in the body's), so every vertex takes the bone of the nearest point on the original surface,
+identified by its bind matrix, and every triangle goes to the host part whose stack holds its
+bones (Link: cap 6342 triangles, body 1484). Before this split the whole mesh rode the body's
+stack and the head followed the wrong bones in game. Other parts are hidden unless kept
+(`--keep`).
+
+HD references (`models turnaround`, `turnaround.py`): instead of renders of the low-poly game
+model, one Gemini call (`google/gemini-3-pro-image` through OpenRouter, $0.14 at 2K) redraws the
+game model's four T-pose views, laid out 2x2 on magenta, in the style of official artwork
+(`--art`), same pose, framing and silhouette, flat colours, blank face; the answer is keyed back
+into four transparent views (`ai/hd_ref_*.png`, `ai/turnaround_review.png`; the outline overlap
+with the game model is printed, Link 0.94-0.97) and `models ai --refs hd` sends those to Tripo.
+`--without` leaves parts out of the views (Link: eye decals, sword, sheath), `--blank` draws face
+patches with their dark features painted out (Phantom Hourglass Link's face IS his mouth and brow
+patches; leaving them out leaves a hole), `--decals` names further parts to lay on the new head.
+The settings go to `ai/turnaround.json`, which the fit reads: parts left out are kept and ignored
+when placing the mesh; blank parts and decals are kept as decals: subdivided, moved along the
+patch's facing onto the frontmost surface of the new head (eyes and brows ride on top of the
+bangs, as the Wind Waker style draws them), lit with its normals, and the blank ones' textures get
+transparent skin (`models/textures`), so the game's own eyes, brows and mouth still animate on the
+AI face. Costs: `ai/redraw_ledger.jsonl`, `--usd` per model (default 2).
+
+```
+.venv\Scripts\python hd_remaster.py models turnaround work\AZEE --model <id> --art a.jpg,b.jpg --without eyeL,eyeR,sheath,sheathB,swA,swB --blank mouth,mayuL,mayuR --decals eyeL,eyeR --character "Link (Toon Link) from The Legend of Zelda: Phantom Hourglass"
+.venv\Scripts\python hd_remaster.py models ai work\AZEE --model <id> --refs hd --textured --polycount 8000 --budget 200
+.venv\Scripts\python hd_remaster.py models fit work\AZEE --model <id> --mesh ai\<task>.glb --textured --refs hd
+```
+
+![Link's game model (top) and the HD turnaround drawn from it (bottom)](games/AZEE/media/model_link_hd_turnaround.jpg)
+
+![Same frame on the Thor: the game's Link (left), the HD model (right)](games/AZEE/media/model_link_hd_ingame.jpg)
+
+Phantom Hourglass' Link, second try (2026-10-02): HD turnaround $0.14, Tripo 40 credits, 7,826
+triangles, 60 fps on the Thor; tunic folds, sleeves, hands and boots have real shape, the cap folds
+like the original, the game's eyes, brows and mouth animate on the new face. Left: the head is a
+little smaller than the chibi original and the bangs hide the top of the eyes from the game's
+high camera; `link_model_blue`/`_red` (battle mode) share the face textures and display lists.
+First try (renders of the game model as references, whole mesh on the body's stack, 256x256
+texture): lumpy copy of the low-poly model, torn cap edge, head on the wrong bones.
 
 Making replacements from meshes: `mesh_to_display_list` turns a bind-pose mesh back into a
 shape's display list (each vertex into its matrix-stack slot's space, TEXCOORD, NORMAL for lit

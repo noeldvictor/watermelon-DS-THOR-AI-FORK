@@ -36,8 +36,15 @@ public:
     bool SetPipelineProfile(VulkanPipelineProfile pipelineProfile);
     [[nodiscard]] VulkanPipelineProfile GetPipelineProfile() const noexcept;
 
-    // scaled pools use the storage scale; the native pool stays at 1x
-    [[nodiscard]] u32 PoolStorageScale(bool scaledContent) const { return scaledContent ? GetStorageScale() : 1u; }
+    // scaled pools use the storage scale, or a replacement's own larger scale (model textures,
+    // up to 8x); the native pool stays at 1x
+    [[nodiscard]] u32 PoolStorageScale(bool scaledContent, const HDTexPackImage* replacement) const
+    {
+        u32 scale = scaledContent ? GetStorageScale() : 1u;
+        if (replacement && replacement->Scale > scale)
+            scale = replacement->Scale < 8u ? replacement->Scale : 8u;
+        return scale;
+    }
     TextureHandle GenerateTexture(u32 width, u32 height, u32 layers, u32 scale);
     // texel scale of the array holding this texture (1 for native textures)
     [[nodiscard]] u32 GetTextureScale(TextureHandle handle) const;

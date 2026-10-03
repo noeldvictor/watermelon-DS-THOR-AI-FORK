@@ -488,8 +488,11 @@ public:
         // Scaled content (a pack replacement, or anything the HD filter upscales) lives in
         // arrays at the storage scale; everything else stays native. Storing native textures
         // at a pack's scale would make every draw take the HD sampling path for nothing.
+        // Arrays are pooled by their texel scale, so a model texture with its own, larger
+        // scale (see HDTexPack) gets arrays of its own.
         const bool scaledContent = replacement != nullptr || TexLoader.GetHDTextureFilterMode() != 0;
-        const u32 pool = scaledContent ? 1u : 0u;
+        const u32 storageScale = TexLoader.PoolStorageScale(scaledContent, replacement);
+        const u32 pool = storageScale;
         auto& texArrays = TexArrays[widthLog2][heightLog2][pool];
         auto& freeTextures = FreeTextures[widthLog2][heightLog2][pool];
 
@@ -498,7 +501,6 @@ public:
             texArrays.resize(texArrays.size()+1);
             TexHandleT& array = texArrays[texArrays.size()-1];
 
-            const u32 storageScale = TexLoader.PoolStorageScale(scaledContent);
             u32 layers = std::min<u32>((8*1024*1024) / (width*height*4*storageScale*storageScale), 64);
             layers = std::max<u32>(layers, 1);
 
@@ -570,7 +572,7 @@ public:
         {
             for (u32 j = 0; j < 8; j++)
             {
-                for (u32 pool = 0; pool < 2; pool++)
+                for (u32 pool = 0; pool <= kMaxPoolScale; pool++)
                 {
                     for (u32 k = 0; k < TexArrays[i][j][pool].size(); k++)
                         TexLoader.DeleteTexture(TexArrays[i][j][pool][k]);
@@ -595,7 +597,7 @@ private:
         u32 TextureRAMStart[2], TextureRAMSize[2];
         u32 TexPalStart, TexPalSize;
         u8 WidthLog2, HeightLog2;
-        u8 Pool; // 0 native scale, 1 storage scale (see GetTexture)
+        u8 Pool; // texel scale of the arrays holding it (see GetTexture)
         TexArrayEntry Texture;
 
         u64 TextureHash[2];
@@ -608,8 +610,10 @@ private:
 
     TexLoaderT TexLoader;
 
-    std::vector<TexArrayEntry> FreeTextures[8][8][2];
-    std::vector<TexHandleT> TexArrays[8][8][2];
+    // indexed by texel scale; renderers store at most 8x (see HDTexPack::AddEntry)
+    static constexpr u32 kMaxPoolScale = 8;
+    std::vector<TexArrayEntry> FreeTextures[8][8][kMaxPoolScale + 1];
+    std::vector<TexHandleT> TexArrays[8][8][kMaxPoolScale + 1];
 
     u32 DecodingBuffer[1024*1024];
     std::vector<u32> FilteredBuffer;

@@ -407,6 +407,35 @@ def decode_display_list(dl: bytes, current: np.ndarray, stack: list[np.ndarray])
                 np.array(slots, dtype=np.int32), np.array(tris, dtype=np.int32).reshape(-1, 3), as_np(loc, 3))
 
 
+def subdivide_linear(mesh: Mesh, levels: int = 1) -> Mesh:
+    """Each triangle split in four at its edge midpoints, `levels` times; every attribute is
+    interpolated and positions stay on the original faces (unlike loop_subdivide). An edge's new
+    vertex takes the slot of its first end."""
+    for _ in range(levels):
+        pos, nrm, uv, col, slots = (list(mesh.positions), list(mesh.normals), list(mesh.texcoords),
+                                    list(mesh.colors), list(mesh.slots))
+        mid: dict[tuple[int, int], int] = {}
+
+        def middle(a: int, b: int) -> int:
+            key = (min(a, b), max(a, b))
+            if key not in mid:
+                mid[key] = len(pos)
+                pos.append((mesh.positions[a] + mesh.positions[b]) / 2)
+                nrm.append((mesh.normals[a] + mesh.normals[b]) / 2)
+                uv.append((mesh.texcoords[a] + mesh.texcoords[b]) / 2)
+                col.append((mesh.colors[a] + mesh.colors[b]) / 2)
+                slots.append(mesh.slots[key[0]])
+            return mid[key]
+
+        tris = []
+        for a, b, c in mesh.triangles:
+            ab, bc, ca = middle(a, b), middle(b, c), middle(c, a)
+            tris += [(a, ab, ca), (ab, b, bc), (ca, bc, c), (ab, bc, ca)]
+        mesh = Mesh(np.array(pos), np.array(nrm), np.array(uv), np.array(col), np.array(slots, np.int32),
+                    np.array(tris, np.int32))
+    return mesh
+
+
 def model_meshes(model: Model) -> list[tuple[Draw, Mesh]]:
     out = []
     for d in model.draws:

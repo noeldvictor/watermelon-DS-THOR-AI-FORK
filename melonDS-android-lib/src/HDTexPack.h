@@ -135,8 +135,9 @@ public:
     void LogStats(size_t instances2D) const;
 
 private:
-    void LoadDir(const std::string& dir, const char* kind);
-    bool AddEntry(const std::string& path, const std::string& name, const char* kind);
+    // ownScale: entries keep their own scale instead of having to match the pack's (model textures)
+    void LoadDir(const std::string& dir, const char* kind, bool ownScale = false);
+    bool AddEntry(const std::string& path, const std::string& name, const char* kind, bool ownScale);
     struct Ref
     {
         std::string Path;

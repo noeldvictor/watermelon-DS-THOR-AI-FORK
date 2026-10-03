@@ -462,18 +462,27 @@ def fit_mesh(work: Path, mid: str, mesh_path: Path) -> None:
 
 def ai_model(work: Path, mid: str, polycount: int, budget: int, dry_run: bool, provider: str = "tripo",
              textured: bool = False, packs_root: Path | None = None, target: str | None = None,
-             keep: list[str] | None = None) -> None:
+             keep: list[str] | None = None, refs: str = "game") -> None:
+    """An AI model made from reference pictures: the game model's own renders (refs="game"), or
+    the HD turnaround `models turnaround` drew from them (refs="hd", ai/hd_ref_<view>.png)."""
     import ai3d
     model, folder, info, blobs = _load_model(work, mid)
     packs_root = packs_root or Path(__file__).resolve().parent / "packs"
     # the references show the pack's HD textures where there are some: more for the generator to go on
     keys = _material_keys(model, blobs)
     hd = {i: img for i, k in keys.items() if (img := _hd_image(work, packs_root, k)) is not None}
-    refs = ai3d.reference_views(_textured_parts(model, folder, info, hd))
     ai_dir = folder / "ai"
     ai_dir.mkdir(exist_ok=True)
-    for name, img in zip(("front", "right", "back", "left"), refs):
-        Image.fromarray(img).save(ai_dir / f"ref_{name}.png")
+    refs_kind = refs
+    if refs == "hd":
+        paths = [ai_dir / f"hd_ref_{name}.png" for name in ("front", "right", "back", "left")]
+        if not all(p.exists() for p in paths):
+            raise SystemExit(f"no HD turnaround in {ai_dir}: run models turnaround first")
+        refs = [np.array(Image.open(p).convert("RGBA")) for p in paths]
+    else:
+        refs = ai3d.reference_views(_textured_parts(model, folder, info, hd))
+        for name, img in zip(("front", "right", "back", "left"), refs):
+            Image.fromarray(img).save(ai_dir / f"ref_{name}.png")
     if dry_run:
         log(f"reference pictures in {ai_dir}; nothing sent (dry run)")
         return
@@ -482,54 +491,111 @@ def ai_model(work: Path, mid: str, polycount: int, budget: int, dry_run: bool, p
     ledger = work / "models" / "ai_ledger.jsonl"
     if textured:
         glb = ai3d.tripo_multiview(refs, ai_dir, ledger, budget, polycount, mid, textured=True)
-        fit_textured_mesh(work, mid, glb, packs_root, target, keep or [])
+        fit_textured_mesh(work, mid, glb, packs_root, target, *textured_parts_from(ai_dir, keep or [], refs_kind))
         return
     generate = ai3d.tripo_multiview if provider == "tripo" else ai3d.meshy_multi_image
     glb = generate(refs, ai_dir, ledger, budget, polycount, mid)
     fit_mesh(work, mid, glb)
 
 
+def textured_parts_from(ai_dir: Path, keep: list[str], refs: str):
+    """keep, texture scale, ignore, decals and clear for a textured fit. With the HD turnaround as
+    the references (ai/turnaround.json), the parts it left out are kept and placed without, and
+    the face patches it painted out (blank) plus its decals are wrapped onto the new head, the
+    blank ones with their skin made transparent."""
+    info = ai_dir / "turnaround.json"
+    if refs != "hd" or not info.exists():
+        return keep, MODEL_TEXTURE_SCALE, [], [], []
+    t = json.loads(info.read_text(encoding="utf-8"))
+    without, blank = t.get("without", []), t.get("blank", [])
+    decals = sorted(set(blank) | set(t.get("decals", [])))
+    return sorted(set(keep) | set(without) | set(blank)), MODEL_TEXTURE_SCALE, without, decals, blank
+
+
+MODEL_TEXTURE_SCALE = 8                # the most the renderers store (HDTexPack::AddEntry)
+
+
 def fit_textured_mesh(work: Path, mid: str, glb: Path, packs_root: Path, target: str | None,
-                      keep: list[str]) -> None:
-    """A textured mesh (a Tripo GLB) as the whole model: drawn in place of one part (`target`,
-    default the last-drawn one, which has every bone set), wearing its own texture in that part's
-    texture slot (models/textures/<key>.png at the pack's scale, loaded over the pack's own image),
-    every other part hidden except `keep` (e.g. the eyes, to keep their animation)."""
+                      keep: list[str], scale: int = MODEL_TEXTURE_SCALE, ignore: list[str] = (),
+                      decals: list[str] = (), clear: list[str] = ()) -> None:
+    """A textured mesh (a Tripo GLB) as the whole model, wearing its own texture in the texture
+    slot of `target` (default the last-drawn part; models/textures/<key>.png at `scale`, its own
+    scale whatever the pack's, loaded over the pack's own image). It is drawn by every part that
+    uses that texture (each draw only reaches the bones it loaded: see ai3d.fit_textured), every
+    other part hidden except `keep` (shape or material names,
+    e.g. the eyes, to keep their animation). `ignore`: kept parts the new mesh leaves out (placed
+    without them). `decals`: kept parts wrapped onto the new surface (eyes, mouth and brow patches
+    drawn over the new head, animation intact). `clear`: decals whose texture's skin becomes
+    transparent (face patches that were opaque skin), as models/textures/<key>.png."""
     import ai3d
     model, folder, info, blobs = _load_model(work, mid)
     pos, tris, uv, atlas = ai3d.read_glb_textured(glb)
+    atlas = ai3d.fill_atlas_gaps(atlas, uv, tris)
     draws = models3d.model_meshes(model)
     target = target or model.shapes[draws[-1][0].shape].name
     sizes = {s["name"]: tuple(s["texture_size"]) for s in info["shapes"]}
     if not all(sizes.get(target, (0, 0))):
         raise SystemExit(f"{target} has no texture to carry the new one")
-    mesh, draw, meshes = ai3d.fit_textured(pos, tris, uv, model, target, sizes[target])
+    keep, decals, clear = set(keep), set(decals), set(clear)
     keys = _material_keys(model, blobs)
+    draw = next(d for d, _ in draws if model.shapes[d.shape].name == target)
     if draw.material not in keys:
         raise SystemExit(f"no pack key for {target}'s texture")
-    pack_info = packs_root / work.name / "pack.json"
-    scale = int(json.loads(pack_info.read_text(encoding="utf-8")).get("scale", 4)) if pack_info.exists() else 4
+    hosts = [model.shapes[d.shape].name for d, _ in draws
+             if keys.get(d.material) == keys[draw.material] and not ai3d.part_names(model, d) & keep]
+    mesh, host_meshes, meshes = ai3d.fit_textured(pos, tris, uv, model, hosts, sizes[target], set(ignore))
+    host_meshes = {id(d): m for d, m in host_meshes}
+    allp = np.concatenate([m.positions for _, m in meshes if len(m.positions)])
+    gap = 0.006 * float(np.ptp(allp[:, 1]))
     w, h = sizes[target]
     built = work / "models_built"
     (built / "textures").mkdir(parents=True, exist_ok=True)
     tex_key = keys[draw.material]
     Image.fromarray(atlas).resize((w * scale, h * scale), Image.LANCZOS).save(built / "textures" / f"{tex_key}.png")
     originals: dict[str, bytes] = {}
-    for d, _ in meshes:
+    kept, wrapped, previews = [], [], []
+    for d, part in meshes:
         shape = model.shapes[d.shape]
-        if shape.name == target:
-            dl = models3d.mesh_to_display_list(mesh, d, models3d.is_lit(shape.dl))
-        elif shape.name in keep:
+        names = ai3d.part_names(model, d)
+        if id(d) in host_meshes:
+            dl = models3d.mesh_to_display_list(host_meshes[id(d)], d, models3d.is_lit(shape.dl))
+        elif names & decals and len(part.triangles):
+            decal = ai3d.conform(part, mesh, gap, allp.mean(0), 0.15 * float(np.ptp(allp[:, 1])))
+            dl = models3d.mesh_to_display_list(decal, d, models3d.is_lit(shape.dl))
+            wrapped.append(shape.name)
+            previews.append((d, decal))
+            if names & clear and d.material in keys:
+                src = _hd_image(work, packs_root, keys[d.material])
+                if src is not None:
+                    img = ai3d.clear_skin(np.array(Image.open(src).convert("RGBA")))
+                    Image.fromarray(img).save(built / "textures" / f"{keys[d.material]}.png")
+        elif names & keep:
+            kept.append(shape.name)
+            previews.append((d, part))
             continue
         else:
             dl = struct.pack("<I", 0)                  # a NOP: the new mesh covers this part
         models3d.write_replacement(built, shape.key, dl)
         originals[shape.key] = shape.dl
     models3d.write_originals(built, originals)
+    # the previews show what the game will draw: the new mesh and the parts it keeps
+    hd = {i: img for i, k in keys.items() if (img := _hd_image(work, packs_root, k)) is not None}
     preview = [dict(positions=mesh.positions, triangles=mesh.triangles, texture=atlas,
                     uv=mesh.texcoords / np.array([w, h]))]
+    for d, part in previews:
+        mat = model.materials[d.material] if d.material is not None and d.material < len(model.materials) else None
+        tw, th = sizes.get(model.shapes[d.shape].name, (0, 0))
+        tex = built / "textures" / f"{keys[d.material]}.png" if d.material in keys else None
+        if tex is None or not tex.exists():
+            tex = hd.get(d.material) or (folder / f"tex_{mat.name}.png" if mat else None)
+        item = dict(positions=part.positions, triangles=part.triangles)
+        if tex and Path(tex).exists() and tw and th:
+            item.update(texture=np.array(Image.open(tex).convert("RGBA")), uv=part.texcoords / np.array([tw, th]))
+        preview.append(item)
     Image.fromarray(np.concatenate([render3d.render(preview, 256, yaw=y, pitch=10) for y in (0, 40, 90, 180)], 1)) \
         .save(folder / "edited_preview.png")
-    log(f"{len(pos)} vertices, {len(tris)} triangles drawn in place of {target} with its own texture "
-        f"({tex_key}, {w * scale}x{h * scale}); {len(originals) - 1} other parts hidden; keep {keep or 'none'}")
+    Image.fromarray(render3d.render(preview, 768, yaw=0, pitch=0)).save(folder / "edited_front.png")
+    log(f"{len(pos)} vertices, {len(tris)} triangles drawn in place of {', '.join(hosts)} with its own texture "
+        f"({tex_key}, {w * scale}x{h * scale}); {len(originals) - len(host_meshes) - len(wrapped)} other parts hidden; "
+        f"kept {', '.join(kept) or 'none'}; wrapped onto it: {', '.join(wrapped) or 'none'}")
     install(work, packs_root)

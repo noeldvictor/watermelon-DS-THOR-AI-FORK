@@ -30,7 +30,7 @@ public:
     [[nodiscard]] u32 GetTexPackScale() const { return TexPackScale; }
 
     // one scale for every array: the OpenGL shaders take the texel scale as a uniform
-    [[nodiscard]] u32 PoolStorageScale(bool) const { return GetStorageScale(); }
+    [[nodiscard]] u32 PoolStorageScale(bool, const HDTexPackImage*) const { return GetStorageScale(); }
     GLuint GenerateTexture(u32 width, u32 height, u32 layers, u32 scale);
     void UploadTexture(GLuint handle, u32 width, u32 height, u32 layer, void* data);
     void UploadReplacement(GLuint handle, u32 width, u32 height, u32 layer, const HDTexPackImage& img);
