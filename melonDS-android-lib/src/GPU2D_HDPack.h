@@ -69,6 +69,11 @@ struct HDPack2DInstance
     // (the layer's other pixels around it are the box), so the renderer blends the HD glyph
     // over the box colour next to it and lets the glyph's soft edge spill onto the box
     bool Text = false;
+    // a BG tile of a layer that takes part in a blend or fade (a target of BLDCNT): where the
+    // 2D composite mixed it on the CPU (see kHDBlendInfoOffset) the overlay can't tell its
+    // pixels, so the renderer swaps its share of the mixed colour for the art's. Native
+    // holds the tile's own pixels for that.
+    bool BlendBG = false;
 };
 
 constexpr u8 kNoObjRank = 0xFF;
@@ -76,6 +81,14 @@ constexpr size_t kObjRankEngineSize = 256 * 192;
 // ownership map slots: engine A, engine B, and the engine whose sprites were carried
 // over from the frame before (see HDPack2D::CarryAlternatingScreen)
 constexpr size_t kObjRankSlots = 3;
+
+// The blend record (GPU2D::Unit::HDBlendInfo) follows the ownership map in the same buffer:
+// one u32 per native pixel per engine (A, then B). Bit 31 is set where the 2D composite mixed
+// the pixel on the CPU; bits 24-25 say how (1 alpha blend, 2 brightness fade); bits 0-2 are
+// the first target's layer (0-3 BG, 4 OBJ, 5 backdrop), bits 3-5 the second's (7 none);
+// bits 8-12 and 16-20 their weights in 16ths.
+constexpr size_t kHDBlendInfoOffset = kObjRankSlots * kObjRankEngineSize;
+constexpr size_t kHDRankBufferBytes = kHDBlendInfoOffset + 2 * kObjRankEngineSize * sizeof(u32);
 
 // CPU-side 2D asset walker: decodes active OBJ sprites and text BG tiles
 // straight from OAM/VRAM after a frame has been rendered, dumping them
@@ -162,6 +175,8 @@ private:
 
     // the previous frame's own sprite replacements and ownership, for CarryAlternatingScreen
     std::vector<HDPack2DInstance> PrevInstances;
+    // native pixels of BG tiles in a blend (HDPack2DInstance::Native), by tile and palette hash
+    std::unordered_map<u64, std::shared_ptr<const std::vector<u32>>> BGNativeCache;
     std::vector<u8> PrevObjRank;
     bool PrevEngineAOnTop = false;
     bool PrevValid = false;

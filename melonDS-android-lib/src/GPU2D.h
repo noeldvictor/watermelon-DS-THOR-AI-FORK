@@ -19,6 +19,8 @@
 #ifndef GPU2D_H
 #define GPU2D_H
 
+#include <array>
+
 #include "types.h"
 #include "Savestate.h"
 
@@ -122,6 +124,13 @@ public:
     u16 BlendAlpha;
     u8 EVA, EVB;
     u8 EVY;
+
+    // HD replacement: per native pixel, the alpha blend or fade the Compatibility 2D renderer
+    // mixed into the composed colour on the CPU (0 where it drew the pixel as is). Blended
+    // pixels lose their layer flag (0xFF), so the HD overlay can't replace them; with this
+    // the edge pass swaps each layer's share of the mix for its art. See kHDBlendInfo* in
+    // GPU2D_HDPack.h for the layout.
+    std::array<u32, 256 * 192> HDBlendInfo {};
 
     bool CaptureLatch;
     u32 CaptureCnt;

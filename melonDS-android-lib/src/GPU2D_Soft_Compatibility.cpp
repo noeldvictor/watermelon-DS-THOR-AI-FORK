@@ -329,6 +329,30 @@ u32 CompatibilitySoftRenderer::ColorComposite(int i, u32 val1, u32 val2) const
         }
     }
 
+    // for HD replacement (Unit::HDBlendInfo): which layers the mix took and at what weights
+    LastBlendInfo = 0;
+    auto layerOf = [](u32 flag) -> u32 {
+        if (flag & 0x80) return 4;                 // semi-transparent sprite
+        if (flag & 0x40) return 6;                 // 3D
+        for (u32 l = 0; l < 6; l++)
+            if (flag & (1u << l)) return l;        // BG0-3, OBJ, backdrop
+        return 7;
+    };
+    if (coloreffect == 1)
+    {
+        const u32 first = layerOf(val1 >> 24), second = layerOf(val2 >> 24);
+        if (first != 6 && second != 6)
+            LastBlendInfo = 0x81000000u | first | (second << 3)
+                | (std::min<u32>(eva, 16) << 8) | (std::min<u32>(evb, 16) << 16);
+    }
+    else if (coloreffect == 2 || coloreffect == 3)
+    {
+        const u32 first = layerOf(val1 >> 24);
+        if (first != 6)
+            LastBlendInfo = 0x82000000u | first | (7u << 3)
+                | ((16u - std::min<u32>(CurUnit->EVY, 16)) << 8);
+    }
+
     switch (coloreffect)
     {
     case 0: return val1;
@@ -2200,6 +2224,7 @@ void CompatibilitySoftRenderer::DrawScanline_BGOBJ(u32 line)
         {
             for (int i = 0; i < 256; i++)
                 BGOBJLine[i] = 0xFF3F3F3F;
+            if (line < 192) std::fill_n(&CurUnit->HDBlendInfo[line * 256], 256, 0u);
 
             return;
         }
@@ -2240,6 +2265,7 @@ void CompatibilitySoftRenderer::DrawScanline_BGOBJ(u32 line)
         case 7: DrawScanlineBGMode7(line); break;
         }
 
+        u32* const blendInfo = &CurUnit->HDBlendInfo[std::min<u32>(line, 191) * 256];
         if (!GPU.GPU3D.IsRendererAccelerated())
         {
             for (int i = 0; i < 256; i++)
@@ -2248,6 +2274,7 @@ void CompatibilitySoftRenderer::DrawScanline_BGOBJ(u32 line)
                 u32 val2 = BGOBJLine[256+i];
 
                 BGOBJLine[i] = ColorComposite(i, val1, val2);
+                blendInfo[i] = LastBlendInfo;
             }
         }
         else
@@ -2280,6 +2307,7 @@ void CompatibilitySoftRenderer::DrawScanline_BGOBJ(u32 line)
                         BGOBJLine[i]     = val2;
                         BGOBJLine[256+i] = ColorComposite(i, val2, val3);
                         BGOBJLine[512+i] = 0x04000000;
+                        blendInfo[i] = 0;
                     }
                     else if ((flag1 & 0xC0) == 0x40)
                     {
@@ -2290,6 +2318,7 @@ void CompatibilitySoftRenderer::DrawScanline_BGOBJ(u32 line)
                         BGOBJLine[i]     = val2;
                         BGOBJLine[256+i] = ColorComposite(i, val2, val3);
                         BGOBJLine[512+i] = (bldcnteffect << 24) | (CurUnit->EVY << 8);
+                        blendInfo[i] = 0;
                     }
                     else if (((flag2 & 0xC0) == 0x40) && ((CurUnit->BlendCnt & 0x01C0) == 0x0140))
                     {
@@ -2311,12 +2340,14 @@ void CompatibilitySoftRenderer::DrawScanline_BGOBJ(u32 line)
                         BGOBJLine[i]     = val1;
                         BGOBJLine[256+i] = ColorComposite(i, val1, val3);
                         BGOBJLine[512+i] = (bldcnteffect << 24) | (CurUnit->EVB << 16) | (CurUnit->EVA << 8);
+                        blendInfo[i] = 0;
                     }
                     else
                     {
                         BGOBJLine[i]     = ColorComposite(i, val1, val2);
                         BGOBJLine[256+i] = 0;
                         BGOBJLine[512+i] = 0x07000000;
+                        blendInfo[i] = LastBlendInfo;
                     }
                 }
             }
@@ -2330,6 +2361,7 @@ void CompatibilitySoftRenderer::DrawScanline_BGOBJ(u32 line)
                     BGOBJLine[i]     = ColorComposite(i, val1, val2);
                     BGOBJLine[256+i] = 0;
                     BGOBJLine[512+i] = 0x07000000;
+                    blendInfo[i] = LastBlendInfo;
                 }
             }
         }
@@ -2400,6 +2432,7 @@ void CompatibilitySoftRenderer::DrawScanline_BGOBJ(u32 line)
     {
         for (int i = 0; i < 256; i++)
             BGOBJLine[i] = 0xFF3F3F3F;
+        if (line < 192) std::fill_n(&CurUnit->HDBlendInfo[line * 256], 256, 0u);
 
         return;
     }
@@ -2456,6 +2489,7 @@ void CompatibilitySoftRenderer::DrawScanline_BGOBJ(u32 line)
 
     // color special effects
     // can likely be optimized
+    u32* const blendInfo = &CurUnit->HDBlendInfo[std::min<u32>(line, 191) * 256];
 
     if (!GPU.GPU3D.IsRendererAccelerated())
     {
@@ -2465,6 +2499,7 @@ void CompatibilitySoftRenderer::DrawScanline_BGOBJ(u32 line)
             u32 val2 = BGOBJLine[256+i];
 
             BGOBJLine[i] = ColorComposite(i, val1, val2);
+            blendInfo[i] = LastBlendInfo;
         }
     }
     else
@@ -2558,6 +2593,7 @@ void CompatibilitySoftRenderer::DrawScanline_BGOBJ(u32 line)
                     BGOBJLine[i]     = val2;
                     BGOBJLine[256+i] = ColorComposite(i, val2, val3);
                     BGOBJLine[512+i] = 0x04000000;
+                    blendInfo[i] = 0;
                 }
                 else if ((flag1 & 0xC0) == 0x40)
                 {
@@ -2570,6 +2606,7 @@ void CompatibilitySoftRenderer::DrawScanline_BGOBJ(u32 line)
                     BGOBJLine[i]     = val2;
                     BGOBJLine[256+i] = ColorComposite(i, val2, val3);
                     BGOBJLine[512+i] = (bldcnteffect << 24) | (CurUnit->EVY << 8);
+                    blendInfo[i] = 0;
                 }
                 else if (((flag2 & 0xC0) == 0x40) && ((CurUnit->BlendCnt & 0x01C0) == 0x0140))
                 {
@@ -2593,6 +2630,7 @@ void CompatibilitySoftRenderer::DrawScanline_BGOBJ(u32 line)
                     BGOBJLine[i]     = val1;
                     BGOBJLine[256+i] = ColorComposite(i, val1, val3);
                     BGOBJLine[512+i] = (bldcnteffect << 24) | (CurUnit->EVB << 16) | (CurUnit->EVA << 8);
+                    blendInfo[i] = 0;
                 }
                 else
                 {
@@ -2604,6 +2642,7 @@ void CompatibilitySoftRenderer::DrawScanline_BGOBJ(u32 line)
                     BGOBJLine[i]     = ColorComposite(i, val1, val2);
                     BGOBJLine[256+i] = 0;
                     BGOBJLine[512+i] = overlayOver3d ? 0x87000000u : 0x07000000u;
+                    blendInfo[i] = LastBlendInfo;
                 }
 
                 StoreStructuredVulkan2DPixel(
@@ -2660,6 +2699,7 @@ void CompatibilitySoftRenderer::DrawScanline_BGOBJ(u32 line)
                 BGOBJLine[i]     = ColorComposite(i, val1, val2);
                 BGOBJLine[256+i] = 0;
                 BGOBJLine[512+i] = overlayOver3d ? 0x87000000u : 0x07000000u;
+                blendInfo[i] = LastBlendInfo;
 
                 StoreStructuredVulkan2DPixel(
                     line,

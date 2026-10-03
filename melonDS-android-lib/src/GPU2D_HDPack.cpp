@@ -25,6 +25,7 @@
 #include "Platform.h"
 
 #include <algorithm>
+#include <cstring>
 #include <functional>
 
 #define XXH_STATIC_LINKING_ONLY
@@ -201,13 +202,17 @@ void HDPack2D::ProcessFrame(GPU& gpu, HDTexPack* pack)
         WalkBatch++;
     if (dumpSprites)
         CurBitmapKeys.clear();
-    ObjRank.assign(kObjRankSlots * kObjRankEngineSize, kNoObjRank);
+    ObjRank.assign(kHDRankBufferBytes, kNoObjRank);
+    std::fill(ObjRank.begin() + kHDBlendInfoOffset, ObjRank.end(), 0);
 
     for (int num = 0; num < 2; num++)
     {
         const GPU2D::Unit& unit = num ? (const GPU2D::Unit&)gpu.GPU2D_B : gpu.GPU2D_A;
         if (unit.RenderDisplayMode() != 1)
             continue;
+        // the blends and fades the 2D composite mixed on the CPU this frame
+        std::memcpy(&ObjRank[kHDBlendInfoOffset + (size_t)num * kObjRankEngineSize * sizeof(u32)],
+                    unit.HDBlendInfo.data(), kObjRankEngineSize * sizeof(u32));
 
         if (load || dumpSprites)
             WalkSprites(gpu, num, pack, dumpSprites, load);
@@ -1064,13 +1069,19 @@ void HDPack2D::WalkBGLayers(GPU& gpu, int num, HDTexPack* pack, bool dump, bool 
             }
         }
 
-        // as for sprites: while a colour effect targets this layer, keep the native tiles
+        // a layer an effect targets (or a semi-transparent sprite may blend over) has pixels
+        // the 2D composite mixes on the CPU: there the overlay leaves the native mix, and the
+        // edge pass swaps this layer's share of it for the art (BlendBG, with the tile's own
+        // pixels); its other pixels the overlay replaces as usual
         const u32 effect = (unit.BlendCnt >> 6) & 0x3;
         const bool layerEffect = (unit.BlendCnt & (1u << layer)) && effect != 0
             && !(effect == 1 && unit.EVA >= 16 && unit.EVB == 0)
             && !(effect >= 2 && unit.EVY == 0);
+        const bool blendBG = layerEffect || (unit.BlendCnt & (0x100u << layer));
+        if (BGNativeCache.size() > 8192)
+            BGNativeCache.clear();
 
-        if (load && !layerEffect)
+        if (load)
         {
             u16 xoff = unit.BGXPos[layer];
             u16 yoff = unit.BGYPos[layer];
@@ -1095,7 +1106,7 @@ void HDPack2D::WalkBGLayers(GPU& gpu, int num, HDTexPack* pack, bool dump, bool 
                     u16 curtile = mapEntry(tx, ty);
 
                     u64 palHash = 0;
-                    tilePalette(curtile, palHash);
+                    const u16* curpal = tilePalette(curtile, palHash);
                     u64 tileHash = tileHashOf(curtile);
 
                     const HDTexPackImage* img = pack->LookupBGTile(tileHash, palHash, true, bpp);
@@ -1117,6 +1128,35 @@ void HDPack2D::WalkBGLayers(GPU& gpu, int num, HDTexPack* pack, bool dump, bool 
                     inst.Y = (s16)(r * 8 - fineY);
                     inst.W = 8;
                     inst.H = 8;
+                    if (blendBG)
+                    {
+                        // the tile's own pixels, unflipped (the renderer flips them with the art)
+                        const u64 key = tileHash * 0x9E3779B97F4A7C15ull ^ palHash;
+                        auto& native = BGNativeCache[key];
+                        if (!native)
+                        {
+                            auto pixels = std::make_shared<std::vector<u32>>(64);
+                            const u32 base = tilesetaddr + ((u32)(curtile & 0x03FF) << (eightbpp ? 6 : 5));
+                            for (int y = 0; y < 8; y++)
+                            {
+                                for (int x = 0; x < 8; x++)
+                                {
+                                    int col;
+                                    if (eightbpp)
+                                        col = bgvram[(base + (u32)(y * 8 + x)) & bgvrammask];
+                                    else
+                                    {
+                                        u8 byte = bgvram[(base + (u32)(y * 4 + (x >> 1))) & bgvrammask];
+                                        col = (x & 1) ? (byte >> 4) : (byte & 0xF);
+                                    }
+                                    (*pixels)[(size_t)y * 8 + x] = Pal555ToRGBA8(curpal[col], col != 0);
+                                }
+                            }
+                            native = std::move(pixels);
+                        }
+                        inst.Native = native;
+                        inst.BlendBG = true;
+                    }
                     Instances.push_back(inst);
                 }
             }

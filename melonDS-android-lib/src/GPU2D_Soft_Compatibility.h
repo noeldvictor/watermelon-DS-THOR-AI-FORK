@@ -152,6 +152,8 @@ private:
         return rb | g | 0xFF000000;
     }
     u32 ColorComposite(int i, u32 val1, u32 val2) const;
+    // the blend or fade the last ColorComposite applied (Unit::HDBlendInfo), 0 for none
+    mutable u32 LastBlendInfo = 0;
     [[nodiscard]] bool UseStructuredVulkan2D() const noexcept;
     void ClearStructuredVulkan2DLine(u32 line);
     void ClearStructuredVulkan2DCapture(u32 vramBank);

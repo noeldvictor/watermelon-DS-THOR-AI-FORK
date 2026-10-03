@@ -2612,7 +2612,7 @@ bool VulkanOutput::ensurePlaneOverlayResources(FrameResource& resource)
     {
         if (!createHostBuffer(resource.overlayRankBuffer, resource.overlayRankMemory,
                               resource.overlayRankMapped,
-                              melonDS::kObjRankSlots * melonDS::kObjRankEngineSize,
+                              melonDS::kHDRankBufferBytes,
                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
             return false;
         resource.overlayDescriptorsReady = false;
@@ -2852,7 +2852,8 @@ bool VulkanOutput::ensureHDEdgeResources(FrameResource& resource)
                                             kOverlayMaxInstances * sizeof(PlaneOverlayGpuInstance)};
         VkDescriptorImageInfo atlasInfo{VK_NULL_HANDLE, overlayAtlasView, VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo outInfo{VK_NULL_HANDLE, resource.imageView, VK_IMAGE_LAYOUT_GENERAL};
-        VkDescriptorBufferInfo rankInfo{resource.overlayRankBuffer, 0, melonDS::kObjRankSlots * melonDS::kObjRankEngineSize};
+        // the ownership map and, after it, the blend record (mode 3)
+        VkDescriptorBufferInfo rankInfo{resource.overlayRankBuffer, 0, melonDS::kHDRankBufferBytes};
         VkDescriptorBufferInfo topInfo{resource.topPackedBuffer, 0, resource.packedBufferSize};
         VkDescriptorBufferInfo bottomInfo{resource.bottomPackedBuffer, 0, resource.packedBufferSize};
         VkDescriptorBufferInfo nativeInfo{resource.overlayNativeBuffer, 0, kOverlayNativeWords * sizeof(u32)};
@@ -2907,7 +2908,8 @@ void VulkanOutput::recordHDEdgePasses(FrameResource& resource, const VulkanCompo
                             0, 1, &resource.hdEdgeDescriptorSet, 0, nullptr);
     // own edge pixels of every sprite first (they read the background around them), then the
     // spill onto 3D, then the detail of sprites under an effect (modes 0 and 1 are for
-    // sprites drawn as-is only); each dispatch reads what the one before it wrote
+    // sprites drawn as-is only), then the share of BG tiles in pixels the 2D composite mixed
+    // (mode 3); each dispatch reads what the one before it wrote
     for (u32 mode = 0; mode < 3; mode++)
     {
         for (u32 i = 0; i < count; i++)
@@ -2929,6 +2931,35 @@ void VulkanOutput::recordHDEdgePasses(FrameResource& resource, const VulkanCompo
                           (inst.nativeH * scale + 7u) / 8u, 1);
             orderAfterPreviousWrites();
         }
+    }
+
+    // BG tiles' share of pixels the 2D composite mixed (mode 3): the tiles of one layer never
+    // overlap, so each run of them (same engine and layer, as the walker emits them) is one
+    // dispatch, a z slice per tile
+    for (u32 i = 0; i < count;)
+    {
+        const PlaneOverlayGpuInstance& first = instanceData[i];
+        if ((first.flags & 8u) == 0u || first.nativeW != 8u || first.nativeH != 8u)
+        {
+            i++;
+            continue;
+        }
+        const u32 layerKey = (first.masks & 0xFFu) | (((first.rank >> 8u) & 3u) << 8u);
+        u32 end = i + 1;
+        while (end < count && (instanceData[end].flags & 8u) != 0u
+               && instanceData[end].nativeW == 8u && instanceData[end].nativeH == 8u
+               && ((instanceData[end].masks & 0xFFu) | (((instanceData[end].rank >> 8u) & 3u) << 8u)) == layerKey)
+            end++;
+        HDEdgePushConstants pushConstants{};
+        pushConstants.scale = scale;
+        pushConstants.instanceIndex = i;
+        pushConstants.mode = 3u;
+        pushConstants.packedStride = inputs.packedStride;
+        vkCmdPushConstants(resource.commandBuffer, hdEdgePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, sizeof(pushConstants), &pushConstants);
+        vkCmdDispatch(resource.commandBuffer, (8u * scale + 7u) / 8u, (8u * scale + 7u) / 8u, end - i);
+        orderAfterPreviousWrites();
+        i = end;
     }
 }
 
@@ -3096,7 +3127,9 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
         // bits 8-12: the sprite's blend weight (16 = drawn as-is; less = under an effect,
         // left native by the overlay and given the art's detail by the edge pass)
         // bit 2: a glyph of BG-layer text (HDPack2DInstance::Text)
-        out.gpu.flags = static_cast<u32>(inst.Flip) | (inst.Text ? 4u : 0u)
+        // bit 3: a BG tile of a layer in a blend or fade (HDPack2DInstance::BlendBG): the edge
+        // pass swaps its share of the pixels the 2D composite mixed for the art
+        out.gpu.flags = static_cast<u32>(inst.Flip) | (inst.Text ? 4u : 0u) | (inst.BlendBG ? 8u : 0u)
             | (static_cast<u32>(std::min<u8>(inst.BlendWeight, 16)) << 8);
         // bits 16-23: how many ranks past Rank the instance also owns (a glyph across text sprites)
         out.gpu.rank = static_cast<u32>(inst.Rank) | (static_cast<u32>(inst.Engine & 3u) << 8)
@@ -3106,7 +3139,7 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
         out.screen = inst.Screen & 1u;
         out.gpu.screen = out.screen;
         out.ordered = inst.RequireMask == 0x90 || inst.Text;
-        if (inst.BlendWeight < 16)
+        if (inst.BlendWeight < 16 || inst.BlendBG)
             out.native = inst.Native;
         prepared.push_back(std::move(out));
     };
@@ -3169,10 +3202,14 @@ void VulkanOutput::recordPlaneOverlayPasses(FrameResource& resource, const Vulka
         // anything, which only costs the replacements, never shows them over the wrong sprite
         std::scoped_lock rankLock(replacementInstanceLock);
         auto* rankData = static_cast<u8*>(resource.overlayRankMapped);
-        if (resource.replacementObjRank.size() == melonDS::kObjRankSlots * melonDS::kObjRankEngineSize)
-            std::memcpy(rankData, resource.replacementObjRank.data(), melonDS::kObjRankSlots * melonDS::kObjRankEngineSize);
+        if (resource.replacementObjRank.size() == melonDS::kHDRankBufferBytes)
+            std::memcpy(rankData, resource.replacementObjRank.data(), melonDS::kHDRankBufferBytes);
         else
-            std::memset(rankData, melonDS::kNoObjRank, melonDS::kObjRankSlots * melonDS::kObjRankEngineSize);
+        {
+            std::memset(rankData, melonDS::kNoObjRank, melonDS::kHDBlendInfoOffset);
+            std::memset(rankData + melonDS::kHDBlendInfoOffset, 0,
+                        melonDS::kHDRankBufferBytes - melonDS::kHDBlendInfoOffset);
+        }
     }
     statsOverlayInstances += static_cast<u32>(prepared.size());
 

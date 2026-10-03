@@ -32,7 +32,8 @@ struct OverlayInstance
     uvec2 nativeSize;   // native pixel size
     uvec2 atlasPos;     // scaled atlas texel origin
     uint masks;
-    uint flags;         // bit 0 flipH, bit 1 flipV, bits 8-12 blend weight (16 = as-is)
+    uint flags;         // bit 0 flipH, bit 1 flipV, bit 3 BG tile in a blend (mode 3),
+                        // bits 8-12 blend weight (16 = as-is)
     uint rank;          // bits 0-7 sprite rank (0xFF: not a sprite), bits 8-9 ownership slot,
                         // bits 16-23 span: the instance owns ranks rank..rank+span
     uint screen;        // 0 top, 1 bottom
@@ -47,10 +48,15 @@ layout(set = 0, binding = 1, rgba8) uniform readonly image2D hdAtlas;
 // composed screens, colour stored BGR in the RGBA slots (see the compositor)
 layout(set = 0, binding = 2, rgba8) uniform image2D outImage;
 
+// the ownership map (a byte per native pixel per slot), then the blend record: a word per
+// native pixel per engine where the 2D composite mixed it on the CPU (HDPack2D,
+// kHDBlendInfoOffset): bit 31 mixed, bits 0-2 / 3-5 first / second layer (0-3 BG, 4 OBJ,
+// 5 backdrop, 7 none), bits 8-12 / 16-20 their weights in 16ths
 layout(set = 0, binding = 3, std430) readonly buffer RankBuffer
 {
     uint rankWords[];
 };
+const uint kBlendInfoWord = (3u * 256u * 192u) / 4u;
 
 layout(set = 0, binding = 4, std430) readonly buffer TopPackedBuffer
 {
@@ -73,7 +79,8 @@ layout(push_constant) uniform PushConsts
 {
     uint scale;
     uint instanceIndex;
-    uint mode;          // 0 own edge pixels, 1 spill onto 3D, 2 detail under an effect
+    uint mode;          // 0 own edge pixels, 1 spill onto 3D, 2 detail under an effect,
+                        // 3 BG tile's share of a pixel the 2D composite mixed
     uint packedStride;
 } pc;
 
@@ -81,6 +88,11 @@ uint rankAtNative(uint engine, ivec2 native)
 {
     uint index = engine * (256u * 192u) + uint(native.y) * 256u + uint(native.x);
     return (rankWords[index >> 2u] >> ((index & 3u) * 8u)) & 0xFFu;
+}
+
+uint blendInfoAt(uint engine, ivec2 native)
+{
+    return rankWords[kBlendInfoWord + engine * (256u * 192u) + uint(native.y) * 256u + uint(native.x)];
 }
 
 uint readPacked(uint screen, int y, int x)
@@ -106,9 +118,11 @@ void storeComposed(ivec2 coord, vec3 rgb)
 
 void main()
 {
-    OverlayInstance inst = instances[pc.instanceIndex];
+    // mode 3 runs a layer's tiles in one dispatch, a z slice each; the others one instance
+    uint instanceIndex = pc.instanceIndex + gl_WorkGroupID.z;
+    OverlayInstance inst = instances[instanceIndex];
     uint myRank = inst.rank & 0xFFu;
-    if (myRank == 0xFFu)
+    if (myRank == 0xFFu && pc.mode != 3u)
         return;
     uint engine = (inst.rank >> 8u) & 3u;
     uint lastRank = myRank + ((inst.rank >> 16u) & 0xFFu);
@@ -138,25 +152,98 @@ void main()
         srcTexel.y = scaledSize.y - 1u - srcTexel.y;
     vec4 hd = imageLoad(hdAtlas, ivec2(inst.atlasPos + srcTexel));
 
+    ivec2 out0 = ivec2(px, py + screenRowOffset(screen));
+
+    if (pc.mode == 3u)
+    {
+        // a BG tile whose layer the 2D composite mixed into this pixel (a semi-transparent
+        // sprite or window over it, a blended or faded layer): the overlay left the mix, so
+        // this layer's share of it becomes the art's, as mode 2 does for sprites
+        uint info = blendInfoAt(engine, native);
+        if ((info & 0x80000000u) == 0u || hd.a <= 0.0)
+            return;
+        uint layer = uint(findLSB(inst.masks & 0xFFu));
+        uint share = 0u;
+        if ((info & 7u) == layer)
+            share += (info >> 8u) & 0x1Fu;
+        if (((info >> 3u) & 7u) == layer)
+            share += (info >> 16u) & 0x1Fu;
+        uint nativeOffset = nativeWords[instanceIndex];
+        if (share == 0u || nativeOffset == 0xFFFFFFFFu)
+            return;
+        uvec2 n = local / uint(scale);
+        if ((inst.flags & 1u) != 0u)
+            n.x = inst.nativeSize.x - 1u - n.x;
+        if ((inst.flags & 2u) != 0u)
+            n.y = inst.nativeSize.y - 1u - n.y;
+        vec4 tileColor = unpackUnorm4x8(nativeWords[nativeOffset + n.y * inst.nativeSize.x + n.x]);
+        if (tileColor.a <= 0.5)
+            return;
+        float strength = float(min(share, 16u)) / 16.0;
+        uint brightness = ((meta >> 8u) & 0xFFu) >> 6u;
+        if (brightness == 1u || brightness == 2u)
+            strength *= 1.0 - float(min(16u, meta & 0x1Fu)) / 16.0;
+        storeComposed(out0, clamp(loadComposed(out0) + (hd.rgb - tileColor.rgb) * hd.a * strength, 0.0, 1.0));
+        return;
+    }
+
     uint winner = rankAtNative(engine, native);
     bool own = winner >= myRank && winner <= lastRank;
-    ivec2 out0 = ivec2(px, py + screenRowOffset(screen));
     uint weight = (inst.flags >> 8u) & 0x1Fu;
 
     if (pc.mode == 2u)
     {
-        if (weight >= 16u || !own || hd.a <= 0.0)
+        if (weight >= 16u || hd.a <= 0.0)
             return;
         // master brightness scales the sprite's colour by (16 - factor) / 16 either way
         float effectStrength = float(weight) / 16.0;
         uint brightness = ((meta >> 8u) & 0xFFu) >> 6u;
-        if (brightness == 1u || brightness == 2u)
+        bool masterBrightness = (brightness == 1u || brightness == 2u) && (meta & 0x1Fu) != 0u;
+        if (masterBrightness)
             effectStrength *= 1.0 - float(min(16u, meta & 0x1Fu)) / 16.0;
+        if (!own)
+        {
+            // the art's soft edge, as the overlay spills it for sprites drawn as is: onto a
+            // pixel next to the sprite's own where its native pixel was transparent (so the
+            // sprite wasn't occluded there) and no sprite above it is drawn, at the sprite's
+            // strength (thin semi-transparent text kept its native staircase without it)
+            if (winner < myRank || masterBrightness)
+                return;
+            uint spillOffset = nativeWords[instanceIndex];
+            if (spillOffset == 0xFFFFFFFFu)
+                return;
+            uvec2 sn = local / uint(scale);
+            if ((inst.flags & 1u) != 0u)
+                sn.x = inst.nativeSize.x - 1u - sn.x;
+            if ((inst.flags & 2u) != 0u)
+                sn.y = inst.nativeSize.y - 1u - sn.y;
+            if (unpackUnorm4x8(nativeWords[spillOffset + sn.y * inst.nativeSize.x + sn.x]).a > 0.5)
+                return;
+            bool besideOwn = false;
+            for (int dy = -1; dy <= 1 && !besideOwn; dy++)
+            {
+                for (int dx = -1; dx <= 1; dx++)
+                {
+                    ivec2 nb = native + ivec2(dx, dy);
+                    if ((dx == 0 && dy == 0) || nb.x < 0 || nb.x >= 256 || nb.y < 0 || nb.y >= 192)
+                        continue;
+                    uint r = rankAtNative(engine, nb);
+                    if (r >= myRank && r <= lastRank)
+                    {
+                        besideOwn = true;
+                        break;
+                    }
+                }
+            }
+            if (besideOwn)
+                storeComposed(out0, mix(loadComposed(out0), hd.rgb, hd.a * effectStrength));
+            return;
+        }
         // with the sprite's own colour known, its share of the composed pixel becomes the
         // art's: at 15/16 the pixel is the art at 15/16 over whatever is behind, where adding
         // detail kept the native colours (a redraw's moved eyes showed as the native picture
         // until the effect ended)
-        uint nativeOffset = nativeWords[pc.instanceIndex];
+        uint nativeOffset = nativeWords[instanceIndex];
         if (nativeOffset != 0xFFFFFFFFu)
         {
             uvec2 n = local / uint(scale);
@@ -167,8 +254,32 @@ void main()
             vec4 spriteColor = unpackUnorm4x8(nativeWords[nativeOffset + n.y * inst.nativeSize.x + n.x]);
             if (spriteColor.a > 0.5)
             {
-                storeComposed(out0, clamp(loadComposed(out0)
-                                          + (hd.rgb - spriteColor.rgb) * hd.a * effectStrength, 0.0, 1.0));
+                // the 2D composite's own record of this pixel (blendInfoAt): an alpha blend of
+                // this sprite over a second layer gives that layer's colour back,
+                // behind = (composed - sprite * eva) / evb, so the pixel becomes the art over
+                // it at eva: where the art is thinner than the native pixel (thin text) the
+                // native colour goes too, which adding the art's difference kept at full shape
+                uint info = blendInfoAt(engine, native);
+                uint first = info & 7u;
+                uint eva = (info >> 8u) & 0x1Fu;
+                uint evb = (info >> 16u) & 0x1Fu;
+                vec3 composed = loadComposed(out0);
+                if ((info & 0x80000000u) != 0u && ((info >> 24u) & 3u) == 1u && first == 4u
+                    && evb > 0u && !masterBrightness)
+                {
+                    float wa = float(min(eva, 16u)) / 16.0;
+                    float wb = float(min(evb, 16u)) / 16.0;
+                    vec3 behind = clamp((composed - spriteColor.rgb * wa) / wb, 0.0, 1.0);
+                    storeComposed(out0, clamp(mix(behind, hd.rgb, hd.a) * wa + behind * wb, 0.0, 1.0));
+                    return;
+                }
+                // drawn as is although semi-transparent (nothing to blend with under it): the
+                // pixel is the sprite's alone, so swap all of it
+                uint control = readPacked(screen, native.y, 512 + native.x) >> 24u;
+                float strength = effectStrength;
+                if ((info & 0x80000000u) == 0u && (control & 0xFu) == 7u && !masterBrightness)
+                    strength = 1.0;
+                storeComposed(out0, clamp(composed + (hd.rgb - spriteColor.rgb) * hd.a * strength, 0.0, 1.0));
                 return;
             }
         }
