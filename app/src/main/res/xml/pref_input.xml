@@ -26,6 +26,13 @@
         app:iconSpaceReserved="false" />
 
     <SwitchPreference
+            android:key="free_camera_enabled"
+            android:title="@string/free_camera"
+            android:summary="@string/free_camera_summary"
+            app:iconSpaceReserved="false"
+            android:defaultValue="false" />
+
+    <SwitchPreference
             android:key="input_touch_haptic_feedback_enabled"
             android:title="@string/vibrate_on_touch"
             app:iconSpaceReserved="false"

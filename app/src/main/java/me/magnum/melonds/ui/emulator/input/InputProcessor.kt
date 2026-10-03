@@ -12,7 +12,14 @@ import me.magnum.melonds.domain.model.InputConfig
 import java.util.Locale
 import kotlin.math.absoluteValue
 
-class InputProcessor(private val controllerConfiguration: ControllerConfiguration, private val systemInputListener: IInputListener, private val frontendInputListener: IInputListener) : INativeInputListener {
+class InputProcessor(
+    private val controllerConfiguration: ControllerConfiguration,
+    private val systemInputListener: IInputListener,
+    private val frontendInputListener: IInputListener,
+    // free camera on: the right stick orbits the 3D view (and isn't a mapped input), holding R3
+    // turns its up/down into zoom, tapping R3 resets the view
+    private val freeCameraEnabled: () -> Boolean = { false },
+) : INativeInputListener {
     companion object {
         private const val TAG = "InputProcessor"
         private const val SLOT2_ANALOG_LOG_INTERVAL_MS = 1500L
@@ -61,7 +68,40 @@ class InputProcessor(private val controllerConfiguration: ControllerConfiguratio
     private val pressedKeyCodes = mutableSetOf<Int>()
     private val activeKeyInputs = mutableMapOf<Int, Input>()
 
+    private var freeCameraStickX = 0f
+    private var freeCameraStickY = 0f
+    private var freeCameraZoomHeld = false
+    private var freeCameraZoomed = false
+
+    private fun pushFreeCamera() {
+        if (freeCameraZoomHeld) {
+            if (freeCameraStickY.absoluteValue > 0.3f) {
+                freeCameraZoomed = true
+            }
+            MelonEmulator.setFreeCameraInput(0f, 0f, freeCameraStickY)
+        } else {
+            MelonEmulator.setFreeCameraInput(freeCameraStickX, freeCameraStickY, 0f)
+        }
+    }
+
     override fun onKeyEvent(keyEvent: KeyEvent): Boolean {
+        if (keyEvent.keyCode == KeyEvent.KEYCODE_BUTTON_THUMBR && freeCameraEnabled()) {
+            when (keyEvent.action) {
+                KeyEvent.ACTION_DOWN -> if (keyEvent.repeatCount == 0) {
+                    freeCameraZoomHeld = true
+                    freeCameraZoomed = false
+                    pushFreeCamera()
+                }
+                KeyEvent.ACTION_UP -> {
+                    freeCameraZoomHeld = false
+                    if (!freeCameraZoomed) {
+                        MelonEmulator.resetFreeCamera()
+                    }
+                    pushFreeCamera()
+                }
+            }
+            return true
+        }
         if (keyEvent.action == KeyEvent.ACTION_UP) {
             pressedKeyCodes.remove(keyEvent.keyCode)
         }
@@ -103,11 +143,20 @@ class InputProcessor(private val controllerConfiguration: ControllerConfiguratio
     override fun onMotionEvent(motionEvent: MotionEvent): Boolean {
         if (isControllerMotionEvent(motionEvent)) {
             val slot2Handled = processSlot2AnalogFromMotionEvent(motionEvent)
+            val freeCamera = freeCameraEnabled()
+            if (freeCamera) {
+                freeCameraStickX = motionEvent.getAxisValue(MotionEvent.AXIS_Z)
+                freeCameraStickY = motionEvent.getAxisValue(MotionEvent.AXIS_RZ)
+                pushFreeCamera()
+            }
 
             val deviceAxis = axisStates.filterKeys { it.deviceId == null || it.deviceId == motionEvent.deviceId }
             deviceAxis.forEach {
                 val axis = it.key
                 val axisState = it.value
+                if (freeCamera && (axis.axisCode == MotionEvent.AXIS_Z || axis.axisCode == MotionEvent.AXIS_RZ)) {
+                    return@forEach
+                }
 
                 val newValue = motionEvent.getAxisValue(axis.axisCode)
                 val clampedValue = when (axis.direction) {

@@ -1,6 +1,7 @@
 #include <ctime>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <android/log.h>
 #include <cstring>
 #include <sys/system_properties.h>
@@ -2765,6 +2766,7 @@ u32 MelonInstance::runFrame(bool frameskipRequested)
         static_cast<VulkanRenderer3D&>(nds->GPU.GetRenderer3D()).SetFrameskipRender(frameskipGranted);
 
     hdPack2DWalkedThisFrame = false;
+    updateFreeCamera();
     nds->GPU.VBlankStartHook = &MelonInstance::onVBlankStart;
     nds->GPU.VBlankStartHookUser = this;
     u32 nLines = nds->RunFrame();
@@ -3000,7 +3002,7 @@ void MelonInstance::pressKey(u32 key)
     else
     {
         inputMask &= ~(1 << key);
-        nds->SetKeyMask(inputMask);
+        applyKeyMask();
     }
 }
 
@@ -3014,8 +3016,112 @@ void MelonInstance::releaseKey(u32 key)
     else
     {
         inputMask |= (1 << key);
-        nds->SetKeyMask(inputMask);
+        applyKeyMask();
     }
+}
+
+void MelonInstance::applyKeyMask()
+{
+    u32 mask = inputMask;
+    const float yaw = freeCamYaw.load(std::memory_order_relaxed);
+    if (yaw != 0.0f)
+    {
+        // DS key bits (0 = pressed): right 4, left 5, up 6, down 7. The pressed direction, read in
+        // the turned view, becomes the game's direction: turned back by the yaw (at +90 degrees the
+        // view shows world east at the top), to the nearest of 8.
+        const int dx = !(mask & (1u << 4)) - !(mask & (1u << 5));
+        const int dy = !(mask & (1u << 6)) - !(mask & (1u << 7));
+        if (dx != 0 || dy != 0)
+        {
+            const float step = 3.14159265f / 4.0f;
+            const int octant = static_cast<int>(std::lround((std::atan2((float)dy, (float)dx) - yaw) / step));
+            const float angle = octant * step;
+            const int ndx = static_cast<int>(std::lround(std::cos(angle)));
+            const int ndy = static_cast<int>(std::lround(std::sin(angle)));
+            mask |= 0xF0u;
+            if (ndx > 0) mask &= ~(1u << 4);
+            if (ndx < 0) mask &= ~(1u << 5);
+            if (ndy > 0) mask &= ~(1u << 6);
+            if (ndy < 0) mask &= ~(1u << 7);
+        }
+    }
+    nds->SetKeyMask(mask);
+}
+
+void MelonInstance::setFreeCameraEnabled(bool enabled)
+{
+    freeCamEnabled.store(enabled);
+    if (!enabled)
+        freeCamResetRequested.store(true);
+}
+
+void MelonInstance::setFreeCameraInput(float x, float y, float zoom)
+{
+    freeCamStickX.store(std::clamp(x, -1.0f, 1.0f), std::memory_order_relaxed);
+    freeCamStickY.store(std::clamp(y, -1.0f, 1.0f), std::memory_order_relaxed);
+    freeCamZoomInput.store(std::clamp(zoom, -1.0f, 1.0f), std::memory_order_relaxed);
+}
+
+void MelonInstance::resetFreeCamera()
+{
+    freeCamResetRequested.store(true);
+}
+
+void MelonInstance::setFreeCameraPose(float yaw, float pitch, float zoom)
+{
+    // applied by the emulation thread at the next frame
+    freeCamPoseYaw.store(yaw);
+    freeCamPosePitch.store(pitch);
+    freeCamPoseZoom.store(zoom);
+    freeCamPoseRequested.store(true);
+}
+
+void MelonInstance::updateFreeCamera()
+{
+    constexpr float kDeadZone = 0.15f;
+    constexpr float kYawSpeed = 2.4f;       // radians per second at full deflection
+    constexpr float kPitchSpeed = 1.4f;
+    constexpr float kZoomSpeed = 1.2f;      // pivot distances per second
+    constexpr float kPitchLimit = 1.2f;
+    constexpr float kFrame = 1.0f / 60.0f;
+    auto shaped = [](float v) {
+        const float a = std::abs(v);
+        if (a < kDeadZone)
+            return 0.0f;
+        const float t = (a - kDeadZone) / (1.0f - kDeadZone);
+        return std::copysign(t * t, v);
+    };
+
+    float yaw = freeCamYaw.load(std::memory_order_relaxed);
+    const bool wasTurned = yaw != 0.0f || freeCamPitch != 0.0f || freeCamZoom != 0.0f;
+    if (freeCamResetRequested.exchange(false))
+    {
+        yaw = 0.0f;
+        freeCamPitch = 0.0f;
+        freeCamZoom = 0.0f;
+    }
+    if (freeCamPoseRequested.exchange(false))
+    {
+        yaw = freeCamPoseYaw.load();
+        freeCamPitch = freeCamPosePitch.load();
+        freeCamZoom = freeCamPoseZoom.load();
+    }
+    if (freeCamEnabled.load())
+    {
+        yaw += shaped(freeCamStickX.load(std::memory_order_relaxed)) * kYawSpeed * kFrame;
+        freeCamPitch += shaped(freeCamStickY.load(std::memory_order_relaxed)) * kPitchSpeed * kFrame;
+        freeCamZoom += shaped(freeCamZoomInput.load(std::memory_order_relaxed)) * kZoomSpeed * kFrame;
+        if (yaw > 3.14159265f) yaw -= 6.2831853f;
+        if (yaw < -3.14159265f) yaw += 6.2831853f;
+        freeCamPitch = std::clamp(freeCamPitch, -kPitchLimit, kPitchLimit);
+        freeCamZoom = std::clamp(freeCamZoom, -0.6f, 3.0f);
+    }
+    const bool turned = yaw != 0.0f || freeCamPitch != 0.0f || freeCamZoom != 0.0f;
+    if (!turned && !wasTurned)
+        return;
+    freeCamYaw.store(yaw, std::memory_order_relaxed);
+    nds->GPU.GPU3D.SetFreeCamera(yaw, freeCamPitch, freeCamZoom);
+    applyKeyMask();
 }
 
 void MelonInstance::setSlot2AnalogInput(float x, float y)

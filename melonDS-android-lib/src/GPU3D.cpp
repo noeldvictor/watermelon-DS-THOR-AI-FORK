@@ -19,6 +19,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <algorithm>
+#include <cmath>
+#include <vector>
 #include "NDS.h"
 #include "GPU.h"
 #include "FIFO.h"
@@ -734,6 +736,122 @@ void GPU3D::UpdateClipMatrix() noexcept
 
     memcpy(ClipMatrix, ProjMatrix, 16*4);
     MatrixMult4x4(ClipMatrix, PosMatrix);
+
+    // free camera: Pos x F x Proj for what gets drawn, perspective projections only (w from z)
+    if (FreeCamOn && ProjMatrix[11] != 0)
+    {
+        memcpy(RenderClipMatrix, ProjMatrix, 16*4);
+        MatrixMult4x4(RenderClipMatrix, FreeCamMatrix);
+        MatrixMult4x4(RenderClipMatrix, PosMatrix);
+    }
+    else
+        memcpy(RenderClipMatrix, ClipMatrix, 16*4);
+}
+
+void GPU3D::SetFreeCamera(float yaw, float pitch, float zoom) noexcept
+{
+    const bool on = yaw != 0.0f || pitch != 0.0f || zoom != 0.0f;
+    if (!on && !FreeCamOn)
+        return;
+    FreeCamOn = on;
+    FreeCamYaw = yaw;
+    FreeCamPitch = pitch;
+    FreeCamZoom = zoom;
+    if (on)
+        FreeCamBuildMatrix();
+    ClipMatrixDirty = true;
+}
+
+void GPU3D::FreeCamCaptureCamera() noexcept
+{
+    // the first position load after a perspective projection is set is taken as the camera
+    // (NitroSystem: G3_LoadMtx43(camera) right after the projection): world up in view space is
+    // the vector matrix's second row (row vectors: v_view = v_world x M)
+    FreeCamAwaitCamera = false;
+    if (ProjMatrix[11] == 0)
+        return;
+    float up[3] = {VecMatrix[4] / 4096.0f, VecMatrix[5] / 4096.0f, VecMatrix[6] / 4096.0f};
+    const float len = std::sqrt(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
+    if (len < 0.25f)
+        return;
+    for (int i = 0; i < 3; i++)
+        FreeCamUp[i] = up[i] / len;
+}
+
+void GPU3D::FreeCamMeasurePivot() noexcept
+{
+    // the orbit's centre: the median depth of what is drawn near the screen centre (the player,
+    // in games whose camera follows one). Measured only while the free camera is off, since its
+    // polygons then sit where the game put them.
+    if (FreeCamOn || NumPolygons == 0)
+        return;
+    std::vector<float> ws;
+    ws.reserve(256);
+    for (u32 i = 0; i < NumPolygons && ws.size() < 2048; i++)
+    {
+        const Polygon& poly = CurPolygonRAM[i];
+        for (u32 j = 0; j < poly.NumVertices; j++)
+        {
+            const Vertex* v = poly.Vertices[j];
+            if (v->Position[3] <= 0)
+                continue;
+            if (std::abs(v->FinalPosition[0] - 128) <= 40 && std::abs(v->FinalPosition[1] - 96) <= 40)
+                ws.push_back(v->Position[3] / 4096.0f);
+        }
+    }
+    if (ws.size() < 3)
+        return;
+    std::nth_element(ws.begin(), ws.begin() + ws.size() / 2, ws.end());
+    FreeCamPivotW = ws[ws.size() / 2];
+}
+
+void GPU3D::FreeCamBuildMatrix() noexcept
+{
+    // pivot in view space from its clip w (row vectors: w = z * P[11] + P[15] for a perspective
+    // projection with no x/y terms in w)
+    const float p11 = ProjMatrix[11] / 4096.0f, p15 = ProjMatrix[15] / 4096.0f;
+    float pivotZ = -16.0f;
+    if (p11 != 0.0f && FreeCamPivotW > 0.0f)
+        pivotZ = (FreeCamPivotW - p15) / p11;
+
+    // R = turn about world up by yaw, then about the view's x axis by pitch (both written for row
+    // vectors: the transpose of the column-vector rotation)
+    auto rotation = [](const float* axis, float angle, float out[3][3]) {
+        const float c = std::cos(angle), s = std::sin(angle), t = 1.0f - c;
+        const float x = axis[0], y = axis[1], z = axis[2];
+        const float col[3][3] = {
+            {t * x * x + c,     t * x * y - s * z, t * x * z + s * y},
+            {t * x * y + s * z, t * y * y + c,     t * y * z - s * x},
+            {t * x * z - s * y, t * y * z + s * x, t * z * z + c}};
+        for (int r = 0; r < 3; r++)
+            for (int k = 0; k < 3; k++)
+                out[r][k] = col[k][r];
+    };
+    const float xAxis[3] = {1, 0, 0};
+    float r1[3][3], r2[3][3], r[3][3];
+    rotation(FreeCamUp, FreeCamYaw, r1);
+    rotation(xAxis, FreeCamPitch, r2);
+    for (int i = 0; i < 3; i++)
+        for (int k = 0; k < 3; k++)
+            r[i][k] = r1[i][0] * r2[0][k] + r1[i][1] * r2[1][k] + r1[i][2] * r2[2][k];
+
+    // v' = (v - P) R + P + (0, 0, zoom * pivotZ): turned about the pivot, then moved along the
+    // view axis (pivotZ < 0 in front of the camera, so a positive zoom moves the scene away)
+    const float pivot[3] = {0, 0, pivotZ};
+    float t[3];
+    for (int k = 0; k < 3; k++)
+        t[k] = pivot[k] - (pivot[0] * r[0][k] + pivot[1] * r[1][k] + pivot[2] * r[2][k]);
+    t[2] += FreeCamZoom * pivotZ;
+
+    for (int i = 0; i < 3; i++)
+    {
+        for (int k = 0; k < 3; k++)
+            FreeCamMatrix[i * 4 + k] = static_cast<s32>(std::lround(r[i][k] * 4096.0f));
+        FreeCamMatrix[i * 4 + 3] = 0;
+    }
+    for (int k = 0; k < 3; k++)
+        FreeCamMatrix[12 + k] = static_cast<s32>(std::lround(t[k] * 4096.0f));
+    FreeCamMatrix[15] = 0x1000;
 }
 
 
@@ -1397,10 +1515,11 @@ void GPU3D::SubmitVertex() noexcept
     Vertex* vertextrans = &TempVertexBuffer[VertexNumInPoly];
 
     UpdateClipMatrix();
-    vertextrans->Position[0] = (vertex[0]*ClipMatrix[0] + vertex[1]*ClipMatrix[4] + vertex[2]*ClipMatrix[8] + vertex[3]*ClipMatrix[12]) >> 12;
-    vertextrans->Position[1] = (vertex[0]*ClipMatrix[1] + vertex[1]*ClipMatrix[5] + vertex[2]*ClipMatrix[9] + vertex[3]*ClipMatrix[13]) >> 12;
-    vertextrans->Position[2] = (vertex[0]*ClipMatrix[2] + vertex[1]*ClipMatrix[6] + vertex[2]*ClipMatrix[10] + vertex[3]*ClipMatrix[14]) >> 12;
-    vertextrans->Position[3] = (vertex[0]*ClipMatrix[3] + vertex[1]*ClipMatrix[7] + vertex[2]*ClipMatrix[11] + vertex[3]*ClipMatrix[15]) >> 12;
+    const s32* clip = RenderClipMatrix;
+    vertextrans->Position[0] = (vertex[0]*clip[0] + vertex[1]*clip[4] + vertex[2]*clip[8] + vertex[3]*clip[12]) >> 12;
+    vertextrans->Position[1] = (vertex[0]*clip[1] + vertex[1]*clip[5] + vertex[2]*clip[9] + vertex[3]*clip[13]) >> 12;
+    vertextrans->Position[2] = (vertex[0]*clip[2] + vertex[1]*clip[6] + vertex[2]*clip[10] + vertex[3]*clip[14]) >> 12;
+    vertextrans->Position[3] = (vertex[0]*clip[3] + vertex[1]*clip[7] + vertex[2]*clip[11] + vertex[3]*clip[15]) >> 12;
 
     // this probably shouldn't be.
     // the way color is handled during clipping needs investigation. TODO
@@ -2196,6 +2315,7 @@ void GPU3D::ExecuteEntry(CmdFIFOEntry entry) noexcept
                     {
                         MatrixLoad4x4(ProjMatrix, (s32*)ExecParams);
                         ClipMatrixDirty = true;
+                        FreeCamAwaitCamera = true;
                         AddCycles(18);
                     }
                     else if (MatrixMode == 3)
@@ -2207,7 +2327,11 @@ void GPU3D::ExecuteEntry(CmdFIFOEntry entry) noexcept
                     {
                         MatrixLoad4x4(PosMatrix, (s32*)ExecParams);
                         if (MatrixMode == 2)
+                        {
                             MatrixLoad4x4(VecMatrix, (s32*)ExecParams);
+                            if (FreeCamAwaitCamera)
+                                FreeCamCaptureCamera();
+                        }
                         ClipMatrixDirty = true;
                         AddCycles(18);
                     }
@@ -2218,6 +2342,7 @@ void GPU3D::ExecuteEntry(CmdFIFOEntry entry) noexcept
                     {
                         MatrixLoad4x3(ProjMatrix, (s32*)ExecParams);
                         ClipMatrixDirty = true;
+                        FreeCamAwaitCamera = true;
                         AddCycles(18);
                     }
                     else if (MatrixMode == 3)
@@ -2229,7 +2354,11 @@ void GPU3D::ExecuteEntry(CmdFIFOEntry entry) noexcept
                     {
                         MatrixLoad4x3(PosMatrix, (s32*)ExecParams);
                         if (MatrixMode == 2)
+                        {
                             MatrixLoad4x3(VecMatrix, (s32*)ExecParams);
+                            if (FreeCamAwaitCamera)
+                                FreeCamCaptureCamera();
+                        }
                         ClipMatrixDirty = true;
                         AddCycles(18);
                     }
@@ -2278,6 +2407,8 @@ void GPU3D::ExecuteEntry(CmdFIFOEntry entry) noexcept
                         if (MatrixMode == 2)
                         {
                             MatrixMult4x3(VecMatrix, (s32*)ExecParams);
+                            if (FreeCamAwaitCamera)
+                                FreeCamCaptureCamera();
                             AddCycles(35 + 30 - 12);
                         }
                         else AddCycles(35 - 12);
@@ -2569,6 +2700,7 @@ void GPU3D::VBlank() noexcept
 
         if (FlushRequest)
         {
+            FreeCamMeasurePivot();
             CurRAMBank = CurRAMBank?0:1;
             CurVertexRAM = &VertexRAM[CurRAMBank ? 6144 : 0];
             CurPolygonRAM = &PolygonRAM[CurRAMBank ? 2048 : 0];

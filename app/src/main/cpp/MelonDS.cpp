@@ -758,6 +758,30 @@ namespace MelonDSAndroid
             instance->setSlot2AnalogInput(x, y);
     }
 
+    void setFreeCameraEnabled(bool enabled)
+    {
+        if (instance)
+            instance->setFreeCameraEnabled(enabled);
+    }
+
+    void setFreeCameraInput(float x, float y, float zoom)
+    {
+        if (instance)
+            instance->setFreeCameraInput(x, y, zoom);
+    }
+
+    void resetFreeCamera()
+    {
+        if (instance)
+            instance->resetFreeCamera();
+    }
+
+    void setFreeCameraPose(float yaw, float pitch, float zoom)
+    {
+        if (instance)
+            instance->setFreeCameraPose(yaw, pitch, zoom);
+    }
+
     void start()
     {
         startAudio();

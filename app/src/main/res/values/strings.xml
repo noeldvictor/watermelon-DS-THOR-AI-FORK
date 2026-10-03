@@ -461,6 +461,8 @@ Location: %1$s (currently %2$d MB, capped at 256 MB)</string>
     <string name="show_soft_input">Show soft input</string>
     <string name="soft_input_behaviour">Soft input behaviour</string>
     <string name="vibrate_on_touch">Vibrate on touch</string>
+    <string name="free_camera">Free camera (right stick)</string>
+    <string name="free_camera_summary">The right stick turns the 3D view around what is at the screen centre; hold R3 and push up or down to zoom, tap R3 to reset. The D-pad turns with the view. Takes the right stick and R3 from other bindings. Scenery the game leaves out of its own view stays missing.</string>
     <string name="vibration_strength">Vibration strength</string>
     <string name="soft_input_opacity">Soft input opacity</string>
     <string name="retroachievements">RetroAchievements</string> <!-- Keep words together because this is the official name -->

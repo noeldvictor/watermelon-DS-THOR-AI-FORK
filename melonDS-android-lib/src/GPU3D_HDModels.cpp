@@ -230,6 +230,7 @@ void GPU3D::SaveGeometry(GeometrySnapshot& s) const noexcept
     memcpy(s.PosMatrix, PosMatrix, sizeof(PosMatrix));
     memcpy(s.VecMatrix, VecMatrix, sizeof(VecMatrix));
     memcpy(s.ClipMatrix, ClipMatrix, sizeof(ClipMatrix));
+    memcpy(s.RenderClipMatrix, RenderClipMatrix, sizeof(RenderClipMatrix));
     s.ClipMatrixDirty = ClipMatrixDirty;
     s.PolygonMode = PolygonMode;
     memcpy(s.CurVertex, CurVertex, sizeof(CurVertex));
@@ -276,6 +277,7 @@ void GPU3D::LoadGeometry(const GeometrySnapshot& s) noexcept
     memcpy(PosMatrix, s.PosMatrix, sizeof(PosMatrix));
     memcpy(VecMatrix, s.VecMatrix, sizeof(VecMatrix));
     memcpy(ClipMatrix, s.ClipMatrix, sizeof(ClipMatrix));
+    memcpy(RenderClipMatrix, s.RenderClipMatrix, sizeof(RenderClipMatrix));
     ClipMatrixDirty = s.ClipMatrixDirty;
     PolygonMode = s.PolygonMode;
     memcpy(CurVertex, s.CurVertex, sizeof(CurVertex));

@@ -64,6 +64,14 @@ public:
     void pressKey(u32 key);
     void releaseKey(u32 key);
     void setSlot2AnalogInput(float x, float y);
+    // free camera (see GPU3D::SetFreeCamera): the right stick turns the view (x yaw, y pitch),
+    // `zoom` (-1..1) dollies it; integrated once per emulated frame. While it is turned, the
+    // D-pad turns with it, so "up" walks away from the new view.
+    void setFreeCameraEnabled(bool enabled);
+    void setFreeCameraInput(float x, float y, float zoom);
+    void resetFreeCamera();
+    // sets the view directly (radians, zoom as GPU3D takes it): debug tools and tests
+    void setFreeCameraPose(float yaw, float pitch, float zoom);
     int readAudioOutput(s16* buffer, int length);
     int getAudioOutputAvailable() const;
     void setLargeAudioOutputBuffer(bool large);
@@ -377,6 +385,18 @@ private:
     u32 inputMask;
     std::atomic<float> slot2AnalogX = 0.0f;
     std::atomic<float> slot2AnalogY = 0.0f;
+
+    // the frontend only sends stick input while the setting is on; off resets the view
+    std::atomic<bool> freeCamEnabled = true;
+    std::atomic<bool> freeCamResetRequested = false;
+    std::atomic<float> freeCamStickX = 0.0f, freeCamStickY = 0.0f, freeCamZoomInput = 0.0f;
+    std::atomic<float> freeCamYaw = 0.0f;
+    float freeCamPitch = 0.0f, freeCamZoom = 0.0f;
+    std::atomic<bool> freeCamPoseRequested = false;
+    std::atomic<float> freeCamPoseYaw = 0.0f, freeCamPosePitch = 0.0f, freeCamPoseZoom = 0.0f;
+    void updateFreeCamera();
+    // the DS key mask with the D-pad turned by the free camera's yaw
+    void applyKeyMask();
 
     // written by the configuration thread, read by the emulation and
     // presentation threads; take a snapshot copy per use via

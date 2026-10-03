@@ -61,6 +61,7 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
             context.debugCommandAction(ACTION_SET_FILTER_TINT_SUFFIX) -> { handleSetFilterTint(entryPoint, intent); true }
             context.debugCommandAction(ACTION_SET_FAST_FORWARD_SUFFIX) -> { handleSetFastForward(intent); true }
             context.debugCommandAction(ACTION_SET_SLOT2_ANALOG_SUFFIX) -> { handleSetSlot2Analog(intent); true }
+            context.debugCommandAction(ACTION_SET_FREE_CAMERA_SUFFIX) -> { handleSetFreeCamera(intent); true }
             context.debugCommandAction(ACTION_SET_SLOT2_ANALOG_MAPPING_SUFFIX) -> { handleSetSlot2AnalogMapping(entryPoint, intent); true }
             context.debugCommandAction(ACTION_SET_VULKAN_FALLBACKS_SUFFIX) -> { handleSetVulkanFallbacks(intent); true }
             context.debugCommandAction(ACTION_TOUCH_SCREEN_SUFFIX) -> { handleTouchScreen(intent); true }
@@ -155,6 +156,17 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
             ?: throw IllegalArgumentException("Missing enabled extra")
         MelonEmulator.setFastForwardEnabled(enabled)
         Log.w(TAG, "action=set_fast_forward enabled=${if (enabled) 1 else 0}")
+    }
+
+    // The free camera's view, set directly: `--ef yaw 30 --ef pitch -10 --ef zoom 0.5` (degrees,
+    // zoom a fraction of the distance to the screen centre); all 0 = the game's own view
+    private fun handleSetFreeCamera(intent: Intent) {
+        val yaw = intent.firstFloatExtra("yaw") ?: 0f
+        val pitch = intent.firstFloatExtra("pitch") ?: 0f
+        val zoom = intent.firstFloatExtra("zoom") ?: 0f
+        val toRadians = (Math.PI / 180.0).toFloat()
+        MelonEmulator.setFreeCameraPose(yaw * toRadians, pitch * toRadians, zoom)
+        Log.w(TAG, "action=set_free_camera yaw=$yaw pitch=$pitch zoom=$zoom")
     }
 
     private fun handleSetSlot2Analog(intent: Intent) {
@@ -1147,6 +1159,7 @@ internal class DebugCommandReceiver : BroadcastReceiver() {
         private const val ACTION_SET_FILTER_TINT_SUFFIX = "SET_FILTER_TINT"
         private const val ACTION_SET_FAST_FORWARD_SUFFIX = "SET_FAST_FORWARD"
         private const val ACTION_SET_SLOT2_ANALOG_SUFFIX = "SET_SLOT2_ANALOG"
+        private const val ACTION_SET_FREE_CAMERA_SUFFIX = "SET_FREE_CAMERA"
         private const val ACTION_SET_SLOT2_ANALOG_MAPPING_SUFFIX = "SET_SLOT2_ANALOG_MAPPING"
         private const val ACTION_SET_VULKAN_FALLBACKS_SUFFIX = "SET_VULKAN_FALLBACKS"
         private const val ACTION_TOUCH_SCREEN_SUFFIX = "TOUCH_SCREEN"

@@ -222,6 +222,13 @@ object MelonEmulator {
 
     external fun setSlot2AnalogInput(x: Float, y: Float)
 
+    // free camera (Settings -> Input): the right stick orbits the 3D view, see MelonInstance
+    external fun setFreeCameraEnabled(enabled: Boolean)
+    external fun setFreeCameraInput(x: Float, y: Float, zoom: Float)
+    external fun resetFreeCamera()
+    // radians; zoom as a fraction of the distance to the screen centre (positive = farther)
+    external fun setFreeCameraPose(yaw: Float, pitch: Float, zoom: Float)
+
     external fun takeScreenshot(): Boolean
 
     external fun setFastForwardEnabled(enabled: Boolean)

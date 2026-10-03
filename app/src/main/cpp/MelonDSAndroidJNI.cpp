@@ -2424,6 +2424,30 @@ Java_me_magnum_melonds_MelonEmulator_setSlot2AnalogInput(JNIEnv* env, jobject th
 }
 
 JNIEXPORT void JNICALL
+Java_me_magnum_melonds_MelonEmulator_setFreeCameraEnabled(JNIEnv* env, jobject thiz, jboolean enabled)
+{
+    MelonDSAndroid::setFreeCameraEnabled(enabled);
+}
+
+JNIEXPORT void JNICALL
+Java_me_magnum_melonds_MelonEmulator_setFreeCameraInput(JNIEnv* env, jobject thiz, jfloat x, jfloat y, jfloat zoom)
+{
+    MelonDSAndroid::setFreeCameraInput(x, y, zoom);
+}
+
+JNIEXPORT void JNICALL
+Java_me_magnum_melonds_MelonEmulator_resetFreeCamera(JNIEnv* env, jobject thiz)
+{
+    MelonDSAndroid::resetFreeCamera();
+}
+
+JNIEXPORT void JNICALL
+Java_me_magnum_melonds_MelonEmulator_setFreeCameraPose(JNIEnv* env, jobject thiz, jfloat yaw, jfloat pitch, jfloat zoom)
+{
+    MelonDSAndroid::setFreeCameraPose(yaw, pitch, zoom);
+}
+
+JNIEXPORT void JNICALL
 Java_me_magnum_melonds_MelonEmulator_setFastForwardEnabled(JNIEnv* env, jobject thiz, jboolean enabled)
 {
     const bool wasFastForwardEnabled = isFastForwardEnabled;

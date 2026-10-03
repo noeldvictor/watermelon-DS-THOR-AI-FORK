@@ -128,6 +128,7 @@ interface SettingsRepository {
     fun getSelectedLayoutId(): UUID
     fun getSoftInputBehaviour(): Flow<SoftInputBehaviour>
     fun isTouchHapticFeedbackEnabled(): Flow<Boolean>
+    fun observeFreeCameraEnabled(): Flow<Boolean>
     fun getTouchHapticFeedbackStrength(): Int
     fun getSoftInputOpacity(): Flow<Int>
 

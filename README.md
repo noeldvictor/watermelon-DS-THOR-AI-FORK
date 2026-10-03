@@ -28,6 +28,7 @@ external display support, RetroAchievements, RetroArch shader presets. On top of
 | HD text | — | Text the game draws at runtime is redrawn from an upscaled copy of its own font, in sprites and in BG layers, without the native letters' blocky edge around it (Spirit Tracks' message boxes, Phantom Hourglass' story, Lufia's dialogue) |
 | AI redraws | — | Character portraits redrawn by an image model from the official art, checked against the game's faces ([guide](tools/hd_remaster/REDRAW.md)) |
 | HD 3D models | — | A pack can replace any 3D model part (Vulkan renderer): the new mesh hangs on the game's own skeleton and animations and is lit by the game's lights; smoothing of the original models with no new art, or new meshes from any 3D tool or from an AI model generator (Tripo), with their own HD texture ([3D models](tools/hd_remaster/README.md#3d-models-first-step-extraction-and-keys)) |
+| Free camera | — | The right stick orbits and zooms the 3D view of any game around the screen centre, the D-pad turns with it (Settings -> Input, off by default) |
 | Upscaling | Full-screen RetroArch shaders | Also per-layer filters for 3D, sprites and BG separately (ScaleFX, Anime4K, HQ2x, ...) with a disk cache |
 | In-game overlay | Pause menu | Adds a turbo speed picker, live texture-filter switching, and "stretch to fit both screens" |
 | Enhancements (widescreen and more) | — | An "Enhancements" pause-menu panel for games whose bundled cheat database has visual codes (about 300 games): widescreen 16:9 / 16:10 (the top screen stretches to match, so 3D gets a wider view at the right proportions; 2D menus and HUDs stretch), smooth 3D edges (anti-aliasing, no outlines) and draw distance, each with its own switch. Some games apply a change from the next scene, or on the next launch |
@@ -130,9 +131,18 @@ padded; the game's animated eye parts stay; Blender cleans up the mesh. Each ste
 the Thor before the next character. Per-pixel lighting and shadows, the rest of a Wii U look, would
 be a later renderer step.
 
-**Planned: free camera.** A right-stick camera for 3D games (orbit and zoom around the player, the
-D-pad turning with the view), done in the emulator so it works without patching games, and then a
-Phantom Hourglass mode with the camera behind Link.
+**Free camera** (Settings -> Input -> Free camera, off by default). The right stick turns the 3D
+view around what is at the screen centre (the player, in games whose camera follows one): left and
+right orbit about the game camera's own up direction, so the ground stays level; up and down tilt.
+Hold R3 and push up or down to zoom, tap R3 to go back to the game's view. While the view is
+turned, the D-pad turns with it (to the nearest of 8 directions), so up walks away from the new
+view. It is done in the emulator, no game patch: only what gets drawn goes through the turned
+camera; the game's own visibility tests keep its camera, so scenery it leaves out of its own view
+stays missing at wide angles. Menus drawn with an orthographic projection stay put. With the
+setting on, the right stick and R3 belong to the camera (a right-stick binding such as fast
+forward is suspended). Next: a Phantom Hourglass mode with the camera behind Link.
+
+![Free camera in Phantom Hourglass: the game's view, tilted, turned and zoomed, and from behind Link](tools/hd_remaster/games/AZEE/media/free_camera.jpg)
 
 The Remaster Studio has a page for all of it, and debug builds can trace which models a scene
 draws.

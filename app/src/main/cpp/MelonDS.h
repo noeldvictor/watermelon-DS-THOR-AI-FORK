@@ -154,6 +154,10 @@ namespace MelonDSAndroid {
     extern void pressKey(u32 key);
     extern void releaseKey(u32 key);
     extern void setSlot2AnalogInput(float x, float y);
+    extern void setFreeCameraEnabled(bool enabled);
+    extern void setFreeCameraInput(float x, float y, float zoom);
+    extern void resetFreeCamera();
+    extern void setFreeCameraPose(float yaw, float pitch, float zoom);
     extern void start();
     extern u32 loop(bool frameskipRequested);
     extern bool lastFrameSkipped();

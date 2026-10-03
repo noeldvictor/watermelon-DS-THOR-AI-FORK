@@ -1686,6 +1686,12 @@ class SharedPreferencesSettingsRepository(
         }
     }
 
+    override fun observeFreeCameraEnabled(): Flow<Boolean> {
+        return getOrCreatePreferenceSharedFlow("free_camera_enabled") {
+            preferences.getBoolean("free_camera_enabled", false)
+        }
+    }
+
     override fun getTouchHapticFeedbackStrength(): Int {
         val strength = preferences.getInt("input_touch_haptic_feedback_strength", 30)
         return strength.coerceIn(1, 100)

@@ -145,6 +145,18 @@ public:
     void SetModelSource(const HDModelSource* source) noexcept;
     void OnDisplayListDMA(u32 src, u32 bytes) noexcept;
 
+    /**
+     * Free camera (the frontend's right stick): an orbit of the DRAWN picture around what sits at
+     * the screen centre. Vertices go through Pos x F x Proj instead of Pos x Proj, F being a
+     * view-space turn about the game camera's world-up axis (yaw) and its own x axis (pitch)
+     * around that point, plus a dolly (zoom, a fraction of the point's distance, positive =
+     * farther). Only vertex submission sees it: BOX_TEST, POS_TEST and the lights keep the game's
+     * camera, so what the game culls for its own view stays missing. Perspective projections
+     * only (3D drawn with an orthographic projection, like menus, stays put). Called once per
+     * frame; all zero turns it off and rendering is identical to no free camera.
+     */
+    void SetFreeCamera(float yaw, float pitch, float zoom) noexcept;
+
     [[nodiscard]] bool IsRendererAccelerated() const noexcept;
     [[nodiscard]] Renderer3D& GetCurrentRenderer() noexcept { return *CurrentRenderer; }
     [[nodiscard]] const Renderer3D& GetCurrentRenderer() const noexcept { return *CurrentRenderer; }
@@ -180,7 +192,7 @@ private:
         s32 CycleCount, VertexPipeline, NormalPipeline, PolygonPipeline, VertexSlotCounter;
         u32 VertexSlotsFree;
         u32 MatrixMode;
-        s32 PosMatrix[16], VecMatrix[16], ClipMatrix[16];
+        s32 PosMatrix[16], VecMatrix[16], ClipMatrix[16], RenderClipMatrix[16];
         bool ClipMatrixDirty;
         u32 PolygonMode;
         s16 CurVertex[3];
@@ -300,6 +312,19 @@ public:
 
     s32 ClipMatrix[16] {};
     bool ClipMatrixDirty = false;
+    // what vertices are drawn with: ClipMatrix, or Pos x F x Proj with the free camera on
+    s32 RenderClipMatrix[16] {};
+
+    // free camera (see SetFreeCamera)
+    bool FreeCamOn = false;
+    float FreeCamYaw = 0, FreeCamPitch = 0, FreeCamZoom = 0;
+    s32 FreeCamMatrix[16] {};
+    float FreeCamPivotW = 0;                  // clip w at the screen centre, measured while it is off
+    float FreeCamUp[3] {0, 1, 0};             // world up in the game camera's view space
+    bool FreeCamAwaitCamera = false;          // a projection was set: the next position load is the camera
+    void FreeCamCaptureCamera() noexcept;
+    void FreeCamMeasurePivot() noexcept;
+    void FreeCamBuildMatrix() noexcept;
 
     u32 Viewport[6] {};
 

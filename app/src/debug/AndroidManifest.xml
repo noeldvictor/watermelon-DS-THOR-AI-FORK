@@ -21,6 +21,7 @@
                 <action android:name="${applicationId}.SET_LATCH_TRACE" />
                 <action android:name="${applicationId}.SET_FILTER_TINT" />
                 <action android:name="${applicationId}.SET_SLOT2_ANALOG" />
+                <action android:name="${applicationId}.SET_FREE_CAMERA" />
                 <action android:name="${applicationId}.SET_SLOT2_ANALOG_MAPPING" />
                 <action android:name="${applicationId}.LAUNCH_ROM" />
                 <action android:name="${applicationId}.WAIT_ROM_READY" />

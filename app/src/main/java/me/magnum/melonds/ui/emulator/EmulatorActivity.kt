@@ -829,6 +829,14 @@ class EmulatorActivity : AppCompatActivity() {
         }
         lifecycleScope.launch {
             lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                settingsRepository.observeFreeCameraEnabled().collect { enabled ->
+                    freeCameraEnabled = enabled
+                    MelonEmulator.setFreeCameraEnabled(enabled)
+                }
+            }
+        }
+        lifecycleScope.launch {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.controllerConfiguration.collect {
                     setupInputHandling(it)
                     connectedControllerManager.setCurrentControllerConfiguration(it)
@@ -2221,8 +2229,12 @@ class EmulatorActivity : AppCompatActivity() {
     }
 
     private fun setupInputHandling(controllerConfiguration: ControllerConfiguration) {
-        nativeInputListener = InputProcessor(controllerConfiguration, melonTouchHandler, frontendInputHandler)
+        nativeInputListener = InputProcessor(controllerConfiguration, melonTouchHandler, frontendInputHandler) { freeCameraEnabled }
     }
+
+    // Settings -> Input -> Free camera, read by the input processor on every controller event
+    @Volatile
+    private var freeCameraEnabled = false
 
     private fun handleBackPressed() {
         if (isRewindWindowOpen()) {
