@@ -161,6 +161,39 @@ framing, pose, colours and expression, with the eyes, mouth and details redrawn 
   `https://cucdn.creativeuncut.com/gallery-50/art/lcots-gades.jpg` (the CDN wants the gallery
   page as Referer), saved to `work\<CODE>\refs\`.
 
+## HD sprites from a 3D model (animated characters)
+
+A walking character is dozens of small frames (Crono has 209 cells). Redrawing each one with an
+image model drifts from frame to frame, so the walk shimmers. [chara3d.py](chara3d.py) builds one
+3D model of the character instead and renders every frame from it: one look, every direction,
+every frame. First tested on Chrono Trigger's Crono (2026-10-03).
+
+1. `chara3d.py turnaround work\<CODE> --name crono --sheet "Chara/Chara_0000.NCER~lz" --front 0
+   --side 12 --back 3 --art refs\a.jpg,refs\b.jpg --character "Crono from Chrono Trigger"`:
+   the standing frames (front, side facing left, back) plus official art go to Gemini, which
+   draws a 2x2 turnaround in an A-pose with flat colours, in the art's style and the sprite's
+   proportions ($0.14; capped by `--usd`).
+2. `chara3d.py model work\<CODE> --name crono`: Tripo multiview-to-model, textured (40 credits).
+3. `chara3d.py animate work\<CODE> --name crono --anims idle,walk,run`: Tripo rig check (free),
+   humanoid auto rig (25 credits) and one preset animation each, played in place (10 credits
+   each). Credits are logged in `chara3d\<name>\tripo_ledger.jsonl`, capped by `--credits`.
+4. `chara3d.py sprites work\<CODE> --name crono --sheet ... --front 0 --side 12 --back 3
+   --cells 0-39 --apply`: Blender 5.1 (in the background, [chara3d_blender.py](chara3d_blender.py))
+   renders each clip at 6-24 phases in four directions, toon shaded (two flat bands lit from the
+   upper left) with an ink outline, at 12 degrees above the horizon. Every native cell then gets
+   the render that fits it best: its facing comes from the game's own standing frames (the head
+   region compared native to native; the render's colours differ from the palette too much to tell
+   a face from the back of a head), then the pose and position by silhouette overlap at native
+   size, feet aligned, one scale for all frames. `review_sprites.png` shows each cell next to its
+   render; `--apply` writes the fits to `redrawn\assets2d`, which `build` prefers.
+
+Limits found on the way: the preset clips cover standing, walking and running only, so battle,
+sword and one-off poses keep their upscale (`--cells` keeps the fit to the cells the clips cover;
+silhouette overlap alone let some arms-up frames through). Freestyle's crease, border and contour
+lines cover a lumpy AI mesh, so only the outer outline is inked; its width is `--outline` (the
+scene thickness is a multiplier, keep it 1). Tripo's animated GLBs carry a stray icosphere that the
+renderer drops.
+
 ## Checking a pack against the real game
 
 If you have textures dumped in-game (Settings → Video → dump textures), compare them with an
