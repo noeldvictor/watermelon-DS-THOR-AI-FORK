@@ -8,7 +8,7 @@ Based on [WatermelonDS](https://github.com/SapphireRhodonite/WatermelonDS) (form
 SapphireRhodonite, itself built on [rafaelvcaetano's melonDS Android port](https://github.com/rafaelvcaetano/melonDS-android).
 Currently synced to WatermelonDS **0.7.0**.
 
-**HD packs:** [Games with HD pack recipes](tools/hd_remaster/games/GAMES.md) · [Recipes and how
+**Per game:** [Game enhancements](game-enhancements/README.md) · [Recipes and how
 to add a game](tools/hd_remaster/games/README.md) · [The remastering tool](tools/hd_remaster/README.md) ·
 [AI portrait redraws](tools/hd_remaster/REDRAW.md)
 
@@ -56,6 +56,17 @@ and the filter cache). Builds from before the ID change used WatermelonDS's ID
 This repository is self-contained: the emulator core (`melonDS-android-lib/`, derived from the
 [melonDS](https://github.com/melonDS-emu/melonDS) core) is part of the tree, with no core submodule.
 
+## Game enhancements
+
+Some of what this fork does is for particular games: HD packs built from the ROM (Lufia, Phantom
+Hourglass, Spirit Tracks, Nostalgia, Chrono Trigger), AI-redrawn portraits (Lufia), an HD 3D Link
+and a camera behind him (Phantom Hourglass), working widescreen codes where the bundled ones were
+broken or missing (Star Fox Command, the European Mario Kart DS, New Super Mario Bros., Sonic &
+SEGA All-Stars Racing and Burnout Legends), and renderer fixes first seen on one game (Hotel Dusk,
+Castlevania: Dawn of Sorrow, Metroid Prime Hunters, Dragon Quest IV and more).
+**[Game enhancements](game-enhancements/README.md)** has a page per game: what it gets, how it
+was checked, and what is still missing.
+
 ## What this fork adds
 
 ### HD remastering from the ROM
@@ -70,7 +81,7 @@ Prefer buttons? [Watermelon Remaster Studio](tools/studio/README.md) runs the sa
 
 Games with a [recipe](tools/hd_remaster/games/README.md) get the settings and game-specific
 rules that were verified for them, so anyone with the same ROM gets the same pack. **[The HD
-games list](tools/hd_remaster/games/GAMES.md)** has every one - Lufia: Curse of the Sinistrals,
+games list](game-enhancements/README.md)** has every one - Lufia: Curse of the Sinistrals,
 Phantom Hourglass, Spirit Tracks, Nostalgia and Chrono Trigger so far - with before/after
 screenshots, pack sizes, build times and what each pack covers, plus the games wanted next.
 

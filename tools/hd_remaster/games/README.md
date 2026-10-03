@@ -14,7 +14,8 @@ Recipes contain no game data: every image is generated from your own ROM.
 
 ## Games
 
-**[GAMES.md](GAMES.md)** lists every game with a recipe - status, before/after screenshots,
+**[GAMES.md](GAMES.md)** lists every game with a recipe (and [Game
+enhancements](../../../game-enhancements/README.md) everything the emulator does per game) - status, before/after screenshots,
 pack size, build time, coverage - plus the wishlist and the games checked and dropped. Each
 game's own README has the command, what was verified, and notes on how that game stores its
 graphics.

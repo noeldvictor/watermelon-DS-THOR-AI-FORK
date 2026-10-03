@@ -1,8 +1,12 @@
 # Games with HD pack recipes
 
-Every game `hd_remaster` has a recipe for, and the games wanted next. Each name links to that
-game's README: the one command, what the pack covers and what it doesn't, what was verified,
-and notes on how the game stores its graphics.
+The build status of every game `hd_remaster` has a recipe for (the Remaster Studio reads the
+table below). Everything the emulator does for a game - HD pack, AI redraws, 3D models, camera,
+widescreen codes, rendering fixes - and the games wanted next are listed per game in
+[Game enhancements](../../../game-enhancements/README.md).
+
+Each name links to that game's recipe README: the one command, what the pack covers and what it
+doesn't, what was verified, and notes on how the game stores its graphics.
 
 How to build a pack from a recipe, and how to add a game: [README.md](README.md). How the tool
 works: [../README.md](../README.md). Packs only work in this fork.
@@ -24,35 +28,11 @@ Thor at 4x internal resolution, the same frame of a save state with the pack off
 **Status**: *Finished* - the pack is built, played on the Thor across the game, and the README
 has measured times. *In progress* - the pack works, but only part of the game has been checked.
 
-## Wishlist
-
-Games wanted next, not started. All of them run at 60 fps on the Thor (45 s intro recordings of
-both screens, 2026-09-24).
-
-| Game | Known so far |
-| --- | --- |
-| Lost Magic | |
-| Rosario + Vampire | |
-| Rummikub | |
-| Pokémon Black Version 2 | The bottom screen stays black through the intro and title, as on the software renderer. |
-| Professor Layton and the Last Specter | |
-| Metroid Prime Hunters | A green flash in the intro was fixed in the renderer (`efa48310`). |
-| Mario Slam Basketball | |
-| Mega Man ZX | A flash on the fade after the Actimagine logo was fixed in the renderer (`a1c27927`). |
-| Lunar Knights | |
-
-## Checked, not a candidate
-
-Games whose graphics turned out not to be buildable from the ROM, with the reason, so nobody
-repeats the work. Nothing here yet.
-
-| Game | Code | Why not | Checked |
-| --- | --- | --- | --- |
-
 ## Adding a row
 
 A game gets a row here when its recipe folder exists (`games/<CODE>/` with `recipe.json` and a
 README). Put a before/after image from the game's `media/` in the first column (see
 [README.md](README.md#screenshots)), the pack size and image count from `build`'s output, and
-the upscale time from its log. A game checked and dropped goes in the last table instead, with
-what was found.
+the upscale time from its log. Give the game a page in [Game
+enhancements](../../../game-enhancements/README.md) too; a game checked and dropped goes in that
+page's "Checked, not a candidate" list, with what was found.
