@@ -498,6 +498,61 @@ def ai_model(work: Path, mid: str, polycount: int, budget: int, dry_run: bool, p
     fit_mesh(work, mid, glb)
 
 
+def _variant_textures(work: Path, mid: str, model, blobs, draw, hosts: list[str], scaled: np.ndarray,
+                      built: Path) -> list[str]:
+    """Other models that draw the same display lists with another texture (Phantom Hourglass'
+    link_model_blue and _red: Link in battle-mode colours) get the replacement too, since it is
+    keyed by display list; under their own texture key they get the new texture recoloured the
+    way their game texture differs from this one (same layout): each colour of this model's
+    texture maps to the colour the other texture has most often at the same texels, and every
+    pixel of the new texture moves by the difference of its nearest such colour."""
+    host_keys = {model.shapes[d.shape].key for d, _ in models3d.model_meshes(model)
+                 if model.shapes[d.shape].name in hosts}
+    mat = model.materials[draw.material].name
+    folder = work / "models" / mid
+    src = np.array(Image.open(folder / f"tex_{mat}.png").convert("RGB")).reshape(-1, 3).astype(np.int32)
+    done: list[str] = []
+    for entry in json.loads((work / "models" / "index.json").read_text(encoding="utf-8")):
+        other = work / "models" / entry["id"]
+        if entry["id"] == mid or not (other / "model.json").exists():
+            continue
+        info = json.loads((other / "model.json").read_text(encoding="utf-8"))
+        shared = [sh for sh in info["shapes"] if sh["key"] in host_keys]
+        if not shared:
+            continue
+        vmodel = next((m for b in blobs if b.path == info["source"] for m in models3d.models_in(b)
+                       if m.name == info["name"]), None)
+        tex = other / f"tex_{shared[0]['material']}.png"
+        if vmodel is None or not tex.exists():
+            continue
+        vkeys = _material_keys(vmodel, blobs)
+        vdraw = next((d for d in vmodel.draws if vmodel.shapes[d.shape].key == shared[0]["key"]), None)
+        vkey = vkeys.get(vdraw.material) if vdraw is not None else None
+        if vkey is None or vkey == _material_keys(model, blobs).get(draw.material):
+            continue
+        dst = np.array(Image.open(tex).convert("RGB")).reshape(-1, 3).astype(np.int32)
+        if dst.shape != src.shape:
+            continue
+        pairs: dict[tuple, dict[tuple, int]] = {}
+        for a, b in zip(map(tuple, src), map(tuple, dst)):
+            pairs.setdefault(a, {}).setdefault(b, 0)
+            pairs[a][b] += 1
+        palette = np.array(list(pairs), np.float32)
+        delta = np.array([np.array(max(v, key=v.get)) - np.array(k) for k, v in pairs.items()], np.float32)
+        rgb = scaled[..., :3].reshape(-1, 3).astype(np.float32)
+        out = np.empty_like(rgb)
+        for i in range(0, len(rgb), 65536):
+            chunk = rgb[i:i + 65536]
+            nearest = ((chunk[:, None, :] - palette[None]) ** 2).sum(-1).argmin(1)
+            out[i:i + 65536] = chunk + delta[nearest]
+        recoloured = scaled.copy()
+        recoloured[..., :3] = np.clip(np.rint(out), 0, 255).reshape(scaled.shape[:2] + (3,)).astype(np.uint8)
+        Image.fromarray(recoloured).save(built / "textures" / f"{vkey}.png")
+        if info["name"] not in done:
+            done.append(info["name"])
+    return done
+
+
 def textured_parts_from(ai_dir: Path, keep: list[str], refs: str):
     """keep, texture scale, ignore, decals and clear for a textured fit. With the HD turnaround as
     the references (ai/turnaround.json), the parts it left out are kept and placed without, and
@@ -551,7 +606,9 @@ def fit_textured_mesh(work: Path, mid: str, glb: Path, packs_root: Path, target:
     built = work / "models_built"
     (built / "textures").mkdir(parents=True, exist_ok=True)
     tex_key = keys[draw.material]
-    Image.fromarray(atlas).resize((w * scale, h * scale), Image.LANCZOS).save(built / "textures" / f"{tex_key}.png")
+    scaled = np.array(Image.fromarray(atlas).resize((w * scale, h * scale), Image.LANCZOS))
+    Image.fromarray(scaled).save(built / "textures" / f"{tex_key}.png")
+    variants = _variant_textures(work, mid, model, blobs, draw, hosts, scaled, built)
     originals: dict[str, bytes] = {}
     kept, wrapped, previews = [], [], []
     for d, part in meshes:
@@ -597,5 +654,6 @@ def fit_textured_mesh(work: Path, mid: str, glb: Path, packs_root: Path, target:
     Image.fromarray(render3d.render(preview, 768, yaw=0, pitch=0)).save(folder / "edited_front.png")
     log(f"{len(pos)} vertices, {len(tris)} triangles drawn in place of {', '.join(hosts)} with its own texture "
         f"({tex_key}, {w * scale}x{h * scale}); {len(originals) - len(host_meshes) - len(wrapped)} other parts hidden; "
-        f"kept {', '.join(kept) or 'none'}; wrapped onto it: {', '.join(wrapped) or 'none'}")
+        f"kept {', '.join(kept) or 'none'}; wrapped onto it: {', '.join(wrapped) or 'none'}"
+        + (f"; recoloured for {', '.join(variants)}" if variants else ""))
     install(work, packs_root)

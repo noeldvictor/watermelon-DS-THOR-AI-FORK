@@ -304,7 +304,9 @@ Phantom Hourglass' Link, second try (2026-10-02): HD turnaround $0.14, Tripo 40 
 triangles, 60 fps on the Thor; tunic folds, sleeves, hands and boots have real shape, the cap folds
 like the original, the game's eyes, brows and mouth animate on the new face. Left: the head is a
 little smaller than the chibi original and the bangs hide the top of the eyes from the game's
-high camera; `link_model_blue`/`_red` (battle mode) share the face textures and display lists.
+high camera. `link_model_blue`/`_red` (battle mode) draw the same display lists with their own
+body textures: the fit finds such models in the extract and writes the HD texture under their
+keys too, recoloured by how their game texture differs from this one (green tunic -> blue, red).
 First try (renders of the game model as references, whole mesh on the body's stack, 256x256
 texture): lumpy copy of the low-poly model, torn cap edge, head on the wrong bones.
 

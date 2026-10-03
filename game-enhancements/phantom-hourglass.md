@@ -13,8 +13,9 @@ AZEE, USA, with the D-pad patch (Link walks with the D-pad instead of the stylus
 | 3D draw batching | 3D GPU time on the storybook 7.3 -> 2.4 ms, overworld 5.3 -> 4.2 ms, identical pixels | frame_compare |
 
 Not yet: the AI head is a little smaller than the original's and its bangs hide the top of the
-eyes from the game's high camera; the battle-mode Links (`link_model_blue`, `_red`) share the
-face parts. With the camera low, trees can hide Link, and past the end of the sea the background
+eyes from the game's high camera. The battle-mode Links (`link_model_blue`, `_red`) draw the same
+display lists, so they get the HD model too, with the HD texture recoloured to their tunics (not
+seen in play yet: battle mode needs a second player). With the camera low, trees can hide Link, and past the end of the sea the background
 colour shows. No scenery is culled on Mercay: the island is one model drawn whole every frame (the
 game makes no hardware box tests), so the turned camera misses nothing there.
 
