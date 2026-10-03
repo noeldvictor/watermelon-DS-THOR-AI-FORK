@@ -23,7 +23,7 @@ external display support, RetroAchievements, RetroArch shader presets. On top of
 | Area | WatermelonDS 0.7.0 | Watermelon Thor |
 | --- | --- | --- |
 | Target device | Any Android device | Tuned and tested on the AYN Thor (Snapdragon 8 Gen 2, two panels) |
-| HD texture packs | — | Dump and replace 3D textures, 2D sprites and BG tiles |
+| HD texture packs | — | Dump and replace 3D textures, 2D sprites and BG tiles, also under a blend or fade that leaves the picture as it is (full-strength alpha, brightness 0) |
 | HD remastering | — | Build an AI-upscaled pack for a whole game straight from its ROM, no playthrough needed |
 | HD text | — | Text the game draws at runtime is redrawn from an upscaled copy of its own font, in sprites and in BG layers, without the native letters' blocky edge around it (Spirit Tracks' message boxes, Phantom Hourglass' story, Lufia's dialogue) |
 | AI redraws | — | Character portraits redrawn by an image model from the official art, checked against the game's faces ([guide](tools/hd_remaster/REDRAW.md)) |

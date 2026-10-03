@@ -639,9 +639,19 @@ u32 SoftRenderer::ColorComposite(int i, u32 val1, u32 val2) const
                 {
                     eva = CurUnit->EVA;
                     evb = CurUnit->EVB;
+                    // EVA 16 / EVB 0 leaves the pixel as it is: keep it with its layer flag
+                    // (ColorBlend4 stamps 0xFF, which hides whose pixel it is from HD
+                    // replacement; Rosario + Vampire sets this on every picture)
+                    if (eva >= 16 && evb == 0)
+                        coloreffect = 0;
                 }
                 else
                     coloreffect = 0;
+            }
+            else if (coloreffect >= 2 && CurUnit->EVY == 0)
+            {
+                // a fade at EVY 0 changes nothing either (logos that finished fading in)
+                coloreffect = 0;
             }
         }
     }
