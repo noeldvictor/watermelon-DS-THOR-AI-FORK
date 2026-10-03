@@ -18,7 +18,9 @@ powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 "Rosario
 - **Character portraits**: 2,796 sprite pieces (upper body, lower body, eye and mouth frames of
   every character, in both palettes each character has), Real-ESRGAN x4plus_anime_6B.
 - **Menus, the text window, name plates and buttons**: 11,800 16-colour sprite pieces (the title
-  screen's prompt, menus, minigames), 4x-UltraSharp.
+  screen's prompt, menus, minigames), 4x-UltraSharp with the model's own soft edges: the default
+  cut-out kept the pixel outline of the thin menu text, which showed most on the see-through
+  (blended) menu items.
 - **Dialogue text and names**: the game's `#FNT` font (3,387 glyphs) converted to NFTR, so the
   emulator's HD text recognises the glyphs it draws into sprites and redraws them. It is a
   1-pixel pixel font (fill shade 1, accent pixels shade 2): its HD glyphs are drawn from the fill

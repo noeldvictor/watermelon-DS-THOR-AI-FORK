@@ -22,6 +22,11 @@
    "model": "RealESRGAN_x4plus_anime_6B",
    "cutout": "model",
    "why": "Character art is anime illustration, as Lufia's portraits: the anime model draws eyes and hair edges cleanly where 4x-UltraSharp sharpens the pixel steps."
+  },
+  {
+   "match": ".bac#",
+   "cutout": "model",
+   "why": "Menus, text window, name plates, buttons and minigame sprites are pixel art with a hard edge: the default contour cut-out keeps the native outline (thin menu text stayed blocky), the model's own alpha draws smooth letter edges."
   }
  ]
 }
