@@ -48,6 +48,25 @@ The steps can also run one at a time (`extract`, `upscale`, `build`, `push`). `u
 where it stopped, and `build --native` makes a 1x pack from the unscaled images, which should
 render exactly like no pack at all: a quick check that every key and pixel is right.
 
+## Pack format: ASTC in a zip (the standard from 2026-10-03)
+
+What `build` and `push` produce, and what the emulator reads:
+
+- One file per game: `packs/<CODE>.zip` on the PC, `files/texturepacks/<CODE>.zip` on the Thor.
+  Deflate-compressed.
+- Every image is ASTC 4x4 (`.astc`: astcenc's 16-byte header, then 16-byte blocks), named by its
+  pack key as before: `textures/`, `sprites/`, `bgtiles/`, `fonts/` (glyph atlases),
+  `models/textures/`. Text files ride along unchanged: fonts' `.nftr`, `models/*.dl` and
+  `originals.txt`, `camera.txt`.
+- Why: the Thor's Adreno 740 samples ASTC in hardware, so images upload as they are (no PNG
+  decode on the device) at 8 bits per pixel instead of 32, and ASTC data still deflates (PNG
+  doesn't). 4x4 is the near-lossless block size: thin text and sprite outlines survive.
+- PNGs stay an intermediate of this tool (`work/<CODE>/native`, `work/<CODE>/upscaled`); packs
+  carry ASTC only. 2D, fonts, 3D textures and model textures all use it; the packs already on
+  the Thor are rebuilt this way and their folders removed.
+- *In progress.* Until the encoder step and the emulator's zip/ASTC reader land, `build` still
+  writes a PNG folder (`packs/<CODE>/`) and `push` copies it to `files/texturepacks/<CODE>/`.
+
 ## How it works
 
 A DS game uploads a texture's bytes to video memory unchanged, and the pack key is a hash of

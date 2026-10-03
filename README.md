@@ -205,6 +205,18 @@ smoothed with PN triangles, compared on the same emulated frame:
 ![Lufia boss: original vs PN-smoothed, same frame](tools/hd_remaster/games/AZEE/media/model_lufia_smooth.jpg)
 
 ### HD texture packs
+* **Pack format (the standard from 2026-10-03): one zip per game, ASTC inside.** A pack is
+  `files/texturepacks/<GAMECODE>.zip`, deflate-compressed, holding every image as an ASTC 4x4
+  texture (`.astc`, the layout ARM's astcenc writes) under the same key names and folders as
+  before (`textures/`, `sprites/`, `bgtiles/`, `fonts/`, `models/`), plus the pack's text files
+  (fonts' `.nftr`, `models/*.dl`, `camera.txt`). ASTC is what the Thor's Adreno 740 samples in
+  hardware: images go to the GPU as they are (no PNG decode on the device) at a quarter of the
+  memory of raw pixels, and unlike PNGs they still compress in the zip. 4x4 blocks everywhere,
+  the near-lossless setting, so text and sprite edges keep their shape. PNGs are only an
+  intermediate of the PC tool (`work/<CODE>/upscaled`); packs carry ASTC only. All of 2D,
+  fonts, 3D textures and model textures use it, and existing packs are converted, their
+  folders removed. *In progress: the emulator still reads the PNG folders described below
+  until the ASTC reader lands.*
 * **3D texture dump & replace**: content-hash keyed (texture hash + palette hash), compatible
   with the desktop melonDS HD pack format, so packs can be authored and verified on PC and used
   on device unchanged.

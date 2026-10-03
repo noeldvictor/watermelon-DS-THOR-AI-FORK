@@ -65,6 +65,12 @@ native image at full resolution (thumbnails hide the difference).
 
 ## 4. Build and push
 
+- **The pack standard (2026-10-03, the user's decision): one zip per game, every image ASTC
+  4x4, deflate-compressed** (`packs/<CODE>.zip` -> `files/texturepacks/<CODE>.zip`; layout in
+  tools/hd_remaster/README.md, "Pack format"). PNGs are only the tool's intermediate files;
+  never ship PNG folders once the ASTC build lands, and convert old folder packs when touching
+  them. Until it lands, `build` still writes `packs/<CODE>/` (PNG) - check the README's
+  "In progress" note before assuming either.
 - `hd_remaster.py build work/<CODE>` then `hd_remaster.py push packs/<CODE>`.
 - `build --native` gives a 1x pack: on the device it must render exactly like no pack at all.
   That is the end-to-end check that keys and pixels are right.
