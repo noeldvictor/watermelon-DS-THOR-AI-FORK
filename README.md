@@ -109,8 +109,30 @@ can use:
 * AI-generated models: `models ai --textured` renders a character from four sides, has Tripo
   build a textured mesh, fits it onto the game's skeleton and gives it its own texture in the
   slot of the part it replaces. The first one, Phantom Hourglass' Link (5,522 triangles, $0.40),
-  runs in-game at 60 fps. The plan for main characters (keeping their animated eyes, a Blender
-  round trip with the skeleton, higher-resolution model textures) is in progress.
+  runs in-game at 60 fps.
+
+What the first AI model taught us (see the screenshot below): the pipeline works, but this Link
+looks worse than the original up close, for reasons we can fix:
+
+* its 4096x4096 texture had to fit Link's 64x64 body texture slot at the pack's 4x scale, so it
+  shrank to 256x256 and the face went blurry;
+* that texture is cut into many small islands, and shrinking it blended them and let the
+  transparent gaps between them show (the torn edge on the cap);
+* the game's own sharp, blinking eye and eyebrow parts were hidden in favour of eyes painted into
+  that one texture;
+* the generator was shown pictures of a 441-triangle model, so it rebuilt a lumpy copy of it.
+
+**Where this is going: main characters at a Wii U-like level** (think Wind Waker HD). Instead of
+low-poly renders, the generator will get HD reference views: an image model redraws our four
+views of the in-game model in high detail, guided by the official artwork, keeping the game's
+proportions and pose. Model textures get their own, much larger resolution; texture islands are
+padded; the game's animated eye parts stay; Blender cleans up the mesh. Each step is reviewed on
+the Thor before the next character. Per-pixel lighting and shadows, the rest of a Wii U look, would
+be a later renderer step.
+
+**Planned: free camera.** A right-stick camera for 3D games (orbit and zoom around the player, the
+D-pad turning with the view), done in the emulator so it works without patching games, and then a
+Phantom Hourglass mode with the camera behind Link.
 
 The Remaster Studio has a page for all of it, and debug builds can trace which models a scene
 draws.
