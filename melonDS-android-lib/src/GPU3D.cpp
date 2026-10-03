@@ -786,6 +786,15 @@ void GPU3D::FreeCamMeasurePivot() noexcept
     // ClipMatrix); while it is off, the polygons sit where the game put them.
     if (FreeCamOn)
     {
+        // how much the box-test answer changed (see BoxTest), once per 60 frames
+        if (++FreeCamStatFrames >= 60)
+        {
+            Platform::Log(Platform::LogLevel::Warn,
+                          "FreeCamera[Stats]: %u box tests in 60 frames, %u outside the game's view, %u of them "
+                          "drawn for the turned view; pivot w %.2f\n",
+                          FreeCamBoxTests, FreeCamBoxHidden, FreeCamBoxShown, FreeCamPivotW);
+            FreeCamStatFrames = FreeCamBoxTests = FreeCamBoxHidden = FreeCamBoxShown = 0;
+        }
         if (FreeCamSamples.size() >= 3)
         {
             std::nth_element(FreeCamSamples.begin(), FreeCamSamples.begin() + FreeCamSamples.size() / 2,
@@ -1727,12 +1736,35 @@ void GPU3D::CalculateLighting() noexcept
 }
 
 
-void GPU3D::BoxTest(const u32* params) noexcept
+bool GPU3D::BoxInView(const s32 (&corners)[8][3], const s32* clip) noexcept
 {
+    // the hardware's test: any face of the box left after clipping to the view volume
     Vertex cube[8];
     Vertex face[10];
-    int res;
+    for (int i = 0; i < 8; i++)
+    {
+        const s64 x = corners[i][0], y = corners[i][1], z = corners[i][2];
+        cube[i].Position[0] = (x*clip[0] + y*clip[4] + z*clip[8] + (s64)0x1000*clip[12]) >> 12;
+        cube[i].Position[1] = (x*clip[1] + y*clip[5] + z*clip[9] + (s64)0x1000*clip[13]) >> 12;
+        cube[i].Position[2] = (x*clip[2] + y*clip[6] + z*clip[10] + (s64)0x1000*clip[14]) >> 12;
+        cube[i].Position[3] = (x*clip[3] + y*clip[7] + z*clip[11] + (s64)0x1000*clip[15]) >> 12;
+    }
 
+    // front (-Z), back (+Z), left (-X), right (+X), bottom (-Y), top (+Y)
+    static constexpr u8 faces[6][4] = {{0, 1, 2, 3}, {4, 5, 6, 7}, {0, 3, 4, 5},
+                                       {1, 2, 7, 6}, {0, 1, 6, 5}, {2, 3, 4, 7}};
+    for (const auto& f : faces)
+    {
+        for (int k = 0; k < 4; k++)
+            face[k] = cube[f[k]];
+        if (ClipPolygon<false>(*this, face, 4, 0) > 0)
+            return true;
+    }
+    return false;
+}
+
+void GPU3D::BoxTest(const u32* params) noexcept
+{
     AddCycles(254);
     GXStat &= ~(1<<1);
 
@@ -1747,81 +1779,29 @@ void GPU3D::BoxTest(const u32* params) noexcept
     y1 += y0;
     z1 += z0;
 
-    cube[0].Position[0] = x0; cube[0].Position[1] = y0; cube[0].Position[2] = z0;
-    cube[1].Position[0] = x1; cube[1].Position[1] = y0; cube[1].Position[2] = z0;
-    cube[2].Position[0] = x1; cube[2].Position[1] = y1; cube[2].Position[2] = z0;
-    cube[3].Position[0] = x0; cube[3].Position[1] = y1; cube[3].Position[2] = z0;
-    cube[4].Position[0] = x0; cube[4].Position[1] = y1; cube[4].Position[2] = z1;
-    cube[5].Position[0] = x0; cube[5].Position[1] = y0; cube[5].Position[2] = z1;
-    cube[6].Position[0] = x1; cube[6].Position[1] = y0; cube[6].Position[2] = z1;
-    cube[7].Position[0] = x1; cube[7].Position[1] = y1; cube[7].Position[2] = z1;
+    const s32 corners[8][3] = {{x0, y0, z0}, {x1, y0, z0}, {x1, y1, z0}, {x0, y1, z0},
+                               {x0, y1, z1}, {x0, y0, z1}, {x1, y0, z1}, {x1, y1, z1}};
 
     UpdateClipMatrix();
-    for (int i = 0; i < 8; i++)
+    bool visible = BoxInView(corners, ClipMatrix);
+    if (FreeCamOn)
     {
-        s32 x = cube[i].Position[0];
-        s32 y = cube[i].Position[1];
-        s32 z = cube[i].Position[2];
-
-        cube[i].Position[0] = ((s64)x*ClipMatrix[0] + (s64)y*ClipMatrix[4] + (s64)z*ClipMatrix[8] + (s64)0x1000*ClipMatrix[12]) >> 12;
-        cube[i].Position[1] = ((s64)x*ClipMatrix[1] + (s64)y*ClipMatrix[5] + (s64)z*ClipMatrix[9] + (s64)0x1000*ClipMatrix[13]) >> 12;
-        cube[i].Position[2] = ((s64)x*ClipMatrix[2] + (s64)y*ClipMatrix[6] + (s64)z*ClipMatrix[10] + (s64)0x1000*ClipMatrix[14]) >> 12;
-        cube[i].Position[3] = ((s64)x*ClipMatrix[3] + (s64)y*ClipMatrix[7] + (s64)z*ClipMatrix[11] + (s64)0x1000*ClipMatrix[15]) >> 12;
+        // with the free camera turned, what the turned view shows counts as visible too, so a
+        // game that culls its models with BOX_TEST draws them (the game's own view keeps its
+        // answer: nothing it would draw goes missing)
+        FreeCamBoxTests++;
+        if (!visible)
+        {
+            FreeCamBoxHidden++;
+            if (BoxInView(corners, RenderClipMatrix))
+            {
+                visible = true;
+                FreeCamBoxShown++;
+            }
+        }
     }
-
-    // front face (-Z)
-    face[0] = cube[0]; face[1] = cube[1]; face[2] = cube[2]; face[3] = cube[3];
-    res = ClipPolygon<false>(*this, face, 4, 0);
-    if (res > 0)
-    {
+    if (visible)
         GXStat |= (1<<1);
-        return;
-    }
-
-    // back face (+Z)
-    face[0] = cube[4]; face[1] = cube[5]; face[2] = cube[6]; face[3] = cube[7];
-    res = ClipPolygon<false>(*this, face, 4, 0);
-    if (res > 0)
-    {
-        GXStat |= (1<<1);
-        return;
-    }
-
-    // left face (-X)
-    face[0] = cube[0]; face[1] = cube[3]; face[2] = cube[4]; face[3] = cube[5];
-    res = ClipPolygon<false>(*this, face, 4, 0);
-    if (res > 0)
-    {
-        GXStat |= (1<<1);
-        return;
-    }
-
-    // right face (+X)
-    face[0] = cube[1]; face[1] = cube[2]; face[2] = cube[7]; face[3] = cube[6];
-    res = ClipPolygon<false>(*this, face, 4, 0);
-    if (res > 0)
-    {
-        GXStat |= (1<<1);
-        return;
-    }
-
-    // bottom face (-Y)
-    face[0] = cube[0]; face[1] = cube[1]; face[2] = cube[6]; face[3] = cube[5];
-    res = ClipPolygon<false>(*this, face, 4, 0);
-    if (res > 0)
-    {
-        GXStat |= (1<<1);
-        return;
-    }
-
-    // top face (+Y)
-    face[0] = cube[2]; face[1] = cube[3]; face[2] = cube[4]; face[3] = cube[7];
-    res = ClipPolygon<false>(*this, face, 4, 0);
-    if (res > 0)
-    {
-        GXStat |= (1<<1);
-        return;
-    }
 }
 
 void GPU3D::PosTest() noexcept
