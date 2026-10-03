@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import me.magnum.melonds.common.EnglishTitles
 import me.magnum.melonds.domain.model.rom.Rom
 import me.magnum.melonds.ui.theme.SpaceGrotesk
 import me.magnum.melonds.ui.theme.WatermelonMono
@@ -39,7 +40,12 @@ import kotlin.time.Duration
 
 val DsBoxArtAspectRatio: Float = 512f / 458f
 
-fun romDisplayName(rom: Rom): String = rom.config.customName ?: rom.name
+/** The name shown for a ROM: the name set in the app, else our curated English title, else its own. */
+fun romDisplayName(rom: Rom): String = rom.config.customName ?: EnglishTitles.forRom(rom) ?: rom.name
+
+/** The game's own Japanese title, shown small under an English one; null when there is none to show. */
+fun romOriginalTitle(rom: Rom): String? =
+    rom.name.takeIf { EnglishTitles.isJapanese(it) && romDisplayName(rom) != it }
 
 fun romInitials(title: String): String {
     val words = title.split(' ', '-', ':', '_').filter { it.isNotBlank() && it.first().isLetterOrDigit() }

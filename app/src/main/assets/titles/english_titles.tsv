@@ -1,0 +1,24 @@
+# English titles for games whose own title is Japanese (or a raw translation-patch banner).
+# Our own curated list: one game per line, by its 4-character game code (header 0x0C), so one
+# entry covers every copy of a game (translation patches, re-dumps).
+#
+#   CODE<TAB>English title<TAB>the game's own title, for reference
+#
+# The app shows the English title, with the original underneath when that is Japanese; search
+# finds a game by either, and by its file name. A name set in the app (ROM details > Custom name)
+# wins over this list. Lines starting with # are comments.
+AJUJ	Jump Ultimate Stars	JUMP ULTIMATE STARS
+AYTJ	Tales of Innocence	Tales of Innocence Bandai-Namco Games
+B2KJ	Ni no Kuni: Dominion of the Dark Djinn	にのくに しっこくのまどうし
+BDNJ	Cross Treasures	Cross Treasures GBAtemp.net Open Translation
+BLEJ	Digimon Story: Lost Evolution	デジモンストーリー ロストエボリューション
+COIJ	Neon Genesis Evangelion: Ayanami Raising Project DS with Asuka Supplement Project	しんせいき エヴァンゲリオン あやなみ いくせい けいかく
+CPEJ	Petit Eva: Evangelion@School	Petit Eva
+CSGJ	SaGa 2: Goddess of Destiny	SaGa 2: Legend of the Relics GODDESSES OF DESTINY
+CVJJ	I Will Protect You (Ore ga Omae o Mamoru)	I will protect you.
+CYJJ	Blood of Bahamut	BLOOD of BAHAMUT
+TMXJ	Metal Max 2: Reloaded	Metal Max 2R:ENG 1.0v
+YBSJ	Soma Bringer	Soma Bringer Nintendo
+YIVJ	Dragon Quest IV: Chapters of the Chosen	DRAGON QUEST IV みちびかれしものたち
+YVLJ	Rosario + Vampire: Tanabata's Miss Yokai Academy	ロザリオとバンパイア
+YWEJ	Dungeon of Windaria	dungeon of windaria

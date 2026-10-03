@@ -740,7 +740,7 @@ class EmulatorActivity : AppCompatActivity() {
                         me.magnum.melonds.ui.emulator.ui.SaveStatesOverlay(
                             slots = saveStatesData.slots,
                             isSaving = saveStatesData.isSaving,
-                            gameTitle = currentRom?.let { it.config.customName ?: it.name },
+                            gameTitle = currentRom?.let { me.magnum.melonds.ui.romlist.composables.romDisplayName(it) },
                             onSlotPicked = { slot ->
                                 dismissSaveStatesOverlay()
                                 saveStatesData.onSlotPicked(slot)
@@ -1151,7 +1151,7 @@ class EmulatorActivity : AppCompatActivity() {
                             emulatorLaunchValidatorDelegate.validateFirmware(it.consoleType)
                         }
                         is EmulatorState.ValidatingRom -> {
-                            bootRomTitle.value = it.rom.config.customName ?: it.rom.name
+                            bootRomTitle.value = me.magnum.melonds.ui.romlist.composables.romDisplayName(it.rom)
                             prepareBootExternalInfo(it.rom)
                             showLoadingState()
                             emulatorLaunchValidatorDelegate.validateRom(it.rom)
@@ -1170,7 +1170,7 @@ class EmulatorActivity : AppCompatActivity() {
                         is EmulatorState.RunningFirmware -> {
                             prewarmOpenGlShadersIfNeeded()
                             (it as? EmulatorState.RunningRom)?.let { running ->
-                                bootRomTitle.value = running.rom.config.customName ?: running.rom.name
+                                bootRomTitle.value = me.magnum.melonds.ui.romlist.composables.romDisplayName(running.rom)
                             }
                             bootRomReady.value = true
                             presentation?.setInfoOverlayContent(null)

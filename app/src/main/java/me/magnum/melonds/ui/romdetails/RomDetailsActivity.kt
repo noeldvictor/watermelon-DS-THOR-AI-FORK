@@ -75,7 +75,7 @@ class RomDetailsActivity : AppCompatActivity() {
                     iconDrawable = null,
                     title = setting.first,
                     description = setting.second,
-                    crumb = rom.name,
+                    crumb = me.magnum.melonds.ui.romlist.composables.romDisplayName(rom),
                 )
                 else -> {
                     val boxArtUrl by produceState<String?>(initialValue = null, rom.uri) {

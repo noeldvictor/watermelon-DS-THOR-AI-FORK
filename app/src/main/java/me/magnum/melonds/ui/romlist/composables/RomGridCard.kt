@@ -165,6 +165,16 @@ fun RomGridCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
+                romOriginalTitle(rom)?.let { original ->
+                    Text(
+                        text = original,
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 9.sp,
+                        lineHeight = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 val hours = formatHoursLabel(rom.totalPlayTime)
                 if (hours.isNotEmpty()) {
                     Text(

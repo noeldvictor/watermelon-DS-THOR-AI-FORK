@@ -207,10 +207,10 @@ private fun Content(
         ConfigSection(title = stringResource(R.string.rom_details_configuration_tab)) {
             ConfigRow(
                 title = stringResource(R.string.label_rom_config_custom_name),
-                value = romConfig.customName ?: rom.name,
+                value = romConfig.customName ?: me.magnum.melonds.common.EnglishTitles.forRom(rom) ?: rom.name,
                 onClick = {
                     renameDialogState.show(
-                        initialText = romConfig.customName ?: rom.name,
+                        initialText = romConfig.customName ?: me.magnum.melonds.common.EnglishTitles.forRom(rom) ?: rom.name,
                         onConfirm = { newName -> onConfigUpdate(RomConfigUpdateEvent.CustomNameUpdate(newName.ifBlank { null })) },
                     )
                 },

@@ -2,6 +2,7 @@ package me.magnum.melonds
 
 import android.Manifest
 import android.app.Application
+import me.magnum.melonds.common.EnglishTitles
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
@@ -57,6 +58,7 @@ class MelonDSApplication : Application(), Configuration.Provider {
         performMigrations()
         settingsBackupManager.initializeMirror()
         appLogFileRecorder.start()
+        EnglishTitles.load(assets)
         recoverUnexpectedHardcoreOfflineLossIfNeeded()
         MelonDSAndroidInterface.setup(
             UriFileHandler(this, uriHandler),

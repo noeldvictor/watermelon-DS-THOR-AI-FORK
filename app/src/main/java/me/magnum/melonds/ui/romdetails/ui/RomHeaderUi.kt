@@ -64,6 +64,7 @@ import me.magnum.melonds.ui.theme.SpaceGrotesk
 import me.magnum.melonds.ui.theme.WatermelonMono
 import me.magnum.melonds.ui.theme.watermelon
 import kotlin.time.Duration
+import me.magnum.melonds.ui.romlist.composables.romOriginalTitle
 
 @Composable
 fun HeroCircleButton(
@@ -261,6 +262,16 @@ fun RomHeroVertical(
                         maxLines = 3,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    romOriginalTitle(rom)?.let { original ->
+                        Text(
+                            text = original,
+                            color = Color.White.copy(alpha = 0.75f),
+                            fontSize = 12.sp,
+                            lineHeight = 15.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                     if (rom.developerName.isNotBlank()) {
                         Text(
                             text = rom.developerName,

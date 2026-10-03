@@ -51,6 +51,7 @@ import java.text.Normalizer
 import java.util.Calendar
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
+import me.magnum.melonds.ui.romlist.composables.romDisplayName
 
 @HiltViewModel
 class RomListViewModel @Inject constructor(
@@ -529,7 +530,7 @@ class RomListViewModel @Inject constructor(
         entries.forEachIndexed { index, entry ->
             // Folders aren't part of the alphabet; they get a dedicated folder icon at the top.
             if (entry !is RomBrowserEntry.RomItem) return@forEachIndexed
-            val rawName = (entry.rom.config.customName ?: entry.rom.name).trim()
+            val rawName = romDisplayName(entry.rom).trim()
             // NFKD decomposes compatibility chars (e.g. fullwidth Latin → ASCII Latin, ligature
             // 'ﬁ' → 'fi'). Then strip combining marks so accented "Élite" → "Elite" → 'E'.
             val normalized = java.text.Normalizer.normalize(rawName, java.text.Normalizer.Form.NFKD)
@@ -605,7 +606,9 @@ class RomListViewModel @Inject constructor(
     }
 
     private fun buildRomWithParent(rom: Rom, parentDocId: String?): RomWithParent {
-        val searchKey = normalizeForSearch(rom.config.customName ?: rom.name) +
+        // the shown name (a custom or curated English title), the game's own title and the file
+        val searchKey = normalizeForSearch(romDisplayName(rom)) +
+            "\u0000" + normalizeForSearch(rom.name) +
             "\u0000" + normalizeForSearch(rom.fileName) +
             "\u0000" + normalizeForSearch(rom.developerName)
         return RomWithParent(rom, parentDocId, searchKey)
@@ -784,11 +787,11 @@ class RomListViewModel @Inject constructor(
         // landing after "Z" (ASCII lowercase 'i' has a higher code than uppercase letters).
         return if (sortingOrder == SortingOrder.ASCENDING) {
             Comparator { o1: Rom, o2: Rom ->
-                o1.name.compareTo(o2.name, ignoreCase = true)
+                romDisplayName(o1).compareTo(romDisplayName(o2), ignoreCase = true)
             }
         } else {
             Comparator { o1: Rom, o2: Rom ->
-                o2.name.compareTo(o1.name, ignoreCase = true)
+                romDisplayName(o2).compareTo(romDisplayName(o1), ignoreCase = true)
             }
         }
     }

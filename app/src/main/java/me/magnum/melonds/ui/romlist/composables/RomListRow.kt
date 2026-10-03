@@ -144,6 +144,17 @@ fun RomListRow(
                     )
                 }
             }
+            romOriginalTitle(rom)?.let { original ->
+                Text(
+                    text = original,
+                    color = colors.text3,
+                    fontSize = 11.sp,
+                    lineHeight = 13.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 1.dp),
+                )
+            }
             val subtitle = buildSubtitle(rom, context)
             if (subtitle.isNotEmpty()) {
                 Text(
