@@ -4,8 +4,8 @@
 powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 "Nostalgia (USA).nds" -Push
 ```
 
-4434 textures, 4613 sprites and 231,399 background tiles: 240,438 images, 1.2 GB at 4x. The
-upscale took about 35 minutes on an RTX 3060.
+4434 textures, 4613 sprites and 231,399 background tiles: 240,438 images at 4x. The upscale
+took about 35 minutes on an RTX 3060. Installed: a 692 MB ASTC zip (1.2 GB as PNG).
 
 ## Before / after
 

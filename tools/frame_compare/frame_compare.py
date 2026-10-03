@@ -96,6 +96,50 @@ class Device:
         return self.adb("exec-out", "run-as", PACKAGE, *args, binary=True, check=False)
 
 
+SAVE_DIR = "/storage/2664-21DE/Roms/nds"
+
+
+class SaveGuard:
+    """Keeps a game's .sav on the SD card as it was before a run. Loading a save state makes the
+    emulator write the state's save memory into the game's .sav (NDSCart's DoSavestate calls
+    WriteNDSSave; this frontend has no "separate savefiles" option), so every test that loads a
+    state would roll the user's save back to whatever it was when the state was made. The .sav
+    is pulled first (a run is refused if one exists but can't be read) and pushed back, checked by
+    MD5, after the emulator has stopped; a .sav the run created is removed."""
+
+    def __init__(self, device, rom_file):
+        import hashlib
+        import tempfile
+        self.device = device
+        self.remote = f"{SAVE_DIR}/{Path(rom_file).stem}.sav"
+        self.local = Path(tempfile.mkdtemp(prefix="saveguard_")) / "game.sav"
+        self.md5 = None
+        self._hashlib = hashlib
+
+    def _exists(self):
+        out = self.device.adb("shell", f'test -f "{self.remote}" && echo yes', check=False)
+        return "yes" in out
+
+    def __enter__(self):
+        if self._exists():
+            self.device.adb("pull", self.remote, str(self.local), timeout=120)
+            if not self.local.exists():
+                raise RuntimeError(f"can't back up {self.remote}; not running")
+            self.md5 = self._hashlib.md5(self.local.read_bytes()).hexdigest()
+        return self
+
+    def __exit__(self, *exc):
+        self.device.force_stop()
+        if self.md5:
+            self.device.adb("push", str(self.local), self.remote, timeout=120)
+            out = self.device.adb("shell", f'md5sum "{self.remote}"', check=False)
+            if self.md5 not in out:
+                print(f"WARNING: {self.remote} could not be restored; the backup is {self.local}", flush=True)
+        else:
+            self.device.adb("shell", f'rm -f "{self.remote}"', check=False)
+        return False
+
+
 def launch(device, rom_file, settle_s):
     device.force_stop()
     device.adb("shell", "input", "keyevent", "KEYCODE_WAKEUP")
@@ -282,15 +326,17 @@ def run_case(device, rom, state, frames, args, out_root):
     sequences = {}
     for renderer in args.renderers:
         device.set_preference("video_renderer", renderer, "string")
-        launch(device, rom, args.settle)
-        load_state(device, state)
-        started = time.time()
-        # frame 0 is the picture from before the state loaded and frame 1 the first after it, which
-        # Vulkan prepares but doesn't show (MelonInstance::processFrameTail); the last frame has no
-        # successor for the lag rule. Three extra frames keep all N requested ones comparable
-        sequences[renderer] = dump_sequence(device, f"{case_name}_{renderer}", frames + SKIPPED_FRAMES + 1, out_dir)
-        print(f"  {renderer}: {frames} frames in {time.time() - started:.0f} s", flush=True)
-        device.force_stop()
+        # loading the state writes its save memory into the game's .sav: put the user's back
+        with SaveGuard(device, rom):
+            launch(device, rom, args.settle)
+            load_state(device, state)
+            started = time.time()
+            # frame 0 is the picture from before the state loaded and frame 1 the first after it,
+            # which Vulkan prepares but doesn't show (MelonInstance::processFrameTail); the last
+            # frame has no successor for the lag rule. Three extra frames keep all N requested ones
+            # comparable
+            sequences[renderer] = dump_sequence(device, f"{case_name}_{renderer}", frames + SKIPPED_FRAMES + 1, out_dir)
+            print(f"  {renderer}: {frames} frames in {time.time() - started:.0f} s", flush=True)
 
     reference, tested = args.renderers[1], args.renderers[0]
     software = load_frames(sequences[reference])[SKIPPED_FRAMES:]

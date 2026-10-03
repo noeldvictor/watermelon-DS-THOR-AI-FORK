@@ -4,8 +4,8 @@
 powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 "Spirit Tracks.nds" -Push
 ```
 
-3156 textures, 5422 sprites and 21424 background tiles: a 438 MB pack at 4x, upscaled in
-about 23 minutes.
+3156 textures, 5422 sprites and 21424 background tiles at 4x, upscaled in about 23 minutes.
+Installed: a 200 MB ASTC zip (30,006 images; 438 MB as PNG).
 
 ## Before / after
 

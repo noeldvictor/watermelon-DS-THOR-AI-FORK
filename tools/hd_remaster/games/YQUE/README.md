@@ -5,7 +5,7 @@ powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 "Chrono 
 ```
 
 Sprites only: 22,670 sprite images (85% of them the character sheets under `Chara/`), cut into
-54,754 pack files, 412 MB at 4x. The upscale took about 45 minutes on an RTX 3060. The game has
+54,754 pack files at 4x: a 142 MB ASTC zip installed (412 MB as PNG). The upscale took about 45 minutes on an RTX 3060. The game has
 no 3D textures and no NFTR fonts.
 
 ## Before / after

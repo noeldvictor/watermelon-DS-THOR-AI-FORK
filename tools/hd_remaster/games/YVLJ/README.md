@@ -11,6 +11,18 @@ powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 "Rosario
 
 ![Kotori, pack off and on](media/face.jpg)
 
+Installed: a 288 MB ASTC zip (108,113 images; 631 MB as PNG).
+
+## In game
+
+Live on the AYN Thor with the pack (top screen over bottom screen, PNG):
+
+![A dialogue scene: HD background, portrait and text](media/ingame_dialogue.png)
+
+![The title menu](media/ingame_title_menu.png)
+
+![A battle: HD background and the see-through menus](media/ingame_battle.png)
+
 ## What the pack covers
 
 - **Backgrounds, event CGs, title and menu screens**: 197 pictures, 93,525 BG tile keys,

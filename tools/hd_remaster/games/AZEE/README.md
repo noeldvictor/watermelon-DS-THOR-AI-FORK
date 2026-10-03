@@ -4,8 +4,16 @@
 powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 "Phantom Hourglass.nds" -Push
 ```
 
-1934 textures, 4608 sprites and 7811 background tiles: a 281 MB pack at 4x, built in about
-23 minutes on an RTX 3060.
+1934 textures, 4608 sprites and 7811 background tiles at 4x, built in about 23 minutes on an
+RTX 3060. Installed with the HD Link model and the camera profile: a 168 MB ASTC zip (14,565
+images).
+
+## In game
+
+![Mercay Island on the Thor with the pack: HD textures, sprites and island map, and the HD Link model](media/ingame_mercay.png)
+
+Mercay Island, live on the AYN Thor (top screen over bottom screen, PNG): HD 3D textures and
+sprites, the island map's BG tiles, and the AI-built HD Link model.
 
 ## Before / after
 

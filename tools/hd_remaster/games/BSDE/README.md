@@ -5,7 +5,16 @@ powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 "Lufia.n
 ```
 
 About 20 minutes on an RTX 3060 for the whole game: 1777 textures, 9574 sprites and 26064
-background tiles, a 725 MB pack at 4x.
+background tiles at 4x. Installed with the AI-redrawn portraits: a 413 MB ASTC zip (54,710
+images; 725 MB as PNG).
+
+## In game
+
+![A boss fight on the Thor with the pack: HD 3D textures, HUD and outlined text](media/ingame_boss.png)
+
+A boss fight, live on the AYN Thor (top screen over bottom screen, PNG): HD 3D textures on the
+boss and the arena, the HUD and its outlined text. The boss's spiky crown stays native: two of
+its textures use palettes the game builds at runtime, so their keys aren't in the ROM.
 
 ## Before / after
 
