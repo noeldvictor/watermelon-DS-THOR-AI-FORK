@@ -1,32 +1,68 @@
 {
-  "game": "YQUE",
-  "title": "Chrono Trigger",
-  "roms": [
-    {
-      "sha256": "53da5573c9914d1a727e003d05abb74be580367059e7edfb7b1f92daf6384100",
-      "name": "USA (as tested)"
-    }
-  ],
-  "scale": 4,
-  "models": {
-    "textures": "4x-UltraSharp",
-    "sprites": "4x-UltraSharp",
-    "backgrounds": "4x-UltraSharp",
-    "fonts": "4x-UltraSharp"
-  },
-  "twod": {},
-  "baseline": {
-    "textures": 0,
-    "sprites": 54754,
-    "backgrounds": 0,
-    "fonts": 0
-  },
-  "notes": [
-    "Sprites only (22670 sprite images, 85% of them character sheets under Chara/). The game has no 3D textures and no NFTR fonts.",
-    "Field and town backgrounds are not in the pack. They are the SNES port's format: Map/Bg/Bg_*_ncg.bin tile sets and BgPlt_*_ncl.bin palettes (11 rows of 16 colours), laid out at runtime from PS_BIN/ChipTable (16x16 chips) and PS_BIN/MapTable (maps, compressed). Without parsing those the tool cannot tell which palette row a tile uses, so it has no key for it."
-  ],
-  "verified": {
-    "date": "2026-09-24",
-    "on_device": "AYN Thor: 54754 entries indexed; title logo sprites 2580/2640 lookups hit. Intro movie, pendulum and field BGs stay native (not in the pack)."
+ "game": "YQUE",
+ "title": "Chrono Trigger",
+ "roms": [
+  {
+   "sha256": "53da5573c9914d1a727e003d05abb74be580367059e7edfb7b1f92daf6384100",
+   "name": "USA (as tested)"
   }
+ ],
+ "scale": 4,
+ "models": {
+  "textures": "4x-UltraSharp",
+  "sprites": "4x-UltraSharp",
+  "backgrounds": "4x-UltraSharp",
+  "fonts": "4x-UltraSharp"
+ },
+ "twod": {
+  "obj": [
+   {
+    "dir": "Chara/",
+    "color_keys": true,
+    "_why": "the game fills a party palette's unused slots 13-15 with other colours in the field (Crono: ObjPlt_0000 colours 0-12 + 3 extra), so the byte key's palette hash never matches; the colour key hashes only the colours the sprite shows"
+   }
+  ],
+  "tied_palettes": 4,
+  "pairs": {
+   "Chara/Chara_0020.NCER~lz": [
+    "Chara/ObjPlt_0009.NCLR"
+   ],
+   "Chara/Chara_0044.NCER~lz": [
+    "Chara/ObjPlt_0009.NCLR"
+   ],
+   "Chara/Chara_0047.NCER~lz": [
+    "Chara/ObjPlt_0009.NCLR"
+   ],
+   "Chara/Chara_0066.NCER~lz": [
+    "Chara/ObjPlt_0161.NCLR"
+   ],
+   "Chara/Chara_0182.NCER~lz": [
+    "Chara/ObjPlt_0161.NCLR"
+   ],
+   "Chara/Chara_0183.NCER~lz": [
+    "Chara/ObjPlt_0161.NCLR"
+   ],
+   "Chara/Chara_0127.NCER~lz": [
+    "Chara/ObjPlt_0136.NCLR"
+   ],
+   "Chara/Chara_0157.NCER~lz": [
+    "Chara/ObjPlt_0136.NCLR"
+   ]
+  },
+  "_pairs_why": "NPC sheets share palettes, chosen per NPC by the game (not a table found in the ROM); these pairings were seen in play (2026-10-03, Crono's room and house)"
+ },
+ "baseline": {
+  "textures": 0,
+  "sprites": 54754,
+  "backgrounds": 0,
+  "fonts": 0
+ },
+ "notes": [
+  "Sprites only (22670 sprite images, 85% of them character sheets under Chara/). The game has no 3D textures and no NFTR fonts.",
+  "Field and town backgrounds are not in the pack. They are the SNES port's format: Map/Bg/Bg_*_ncg.bin tile sets and BgPlt_*_ncl.bin palettes (11 rows of 16 colours), laid out at runtime from PS_BIN/ChipTable (16x16 chips) and PS_BIN/MapTable (maps, compressed). Without parsing those the tool cannot tell which palette row a tile uses, so it has no key for it."
+ ],
+ "verified": {
+  "date": "2026-09-24",
+  "on_device": "AYN Thor: 54754 entries indexed; title logo sprites 2580/2640 lookups hit. Intro movie, pendulum and field BGs stay native (not in the pack)."
+ }
 }

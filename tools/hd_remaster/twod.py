@@ -315,7 +315,8 @@ def obj_palette(nclr, oam, extpal=False):
 #   color_keys   also key every piece by the colours it shows (obj1_WxH_<hash>_rgb_<bpp>), which
 #                matches however the game lays the art out in palette memory
 # and at the top level of "twod": color_keys_8bpp (default true) gives every 256-colour sprite
-# piece a colour key
+# piece a colour key; tied_palettes (default 16) caps the equally named palettes a sheet is
+# paired with; pairs = palettes seen in play for a sheet or screen (misses --apply)
 
 
 # ============================================================ pairing
@@ -394,6 +395,13 @@ class Library:
             if body in seen: continue            # identical copies (e.g. localized dup)
             seen.add(body); top.append(cn)
         return [(cn, "dir-best" if len(top) == 1 else "dir-tie") for cn in top]
+
+
+def tied_limit(profile):
+    """How many equally named palettes a sprite sheet or screen is paired with (recipe "twod"
+    "tied_palettes", default 16). Each one is a whole set of images to upscale: Chrono Trigger,
+    extracted when the limit was 4, keeps 4 (16 would add ~54k images of guesses)."""
+    return int((profile or {}).get("tied_palettes", 16))
 
 
 def with_known_pairs(lib, name, cands, profile):
@@ -480,7 +488,7 @@ def build_cells(lib, profile, want_rgba=False):
         # 16-colour sprites hash only their own row, wherever it sits, and need none.
         if (rule and rule.get("color_keys")) or (g.bpp == 8 and (profile or {}).get("color_keys_8bpp", True)):
             alts.append(("rgb", None))
-        pcands = with_known_pairs(lib, ename, lib.partners(ename, "p"), profile) or [(None, "none")]
+        pcands = with_known_pairs(lib, ename, lib.partners(ename, "p", limit=tied_limit(profile)), profile)             or [(None, "none")]
         for pname, pmode in pcands:
             p = lib.get(pname) if pname else None
             palram = palram_for(lib, rule["palram"], p) if (rule and "palram" in rule and p is not None) else None
@@ -591,7 +599,8 @@ def build_screens(lib, profile, want_rgba=False):
         if not gc: continue
         g = lib.get(gc[0][0])
         if g is None: continue
-        for pname, pmode in (with_known_pairs(lib, sname, lib.partners(sname, "p"), profile) or [(None, "none")]):
+        for pname, pmode in (with_known_pairs(lib, sname, lib.partners(sname, "p", limit=tied_limit(profile)),
+                                              profile) or [(None, "none")]):
             p = lib.get(pname) if pname else None
             asset = assemble_screen(sc, g, p, want_rgba)
             if asset is None: continue
