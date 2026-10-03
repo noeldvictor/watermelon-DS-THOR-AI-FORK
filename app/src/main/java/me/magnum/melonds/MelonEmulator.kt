@@ -228,6 +228,9 @@ object MelonEmulator {
     external fun resetFreeCamera()
     // radians; zoom as a fraction of the distance to the screen centre (positive = farther)
     external fun setFreeCameraPose(yaw: Float, pitch: Float, zoom: Float)
+    // the running game's pack has a camera profile (texturepacks/<GAMECODE>/camera.txt) that turns
+    // the free camera on whatever the setting
+    external fun isFreeCameraForced(): Boolean
 
     external fun takeScreenshot(): Boolean
 

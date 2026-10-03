@@ -781,9 +781,21 @@ void GPU3D::FreeCamCaptureCamera() noexcept
 void GPU3D::FreeCamMeasurePivot() noexcept
 {
     // the orbit's centre: the median depth of what is drawn near the screen centre (the player,
-    // in games whose camera follows one). Measured only while the free camera is off, since its
-    // polygons then sit where the game put them.
-    if (FreeCamOn || NumPolygons == 0)
+    // in games whose camera follows one), as the game's own camera sees it. While the free
+    // camera is on, vertex submission samples that (FreeCamSamples, through the game's
+    // ClipMatrix); while it is off, the polygons sit where the game put them.
+    if (FreeCamOn)
+    {
+        if (FreeCamSamples.size() >= 3)
+        {
+            std::nth_element(FreeCamSamples.begin(), FreeCamSamples.begin() + FreeCamSamples.size() / 2,
+                             FreeCamSamples.end());
+            FreeCamPivotW = FreeCamSamples[FreeCamSamples.size() / 2];
+        }
+        FreeCamSamples.clear();
+        return;
+    }
+    if (NumPolygons == 0)
         return;
     std::vector<float> ws;
     ws.reserve(256);
@@ -1516,6 +1528,19 @@ void GPU3D::SubmitVertex() noexcept
 
     UpdateClipMatrix();
     const s32* clip = RenderClipMatrix;
+    if (FreeCamOn && FreeCamSamples.size() < 4096)
+    {
+        // the free camera's orbit centre, as the game's camera sees it (see FreeCamMeasurePivot)
+        const s64 w = (vertex[0]*ClipMatrix[3] + vertex[1]*ClipMatrix[7] + vertex[2]*ClipMatrix[11] + vertex[3]*ClipMatrix[15]) >> 12;
+        if (w > 0)
+        {
+            const s64 x = (vertex[0]*ClipMatrix[0] + vertex[1]*ClipMatrix[4] + vertex[2]*ClipMatrix[8] + vertex[3]*ClipMatrix[12]) >> 12;
+            const s64 y = (vertex[0]*ClipMatrix[1] + vertex[1]*ClipMatrix[5] + vertex[2]*ClipMatrix[9] + vertex[3]*ClipMatrix[13]) >> 12;
+            // within 40 pixels of the centre of a 256x192 screen
+            if (std::abs(x) * 128 <= w * 40 && std::abs(y) * 96 <= w * 40)
+                FreeCamSamples.push_back(w / 4096.0f);
+        }
+    }
     vertextrans->Position[0] = (vertex[0]*clip[0] + vertex[1]*clip[4] + vertex[2]*clip[8] + vertex[3]*clip[12]) >> 12;
     vertextrans->Position[1] = (vertex[0]*clip[1] + vertex[1]*clip[5] + vertex[2]*clip[9] + vertex[3]*clip[13]) >> 12;
     vertextrans->Position[2] = (vertex[0]*clip[2] + vertex[1]*clip[6] + vertex[2]*clip[10] + vertex[3]*clip[14]) >> 12;

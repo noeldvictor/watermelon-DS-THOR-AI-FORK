@@ -72,6 +72,8 @@ public:
     void resetFreeCamera();
     // sets the view directly (radians, zoom as GPU3D takes it): debug tools and tests
     void setFreeCameraPose(float yaw, float pitch, float zoom);
+    // a game's camera profile (texturepacks/<GAMECODE>/camera.txt) turns the free camera on
+    bool isFreeCameraForced() const { return camProfile.active; }
     int readAudioOutput(s16* buffer, int length);
     int getAudioOutputAvailable() const;
     void setLargeAudioOutputBuffer(bool large);
@@ -397,6 +399,22 @@ private:
     void updateFreeCamera();
     // the DS key mask with the D-pad turned by the free camera's yaw
     void applyKeyMask();
+    u32 dpadLatchedBits = 0;
+    float dpadLatchedYaw = 0.0f;
+
+    // texturepacks/<GAMECODE>/camera.txt, a game's own camera (see applyCameraProfile)
+    struct CameraProfile
+    {
+        bool active = false;          // free_camera on: on for this game whatever the setting
+        bool followDpad = false;      // follow dpad: swing behind the way the D-pad walks
+        float pitch = 0.0f;           // radians, the view's tilt (negative = flatter)
+        float zoom = 0.0f;            // fraction of the distance to the screen centre
+        float followSpeed = 1.2f;     // radians per second at most
+    };
+    CameraProfile camProfile;
+    // stick offsets on top of the profile's pitch and zoom
+    float freeCamPitchOffset = 0.0f, freeCamZoomOffset = 0.0f;
+    void applyCameraProfile();
 
     // written by the configuration thread, read by the emulation and
     // presentation threads; take a snapshot copy per use via

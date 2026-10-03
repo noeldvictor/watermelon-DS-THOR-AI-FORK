@@ -2447,6 +2447,12 @@ Java_me_magnum_melonds_MelonEmulator_setFreeCameraPose(JNIEnv* env, jobject thiz
     MelonDSAndroid::setFreeCameraPose(yaw, pitch, zoom);
 }
 
+JNIEXPORT jboolean JNICALL
+Java_me_magnum_melonds_MelonEmulator_isFreeCameraForced(JNIEnv* env, jobject thiz)
+{
+    return MelonDSAndroid::isFreeCameraForced();
+}
+
 JNIEXPORT void JNICALL
 Java_me_magnum_melonds_MelonEmulator_setFastForwardEnabled(JNIEnv* env, jobject thiz, jboolean enabled)
 {

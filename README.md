@@ -28,7 +28,7 @@ external display support, RetroAchievements, RetroArch shader presets. On top of
 | HD text | — | Text the game draws at runtime is redrawn from an upscaled copy of its own font, in sprites and in BG layers, without the native letters' blocky edge around it (Spirit Tracks' message boxes, Phantom Hourglass' story, Lufia's dialogue) |
 | AI redraws | — | Character portraits redrawn by an image model from the official art, checked against the game's faces ([guide](tools/hd_remaster/REDRAW.md)) |
 | HD 3D models | — | A pack can replace any 3D model part (Vulkan renderer): the new mesh hangs on the game's own skeleton and animations and is lit by the game's lights; smoothing of the original models with no new art, or new meshes from any 3D tool or from an AI model generator (Tripo), with their own HD texture ([3D models](tools/hd_remaster/README.md#3d-models-first-step-extraction-and-keys)) |
-| Free camera | — | The right stick orbits and zooms the 3D view of any game around the screen centre, the D-pad turns with it (Settings -> Input, off by default) |
+| Free camera | — | The right stick orbits and zooms the 3D view of any game around the screen centre, the D-pad turns with it (Settings -> Input, off by default); a pack's `camera.txt` turns it on for its game, e.g. Phantom Hourglass with the camera behind Link |
 | Upscaling | Full-screen RetroArch shaders | Also per-layer filters for 3D, sprites and BG separately (ScaleFX, Anime4K, HQ2x, ...) with a disk cache |
 | In-game overlay | Pause menu | Adds a turbo speed picker, live texture-filter switching, and "stretch to fit both screens" |
 | Enhancements (widescreen and more) | — | An "Enhancements" pause-menu panel for games whose bundled cheat database has visual codes (about 300 games): widescreen 16:9 / 16:10 (the top screen stretches to match, so 3D gets a wider view at the right proportions; 2D menus and HUDs stretch), smooth 3D edges (anti-aliasing, no outlines) and draw distance, each with its own switch. Some games apply a change from the next scene, or on the next launch |
@@ -140,9 +140,31 @@ view. It is done in the emulator, no game patch: only what gets drawn goes throu
 camera; the game's own visibility tests keep its camera, so scenery it leaves out of its own view
 stays missing at wide angles. Menus drawn with an orthographic projection stay put. With the
 setting on, the right stick and R3 belong to the camera (a right-stick binding such as fast
-forward is suspended). Next: a Phantom Hourglass mode with the camera behind Link.
+forward is suspended). The switch is saved; the view starts from the game's own each launch.
 
 ![Free camera in Phantom Hourglass: the game's view, tilted, turned and zoomed, and from behind Link](tools/hd_remaster/games/AZEE/media/free_camera.jpg)
+
+**Behind-Link camera (Phantom Hourglass).** A game's HD pack can carry a camera profile,
+`camera.txt` (`texturepacks/<GAMECODE>/camera.txt` on the device; the tool copies
+`tools/hd_remaster/games/<CODE>/camera.txt` into the pack it builds). It turns the free camera on
+for that game by itself, whatever the setting, and sets its tilt, distance and behaviour. Phantom
+Hourglass' profile puts the camera low behind Link (`pitch -32`, `zoom -0.3`) and makes it follow
+him (`follow dpad`): a D-pad direction keeps the world direction it had when pressed, so Link
+walks straight while the view swings round behind him, and a new direction is read in the new
+view; walking towards the camera leaves the view alone. The right stick still turns, tilts and
+zooms on top of it, and R3 goes back to the profile's tilt and distance. 60 fps on the Thor. As a
+game camera that was never made for it: a tree between the camera and Link can hide him, and
+looking flat over a ledge can show sky where the game drew nothing.
+
+```
+free_camera on      # on for this game
+follow dpad         # swing round behind the way the D-pad walks the player
+pitch -32           # degrees of tilt (negative = flatter)
+zoom -0.3           # closer (fraction of the distance to the screen centre)
+follow_speed 2.0    # radians per second at most
+```
+
+![Phantom Hourglass with the camera behind Link, on the Thor](tools/hd_remaster/games/AZEE/media/behind_link_camera.jpg)
 
 The Remaster Studio has a page for all of it, and debug builds can trace which models a scene
 draws.

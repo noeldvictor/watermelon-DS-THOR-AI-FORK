@@ -319,7 +319,8 @@ public:
     bool FreeCamOn = false;
     float FreeCamYaw = 0, FreeCamPitch = 0, FreeCamZoom = 0;
     s32 FreeCamMatrix[16] {};
-    float FreeCamPivotW = 0;                  // clip w at the screen centre, measured while it is off
+    float FreeCamPivotW = 0;                  // clip w at the screen centre (game camera)
+    std::vector<float> FreeCamSamples;        // this frame's centre depths while it is on
     float FreeCamUp[3] {0, 1, 0};             // world up in the game camera's view space
     bool FreeCamAwaitCamera = false;          // a projection was set: the next position load is the camera
     void FreeCamCaptureCamera() noexcept;

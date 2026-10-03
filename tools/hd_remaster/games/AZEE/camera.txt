@@ -1,0 +1,7 @@
+# Phantom Hourglass: the free camera behind Link (copied into packs/AZEE by build; the emulator
+# reads texturepacks/AZEE/camera.txt when the game starts)
+free_camera on      # on for this game, whatever Settings -> Input -> Free camera says
+follow dpad         # swings round behind the way the D-pad walks Link
+pitch -32           # degrees: flatter than the game's top-down view, from behind and above
+zoom -0.3           # closer to Link (fraction of his distance from the camera)
+follow_speed 2.0    # radians per second at most

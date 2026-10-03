@@ -487,6 +487,10 @@ def cmd_build(args) -> Path:
     if stage == "upscaled" and up_info.exists():
         info["upscale"] = json.loads(up_info.read_text())
     (out / "pack.json").write_text(json.dumps(info, indent=1))
+    # the game's camera profile (free camera on, behind the player): games/<CODE>/camera.txt
+    camera = HERE / "games" / code / "camera.txt"
+    if camera.exists():
+        shutil.copyfile(camera, out / "camera.txt")
     log(f"pack {out}: {copied} images at {info['scale']}x" + (f", {absent} not upscaled yet" if absent else "")
         + (f", {redrawn} sources redrawn" if redrawn else ""))
     modelpack.install(work, Path(args.out or PACKS))   # replacements from models build

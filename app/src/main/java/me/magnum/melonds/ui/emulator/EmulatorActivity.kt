@@ -2229,7 +2229,9 @@ class EmulatorActivity : AppCompatActivity() {
     }
 
     private fun setupInputHandling(controllerConfiguration: ControllerConfiguration) {
-        nativeInputListener = InputProcessor(controllerConfiguration, melonTouchHandler, frontendInputHandler) { freeCameraEnabled }
+        nativeInputListener = InputProcessor(controllerConfiguration, melonTouchHandler, frontendInputHandler) {
+            freeCameraEnabled || MelonEmulator.isFreeCameraForced()
+        }
     }
 
     // Settings -> Input -> Free camera, read by the input processor on every controller event

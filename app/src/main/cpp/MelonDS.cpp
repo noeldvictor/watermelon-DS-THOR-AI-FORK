@@ -782,6 +782,11 @@ namespace MelonDSAndroid
             instance->setFreeCameraPose(yaw, pitch, zoom);
     }
 
+    bool isFreeCameraForced()
+    {
+        return instance && instance->isFreeCameraForced();
+    }
+
     void start()
     {
         startAudio();

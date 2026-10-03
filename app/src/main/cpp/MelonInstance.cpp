@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <android/log.h>
 #include <cstring>
 #include <sys/system_properties.h>
@@ -3023,7 +3025,16 @@ void MelonInstance::releaseKey(u32 key)
 void MelonInstance::applyKeyMask()
 {
     u32 mask = inputMask;
-    const float yaw = freeCamYaw.load(std::memory_order_relaxed);
+    // the view's yaw when the held D-pad direction was pressed: the walk keeps that world
+    // direction while the view turns (a follow camera swinging round behind the player would
+    // otherwise keep turning the walk with it), a new direction takes the view's yaw then
+    const u32 dpad = ~mask & 0xF0u;
+    if (dpad != dpadLatchedBits)
+    {
+        dpadLatchedBits = dpad;
+        dpadLatchedYaw = freeCamYaw.load(std::memory_order_relaxed);
+    }
+    const float yaw = dpadLatchedYaw;
     if (yaw != 0.0f)
     {
         // DS key bits (0 = pressed): right 4, left 5, up 6, down 7. The pressed direction, read in
@@ -3096,26 +3107,52 @@ void MelonInstance::updateFreeCamera()
     const bool wasTurned = yaw != 0.0f || freeCamPitch != 0.0f || freeCamZoom != 0.0f;
     if (freeCamResetRequested.exchange(false))
     {
-        yaw = 0.0f;
-        freeCamPitch = 0.0f;
-        freeCamZoom = 0.0f;
+        // a game's profile keeps its direction (behind the player) and goes back to its tilt
+        if (!camProfile.active)
+            yaw = 0.0f;
+        freeCamPitchOffset = 0.0f;
+        freeCamZoomOffset = 0.0f;
     }
     if (freeCamPoseRequested.exchange(false))
     {
         yaw = freeCamPoseYaw.load();
-        freeCamPitch = freeCamPosePitch.load();
-        freeCamZoom = freeCamPoseZoom.load();
+        freeCamPitchOffset = freeCamPosePitch.load() - camProfile.pitch;
+        freeCamZoomOffset = freeCamPoseZoom.load() - camProfile.zoom;
     }
-    if (freeCamEnabled.load())
+    if (freeCamEnabled.load() || camProfile.active)
     {
         yaw += shaped(freeCamStickX.load(std::memory_order_relaxed)) * kYawSpeed * kFrame;
-        freeCamPitch += shaped(freeCamStickY.load(std::memory_order_relaxed)) * kPitchSpeed * kFrame;
-        freeCamZoom += shaped(freeCamZoomInput.load(std::memory_order_relaxed)) * kZoomSpeed * kFrame;
+        freeCamPitchOffset += shaped(freeCamStickY.load(std::memory_order_relaxed)) * kPitchSpeed * kFrame;
+        freeCamZoomOffset += shaped(freeCamZoomInput.load(std::memory_order_relaxed)) * kZoomSpeed * kFrame;
+        if (camProfile.followDpad)
+        {
+            // behind the player: the walk keeps the world direction it had when pressed (see
+            // applyKeyMask), and the view swings round until that direction points into the
+            // screen. Walking towards the camera (down when pressed) leaves the view alone.
+            const u32 mask = inputMask;
+            const int dx = !(mask & (1u << 4)) - !(mask & (1u << 5));
+            const int dy = !(mask & (1u << 6)) - !(mask & (1u << 7));
+            if (dx != 0 || dy != 0)
+            {
+                const float pressed = std::atan2((float)dy, (float)dx);
+                if (std::cos(1.5707963f - pressed) > -0.5f)
+                {
+                    // the world direction applyKeyMask sends (nearest of 8), straight up the view
+                    const float step = 3.14159265f / 4.0f;
+                    const float walk = std::round((pressed - dpadLatchedYaw) / step) * step;
+                    const float diff = std::remainder(1.5707963f - walk - yaw, 6.2831853f);
+                    const float stepMax = camProfile.followSpeed * kFrame;
+                    yaw += std::clamp(diff * 3.0f * kFrame, -stepMax, stepMax);
+                }
+            }
+        }
         if (yaw > 3.14159265f) yaw -= 6.2831853f;
         if (yaw < -3.14159265f) yaw += 6.2831853f;
-        freeCamPitch = std::clamp(freeCamPitch, -kPitchLimit, kPitchLimit);
-        freeCamZoom = std::clamp(freeCamZoom, -0.6f, 3.0f);
     }
+    freeCamPitch = std::clamp(camProfile.pitch + freeCamPitchOffset, -kPitchLimit, kPitchLimit);
+    freeCamPitchOffset = freeCamPitch - camProfile.pitch;
+    freeCamZoom = std::clamp(camProfile.zoom + freeCamZoomOffset, -0.6f, 3.0f);
+    freeCamZoomOffset = freeCamZoom - camProfile.zoom;
     const bool turned = yaw != 0.0f || freeCamPitch != 0.0f || freeCamZoom != 0.0f;
     if (!turned && !wasTurned)
         return;
@@ -5613,6 +5650,47 @@ void MelonInstance::setRetroAchievementsSubmissionTransportSuspended(bool suspen
         retroAchievementsManager->SetSubmissionTransportSuspended(suspended);
 }
 
+void MelonInstance::applyCameraProfile()
+{
+    // texturepacks/<GAMECODE>/camera.txt: one setting per line, '#' comments
+    //   free_camera on         the free camera is on for this game (right stick, R3)
+    //   follow dpad            it swings behind the way the D-pad walks the player
+    //   pitch -30              degrees of tilt (negative = flatter, from behind)
+    //   zoom -0.25             fraction of the distance to the screen centre (negative = closer)
+    //   follow_speed 1.2       radians per second at most
+    CameraProfile profile;
+    auto cart = nds->NDSCartSlot.GetCart();
+    if (cart)
+    {
+        std::string gameCode(cart->GetHeader().GameCode, 4);
+        for (char& ch : gameCode)
+            if (ch < 0x21 || ch > 0x7E || ch == '/' || ch == '\\' || ch == ':') ch = '_';
+        std::ifstream file(std::string(MelonDSAndroid::internalFilesDir) + "/texturepacks/" + gameCode + "/camera.txt");
+        std::string line;
+        while (std::getline(file, line))
+        {
+            std::istringstream words(line.substr(0, line.find('#')));
+            std::string key, value;
+            if (!(words >> key >> value))
+                continue;
+            if (key == "free_camera")
+                profile.active = value == "on";
+            else if (key == "follow")
+                profile.followDpad = value == "dpad";
+            else if (key == "pitch")
+                profile.pitch = std::strtof(value.c_str(), nullptr) * 3.14159265f / 180.0f;
+            else if (key == "zoom")
+                profile.zoom = std::strtof(value.c_str(), nullptr);
+            else if (key == "follow_speed")
+                profile.followSpeed = std::strtof(value.c_str(), nullptr);
+        }
+    }
+    if (profile.active != camProfile.active)
+        Platform::Log(Platform::LogLevel::Warn, "FreeCamera: game profile %s (follow %s, pitch %.2f, zoom %.2f)\n",
+                      profile.active ? "on" : "off", profile.followDpad ? "dpad" : "none", profile.pitch, profile.zoom);
+    camProfile = profile;
+}
+
 void MelonInstance::applyTexturePack(const EmulatorConfiguration& config)
 {
     // Texture packs live under the app's internal files dir:
@@ -5878,6 +5956,7 @@ void MelonInstance::updateRenderer()
     }
 
     applyTexturePack(*config);
+    applyCameraProfile();
 
     switch (newRenderer)
     {
