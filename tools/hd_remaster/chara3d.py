@@ -360,6 +360,8 @@ def cmd_sprites(args) -> None:
     refs = {"down": _head_blocks(ref_native), "up": _head_blocks(cell_image(work, args.sheet, args.back)),
             "left": _head_blocks(side), "right": _head_blocks(side.transpose(Image.FLIP_LEFT_RIGHT))}
     results = []
+    # --face 63=down,64=down: cells whose facing the head comparison gets wrong
+    forced = {int(c): f for c, f in (x.split("=") for x in args.face.split(","))} if args.face else {}
     wanted = None
     if args.cells:
         wanted = set()
@@ -380,6 +382,8 @@ def cmd_sprites(args) -> None:
         face, fdist = facing(Image.fromarray(nat, "RGBA"), refs)
         # an unsure facing (a pose far from every standing frame, e.g. a leaping dash) tries all
         sure = fdist <= args.facing_sure
+        if cell in forced:
+            face, fdist, sure = forced[cell], 0.0, True
         best = None
         for name, hd, cm, cc in cands:
             if sure and not name.endswith("_" + face):
@@ -466,6 +470,7 @@ def main() -> None:
                    help="animations to fit with (Crono: flee_01/02 gave panicked arm poses, so not default)")
     s.add_argument("--variant", action="append", help="clip,amplify,lean: extra renders of a clip with "
                    "its limb swings scaled and the body leaned forward (degrees), e.g. run,1.7,12")
+    s.add_argument("--face", help="cell=facing overrides, e.g. 63=down,64=down (down/up/left/right)")
     s.add_argument("--cells", help="only these cells, e.g. 0-39,147-168 (the poses the clips cover)")
     s.add_argument("--apply", action="store_true", help="write the fitted cells to redrawn/assets2d")
     s.add_argument("--blender", default=str(BLENDER))

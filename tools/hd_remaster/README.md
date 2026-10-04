@@ -195,7 +195,16 @@ by silhouette, so `--clips` (default `idle,walk,run`) picks the clips to fit wit
 `--variant run,1.6,12` (limb swings x1.6, 12 degree forward lean) didn't reach the stride either.
 A facing guess far from every standing frame (`--facing-sure`) lets the fit try all four. The
 camera framing comes from the idle clip with a wide margin: at 1.45 the side-facing run frames
-were cut off at the edge of the render. Freestyle's crease, border and contour
+were cut off at the edge of the render. `--face 63=down` overrides a facing the head comparison
+gets wrong.
+
+Which cells a game really draws can differ from what its files suggest. Chrono Trigger builds a
+frame from three or four 16x16 pieces and, while turning or running, takes them from different
+cells (a run torso from cell 63 over walking legs from cell 5). An OAM capture while walking
+(sprite table, palette and OBJ VRAM read through the dev server's `mem_read`, each piece matched
+to the manifest by its pixels) listed the 17 cells Crono's walk uses; cells 63 and 64 were added
+from it. Pieces shared between frames can only have one image each, so a frame mixing cells
+shows two poses' renders side by side, as the game mixes its own pixel art. Freestyle's crease, border and contour
 lines cover a lumpy AI mesh, so only the outer outline is inked; its width is `--outline` (the
 scene thickness is a multiplier, keep it 1). Tripo's animated GLBs carry a stray icosphere that the
 renderer drops.
