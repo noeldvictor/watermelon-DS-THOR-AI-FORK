@@ -1,0 +1,8 @@
+# Spirit Tracks: the free camera behind Link (copied into the pack by build; the emulator reads
+# camera.txt from texturepacks/BKIE.zip when the game starts). Same engine as Phantom Hourglass,
+# same starting values.
+free_camera on      # on for this game, whatever Settings -> Input -> Free camera says
+follow dpad         # swings round behind the way the D-pad walks Link (D-pad patched ROM)
+pitch -32           # degrees: flatter than the game's top-down view, from behind and above
+zoom -0.3           # closer to Link (fraction of his distance from the camera)
+follow_speed 2.0    # radians per second at most

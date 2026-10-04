@@ -5,7 +5,23 @@ powershell -ExecutionPolicy Bypass -File tools\hd_remaster\remaster.ps1 "Spirit 
 ```
 
 3156 textures, 5422 sprites and 21424 background tiles at 4x, upscaled in about 23 minutes.
-Installed: a 200 MB ASTC zip (30,006 images; 438 MB as PNG).
+Installed: a 200 MB ASTC zip (30,006 images; 438 MB as PNG), with the camera profile below.
+
+## In game
+
+![Niko's house on the Thor: HD map on top, Link from behind on the bottom](media/ingame_niko_house.png)
+
+Niko's house at the start of the game, live on the AYN Thor (top screen over bottom screen, PNG):
+the HD map above, and the room seen from behind Link below.
+
+## Behind-Link camera
+
+[camera.txt](camera.txt) turns the emulator's free camera on for this game, with Phantom
+Hourglass's values (same engine): low behind Link, swinging round behind him as the D-pad walks
+him (the ROM is the D-pad patched one); the right stick turns, tilts and zooms on top, R3 resets.
+Checked 2026-10-03 in Niko's house: the view follows Link left, right and up; walking down keeps
+the view, so Link faces the camera. Looking out past a room's walls shows black, where the game
+draws nothing. The train, towns and dungeons are not checked yet.
 
 ## Before / after
 
