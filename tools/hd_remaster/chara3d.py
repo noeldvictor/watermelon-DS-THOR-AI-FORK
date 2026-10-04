@@ -185,7 +185,8 @@ def cmd_animate(args) -> None:
     info = json.loads((d / "model.json").read_text(encoding="utf-8"))
     model_task = info["task"]
     anims = [a.strip() for a in args.anims.split(",") if a.strip()]
-    _check(ledger, CREDITS_RIG + CREDITS_RETARGET * len(anims), args.credits)
+    todo = [a for a in anims if not (d / "tripo" / f"anim_{a}.glb").exists()]
+    _check(ledger, (0 if info.get("rig_task") else CREDITS_RIG) + CREDITS_RETARGET * len(todo), args.credits)
     if not info.get("rig_task"):
         check = ai3d._tripo("POST", "/animations/rig-check", key, {"input": model_task})["task_id"]
         out = _tripo_wait(key, check).get("output") or {}
@@ -240,13 +241,28 @@ def render_candidates(d: Path, args) -> Path:
     blender = Path(args.blender)
     base = {"out": str(out), "size": args.size, "elevation": args.elevation, "outline": args.outline,
             "band": 0.35}
+    # the animations fetched with `animate` (tripo/anim_<clip>.glb) named by --clips, idle first: it
+    # sets the framing
+    have = {p.stem[5:] for p in (d / "tripo").glob("anim_*.glb")}
+    clips = sorted((c for c in args.clips.split(",") if c in have), key=lambda c: (c != "idle", c))
+    if "idle" not in clips:
+        raise SystemExit("the idle clip is needed (it sets the camera framing and the scale)")
     frames_of = {clip: [{"name": f"{clip}_{i:02d}_{dname}", "action": clip, "phase": i / n, "yaw": yaw}
                         for i in range(n) for dname, yaw in DIRECTIONS.items()]
-                 for clip, n in SAMPLES.items()}
+                 for clip in clips for n in (SAMPLES.get(clip, 16),)}
+    # variants: a clip with a wider swing and a forward lean (--variant run,1.7,12)
+    for v in args.variant or ():
+        clip, amp, lean = v.split(",")
+        n = SAMPLES.get(clip, 16)
+        tag = f"{clip}-a{amp}l{lean}"
+        frames_of[tag] = [{"name": f"{tag}_{i:02d}_{dname}", "action": clip, "phase": i / n, "yaw": yaw,
+                           "amplify": float(amp), "lean": float(lean)}
+                          for i in range(n) for dname, yaw in DIRECTIONS.items()]
     framing = out / "framing.json"
     if not framing.exists():
-        # idle over all turns, with room for the stride and arm swing of walk and run
-        _blender(dict(base, glb=str((d / "tripo" / "anim_idle.glb").resolve()), frames=frames_of["idle"], margin=1.45),
+        # idle over all turns, with room for the stride, arm swing and lean of walk, run and dash
+        # variants (1.45 cut side-facing run frames off at the edge)
+        _blender(dict(base, glb=str((d / "tripo" / "anim_idle.glb").resolve()), frames=frames_of["idle"], margin=2.2),
                  d / "job_idle.json", blender)
         meta = json.loads((out / "render.json").read_text(encoding="utf-8"))
         framing.write_text(json.dumps({"ortho_scale": meta["ortho_scale"], "centre": meta["centre"]}), encoding="utf-8")
@@ -255,7 +271,7 @@ def render_candidates(d: Path, args) -> Path:
         todo = [f for f in frames if not (out / f"{f['name']}.png").exists()]
         if todo:
             log(f"rendering {len(todo)} {clip} frames")
-            _blender(dict(base, **fixed, glb=str((d / "tripo" / f"anim_{clip}.glb").resolve()), frames=todo),
+            _blender(dict(base, **fixed, glb=str((d / "tripo" / f"anim_{clip.split('-')[0]}.glb").resolve()), frames=todo),
                      d / f"job_{clip}.json", blender)
     return out
 
@@ -323,7 +339,11 @@ def cmd_sprites(args) -> None:
     ref_render = Image.open(out / "idle_00_down.png").convert("RGBA")
     k = (ref_box[3] - ref_box[1]) * S / (ref_render.getbbox()[3] - ref_render.getbbox()[1])
     cands = []
+    wanted = set(args.clips.split(",")) | {f"{v.split(',')[0]}-a{v.split(',')[1]}l{v.split(',')[2]}"
+                                           for v in (args.variant or ())}
     for p in sorted(out.glob("*_*_*.png")):
+        if p.stem.rsplit("_", 2)[0] not in wanted:
+            continue
         im = Image.open(p).convert("RGBA")
         box = im.getbbox()
         if not box:
@@ -358,9 +378,11 @@ def cmd_sprites(args) -> None:
         ys, xs = np.nonzero(nat_m)
         nb, ncx = ys.max(), xs.mean()
         face, fdist = facing(Image.fromarray(nat, "RGBA"), refs)
+        # an unsure facing (a pose far from every standing frame, e.g. a leaping dash) tries all
+        sure = fdist <= args.facing_sure
         best = None
         for name, hd, cm, cc in cands:
-            if not name.endswith("_" + face):
+            if sure and not name.endswith("_" + face):
                 continue
             cys, cxs = np.nonzero(cm)
             if not len(cys):
@@ -431,13 +453,19 @@ def main() -> None:
     s.add_argument("work"); s.add_argument("--name", required=True)
     s.add_argument("--sheet", required=True); s.add_argument("--front", type=int, required=True,
                                                              help="the standing front cell (sets the scale)")
-    s.add_argument("--size", type=int, default=768, help="render size in px (downscaled to the pack's scale)")
+    s.add_argument("--size", type=int, default=1024, help="render size in px (downscaled to the pack's scale)")
     s.add_argument("--elevation", type=float, default=12.0, help="camera angle above the horizon, degrees")
     s.add_argument("--outline", type=float, default=6.0, help="ink line width at --size, px")
     s.add_argument("--side", type=int, required=True, help="the standing side cell, facing left")
     s.add_argument("--back", type=int, required=True, help="the standing back cell")
     s.add_argument("--min-score", type=float, default=0.6)
+    s.add_argument("--facing-sure", type=float, default=30.0,
+                   help="head-region distance up to which the facing guess restricts the renders tried")
     s.add_argument("--colour-weight", type=float, default=0.6)
+    s.add_argument("--clips", default="idle,walk,run",
+                   help="animations to fit with (Crono: flee_01/02 gave panicked arm poses, so not default)")
+    s.add_argument("--variant", action="append", help="clip,amplify,lean: extra renders of a clip with "
+                   "its limb swings scaled and the body leaned forward (degrees), e.g. run,1.7,12")
     s.add_argument("--cells", help="only these cells, e.g. 0-39,147-168 (the poses the clips cover)")
     s.add_argument("--apply", action="store_true", help="write the fitted cells to redrawn/assets2d")
     s.add_argument("--blender", default=str(BLENDER))

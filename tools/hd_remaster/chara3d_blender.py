@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 import bpy
-from mathutils import Vector
+from mathutils import Quaternion, Vector
 
 job = json.loads(Path(sys.argv[sys.argv.index("--") + 1]).read_text(encoding="utf-8"))
 out = Path(job["out"])
@@ -162,6 +162,21 @@ def pose(fr):
             scene.frame_set(int(f), subframe=f - int(f))
         else:
             scene.frame_set(int(fr.get("frame", 0)))
+        if fr.get("amplify", 1.0) != 1.0:
+            # a wider swing than the clip (the game's dash strides further than a preset run):
+            # keep the evaluated pose, detach the action so a render doesn't re-evaluate it, and
+            # scale each limb bone's rotation away from its rest pose
+            for pb in arm.pose.bones:
+                pb.rotation_mode = "QUATERNION"
+            posed = {pb.name: pb.rotation_quaternion.copy() for pb in arm.pose.bones}
+            arm.animation_data.action = None
+            parts = fr.get("amplify_bones", ["Thigh", "Calf", "Upperarm", "Forearm"])
+            for pb in arm.pose.bones:
+                q = posed[pb.name]
+                if any(k.lower() in pb.name.lower() for k in parts):
+                    axis, angle = q.to_axis_angle()
+                    q = Quaternion(axis, angle * fr["amplify"])
+                pb.rotation_quaternion = q
     else:
         if arm.animation_data:
             arm.animation_data.action = None
@@ -209,7 +224,7 @@ meta = {"ortho_scale": cam_d.ortho_scale, "centre": list(centre), "elevation": j
 
 for fr in job["frames"]:
     pose(fr)
-    root.rotation_euler = (0, 0, math.radians(base_yaw + fr.get("yaw", 0)))
+    root.rotation_euler = (0, math.radians(fr.get("lean", 0)), math.radians(base_yaw + fr.get("yaw", 0)))
     scene.render.filepath = str(out / f"{fr['name']}.png")
     bpy.ops.render.render(write_still=True)
     if arm is not None and fr.get("action"):

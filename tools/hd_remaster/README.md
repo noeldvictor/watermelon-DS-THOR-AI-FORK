@@ -189,7 +189,13 @@ every frame. First tested on Chrono Trigger's Crono (2026-10-03).
 
 Limits found on the way: the preset clips cover standing, walking and running only, so battle,
 sword and one-off poses keep their upscale (`--cells` keeps the fit to the cells the clips cover;
-silhouette overlap alone let some arms-up frames through). Freestyle's crease, border and contour
+silhouette overlap alone let some arms-up frames through). Chrono Trigger's dash (a leaping
+stride) fits no preset: `flee_01`/`flee_02` (sprinting) gave panicked arm poses and won calm frames
+by silhouette, so `--clips` (default `idle,walk,run`) picks the clips to fit with, and
+`--variant run,1.6,12` (limb swings x1.6, 12 degree forward lean) didn't reach the stride either.
+A facing guess far from every standing frame (`--facing-sure`) lets the fit try all four. The
+camera framing comes from the idle clip with a wide margin: at 1.45 the side-facing run frames
+were cut off at the edge of the render. Freestyle's crease, border and contour
 lines cover a lumpy AI mesh, so only the outer outline is inked; its width is `--outline` (the
 scene thickness is a multiplier, keep it 1). Tripo's animated GLBs carry a stray icosphere that the
 renderer drops.
